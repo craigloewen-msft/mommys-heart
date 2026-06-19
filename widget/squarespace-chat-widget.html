@@ -197,12 +197,36 @@
     input.disabled = !on;
   }
 
-  function resetCaptcha() {
+  var captchaRevealTimer = null;
+
+  function showCaptchaBox(msg) {
+    captchaRow.style.display = "flex";
+    var note = document.getElementById("mh-captcha-note");
+    if (msg && note) note.textContent = msg;
+  }
+
+  function hideCaptchaBox() {
+    captchaRow.style.display = "none";
+  }
+
+  // silent=true refreshes the token in the background without showing the box
+  // (used between messages, since Turnstile tokens are single-use). The box is
+  // only revealed again on a failure, or if a fresh token doesn't arrive
+  // promptly. silent=false (a real failure) shows the box for re-verification.
+  function resetCaptcha(silent) {
     captchaToken = null;
     captchaReady = false;
     setSendEnabled(false);
     if (window.turnstile) {
       try { window.turnstile.reset(); } catch (e) {}
+    }
+    clearTimeout(captchaRevealTimer);
+    if (silent) {
+      captchaRevealTimer = setTimeout(function () {
+        if (!captchaReady) showCaptchaBox("Please complete the verification to continue.");
+      }, 4000);
+    } else {
+      showCaptchaBox();
     }
   }
 
@@ -227,11 +251,12 @@
           callback: function (token) {
             captchaToken = token;
             captchaReady = true;
-            captchaNote.textContent = "Verification complete — you can start chatting.";
+            clearTimeout(captchaRevealTimer);
+            hideCaptchaBox();  // hide once solved; don't nag the user
             setSendEnabled(true);
           },
-          "expired-callback": function () { resetCaptcha(); },
-          "error-callback": function (code) { resetCaptcha(); captchaError(code); }
+          "expired-callback": function () { resetCaptcha(true); },
+          "error-callback": function (code) { resetCaptcha(false); captchaError(code); }
         });
       } catch (e) {
         captchaError(e && e.message);
@@ -300,7 +325,8 @@
       return;
     }
     if (captchaEnabled && (!captchaReady || !captchaToken)) {
-      addBot("⚠️ Please complete the verification below before sending a message.");
+      showCaptchaBox("Please complete the verification to continue.");
+      addBot("⚠️ Please complete the verification above before sending a message.");
       return;
     }
     addUser(text);
@@ -334,8 +360,9 @@
       })
       .finally(function () {
         if (captchaEnabled) {
-          // Turnstile tokens are single-use — get a fresh one for the next message.
-          resetCaptcha();
+          // Turnstile tokens are single-use — silently fetch a fresh one for the
+          // next message without re-showing the box (it only reappears on error).
+          resetCaptcha(true);
         } else {
           setSendEnabled(true);
         }
