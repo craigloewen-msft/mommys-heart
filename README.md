@@ -1,6 +1,6 @@
 # Document Search Chatbot
 
-A RAG chatbot that answers questions about the `.docx` files in `docs/` and cites its sources. Documents are chunked and embedded with Azure OpenAI (stored in ChromaDB); questions are embedded, matched, and answered by the chat model.
+A RAG chatbot that answers questions about the `.docx` files in `docs/` and cites its sources. Documents are chunked and embedded with Azure OpenAI (stored in ChromaDB); questions are embedded, matched, and answered by the chat model. When the documents don't cover a question, the model falls back to its own general knowledge — each answer is tagged with a `source_type` (`documents` / `general_knowledge` / `mixed`) so the UI can clearly distinguish the two.
 
 ## Configuration
 
@@ -54,7 +54,7 @@ Runs as a **single Gunicorn worker** (ingestion writes to a local ChromaDB store
 
 ## Squarespace Chat Widget
 
-Paste the contents of [`widget/squarespace-chat-widget.html`](widget/squarespace-chat-widget.html) into **Settings → Advanced → Code Injection → Footer**. It adds a floating chat button wired to the deployed API. If the API URL changes, update `window.CHAT_API_BASE` in the snippet and the API's `ALLOWED_ORIGINS`.
+Paste the contents of [`widget/squarespace-chat-widget.html`](widget/squarespace-chat-widget.html) into a **Code block** on the page where you want the assistant (Edit page → Add Block → Code). It renders an inline, full AI chat pane wired to the deployed API. If the API URL changes, update `window.MH_CHAT_API_BASE` in the snippet and the API's `ALLOWED_ORIGINS`.
 
 ## API Endpoints
 
@@ -62,5 +62,7 @@ Paste the contents of [`widget/squarespace-chat-widget.html`](widget/squarespace
 |--------|----------|-------------|
 | `GET`  | `/` | Chat web UI |
 | `GET`  | `/healthz` | Health check |
-| `POST` | `/api/chat` | Send a message, get answer + sources |
+| `POST` | `/api/chat` | Send a message, get answer + sources + `source_type` |
+| `GET`  | `/docs/{filename}` | View a source document as HTML (with heading anchors) |
+| `GET`  | `/docs/{filename}/download` | Download the original `.docx` |
 | `POST` | `/api/reingest` | Force re-ingestion of documents |

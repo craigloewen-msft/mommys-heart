@@ -1,5 +1,7 @@
 import logging
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -74,6 +76,7 @@ class SourceInfo(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[SourceInfo]
+    source_type: str = "documents"
 
 
 @app.get("/")
@@ -107,6 +110,21 @@ async def view_document(filename: str):
     if html is None:
         raise HTTPException(status_code=404, detail=f"Document '{filename}' not found")
     return HTMLResponse(content=html)
+
+
+@app.get("/docs/{filename}/download")
+async def download_document(filename: str):
+    """Download the original .docx file."""
+    # Guard against path traversal: only allow a bare filename inside DOCS_DIR.
+    safe_name = os.path.basename(filename)
+    filepath = Path(settings.DOCS_DIR) / safe_name
+    if safe_name != filename or filepath.suffix != ".docx" or not filepath.is_file():
+        raise HTTPException(status_code=404, detail=f"Document '{filename}' not found")
+    return FileResponse(
+        path=str(filepath),
+        filename=safe_name,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
 
 @app.post("/api/reingest")

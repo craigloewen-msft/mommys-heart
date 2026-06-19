@@ -1,163 +1,227 @@
 <!--
-  Mommy's Heart Foundation — Document Search Chat Widget
+  Mommy's Heart Foundation — Embedded AI Chat Pane (inline)
   ------------------------------------------------------------------
   HOW TO ADD THIS TO SQUARESPACE:
-    1. In Squarespace go to:  Settings → Advanced → Code Injection → FOOTER
-       (this makes the chat button appear on every page).
-       To add it to a single page instead, edit that page and add a "Code" block.
-    2. Paste this entire snippet in and save.
-    3. The chat button (💬) appears in the bottom-right of the site.
+    1. Edit the page where you want the chat to appear.
+    2. Add a "Code" block (Add Block → Code) where you want it.
+    3. Paste this entire snippet in and save.
+    The chat pane renders inline in the page (full width of its container).
 
-  Already configured for this deployment:
+  Configured for this deployment:
     - API:     https://mommys-heart-api-ehh4aub4auadb2a7.westus-01.azurewebsites.net
     - Website: https://www.mommysheartfoundation.com
-  The API must have ALLOWED_ORIGINS set to include https://www.mommysheartfoundation.com
-  (see the README) or the browser will block the requests via CORS.
+  The API's ALLOWED_ORIGINS must include https://www.mommysheartfoundation.com.
 
-  Notes:
-    - Self-contained: no external libraries, no build step.
-    - Everything is scoped under the "mh-chat" prefix to avoid clashing
-      with Squarespace styles.
+  Self-contained: no external libraries, no build step. Everything is scoped
+  under the "mh-chat" prefix to avoid clashing with Squarespace styles.
 -->
-<script>
-  // Deployed API URL (no trailing slash):
-  window.CHAT_API_BASE = "https://mommys-heart-api-ehh4aub4auadb2a7.westus-01.azurewebsites.net";
-</script>
+<div id="mh-chat-root">
+  <div id="mh-chat-card">
+    <div id="mh-chat-header">
+      <div class="mh-avatar" aria-hidden="true">🤖</div>
+      <div class="mh-head-text">
+        <div class="mh-title">Mommy's Heart AI Assistant</div>
+        <div class="mh-subtitle">
+          <span class="mh-dot"></span>AI agent · answers from our guides with sources
+        </div>
+      </div>
+    </div>
 
-<style>
-  #mh-chat-launcher {
-    position: fixed; bottom: 24px; right: 24px; z-index: 99999;
-    width: 60px; height: 60px; border-radius: 50%; border: none;
-    background: #c2185b; color: #fff; cursor: pointer;
-    box-shadow: 0 4px 14px rgba(0,0,0,.25);
-    font-size: 26px; line-height: 60px; text-align: center;
-    transition: transform .15s ease;
-  }
-  #mh-chat-launcher:hover { transform: scale(1.06); }
+    <div id="mh-chat-log" aria-live="polite"></div>
 
-  #mh-chat-panel {
-    position: fixed; bottom: 96px; right: 24px; z-index: 99999;
-    width: 370px; max-width: calc(100vw - 32px);
-    height: 540px; max-height: calc(100vh - 130px);
-    background: #fff; border-radius: 14px; overflow: hidden;
-    box-shadow: 0 12px 40px rgba(0,0,0,.28);
-    display: none; flex-direction: column;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  }
-  #mh-chat-panel.mh-open { display: flex; }
+    <div id="mh-chat-disclaimer">
+      ⚠️ You're chatting with an AI assistant. It can make mistakes — verify important details and contact us directly for personal help.
+    </div>
 
-  #mh-chat-header {
-    background: #c2185b; color: #fff; padding: 14px 16px;
-    font-weight: 600; font-size: 15px; display: flex;
-    justify-content: space-between; align-items: center;
-  }
-  #mh-chat-header .mh-close {
-    cursor: pointer; background: none; border: none; color: #fff;
-    font-size: 20px; line-height: 1;
-  }
-
-  #mh-chat-log {
-    flex: 1; overflow-y: auto; padding: 14px;
-    background: #faf7f8; font-size: 14px; line-height: 1.45;
-  }
-  .mh-msg { margin-bottom: 12px; display: flex; }
-  .mh-msg.mh-user { justify-content: flex-end; }
-  .mh-bubble {
-    padding: 9px 12px; border-radius: 12px; max-width: 85%;
-    white-space: pre-wrap; word-wrap: break-word;
-  }
-  .mh-user .mh-bubble { background: #c2185b; color: #fff; border-bottom-right-radius: 3px; }
-  .mh-bot .mh-bubble  { background: #fff; color: #222; border: 1px solid #eee; border-bottom-left-radius: 3px; }
-
-  .mh-sources { margin-top: 8px; font-size: 12px; }
-  .mh-sources details { background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 6px 9px; margin-top: 5px; }
-  .mh-sources summary { cursor: pointer; color: #c2185b; font-weight: 600; }
-  .mh-sources .mh-snippet { color: #555; margin-top: 5px; }
-
-  #mh-chat-input-row { display: flex; border-top: 1px solid #eee; padding: 10px; gap: 8px; background: #fff; }
-  #mh-chat-input {
-    flex: 1; resize: none; border: 1px solid #ddd; border-radius: 10px;
-    padding: 9px 11px; font-size: 14px; font-family: inherit; max-height: 100px;
-  }
-  #mh-chat-send {
-    border: none; background: #c2185b; color: #fff; border-radius: 10px;
-    padding: 0 16px; cursor: pointer; font-weight: 600;
-  }
-  #mh-chat-send:disabled { opacity: .5; cursor: default; }
-  .mh-typing { color: #999; font-style: italic; }
-</style>
-
-<button id="mh-chat-launcher" aria-label="Open chat">💬</button>
-
-<div id="mh-chat-panel" role="dialog" aria-label="Document search chat">
-  <div id="mh-chat-header">
-    <span>Ask a question</span>
-    <button class="mh-close" aria-label="Close chat">×</button>
-  </div>
-  <div id="mh-chat-log"></div>
-  <div id="mh-chat-input-row">
-    <textarea id="mh-chat-input" rows="1" placeholder="Type your question…"></textarea>
-    <button id="mh-chat-send">Send</button>
+    <div id="mh-chat-input-row">
+      <textarea id="mh-chat-input" rows="1" placeholder="Ask a question about our guides…" aria-label="Your message"></textarea>
+      <button id="mh-chat-send" type="button">Send</button>
+    </div>
   </div>
 </div>
 
 <script>
-(function () {
-  var API = (window.CHAT_API_BASE || "").replace(/\/+$/, "");
-  var launcher = document.getElementById("mh-chat-launcher");
-  var panel    = document.getElementById("mh-chat-panel");
-  var closeBtn = panel.querySelector(".mh-close");
-  var log      = document.getElementById("mh-chat-log");
-  var input    = document.getElementById("mh-chat-input");
-  var sendBtn  = document.getElementById("mh-chat-send");
-  var greeted  = false;
+  // Deployed API URL (no trailing slash):
+  window.MH_CHAT_API_BASE = "https://mommys-heart-api-ehh4aub4auadb2a7.westus-01.azurewebsites.net";
+</script>
 
-  function toggle(open) {
-    panel.classList.toggle("mh-open", open);
-    if (open) {
-      if (!greeted) {
-        addBot("Hi! Ask me anything about the guides and I'll answer with sources. 📚");
-        greeted = true;
-      }
-      input.focus();
-    }
+<style>
+  #mh-chat-root {
+    --mh-accent: #c2185b;
+    --mh-accent-dark: #9c134a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    max-width: 760px;
+    margin: 0 auto;
   }
-  launcher.addEventListener("click", function () { toggle(!panel.classList.contains("mh-open")); });
-  closeBtn.addEventListener("click", function () { toggle(false); });
+  #mh-chat-card {
+    display: flex; flex-direction: column;
+    height: 600px; max-height: 80vh;
+    border: 1px solid #e7e2e4; border-radius: 16px; overflow: hidden;
+    background: #fff; box-shadow: 0 8px 30px rgba(0,0,0,.08);
+  }
+
+  /* Header */
+  #mh-chat-header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 18px; color: #fff;
+    background: linear-gradient(135deg, var(--mh-accent), var(--mh-accent-dark));
+  }
+  #mh-chat-header .mh-avatar {
+    width: 42px; height: 42px; border-radius: 50%;
+    background: rgba(255,255,255,.2);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; flex: 0 0 auto;
+  }
+  #mh-chat-header .mh-title { font-weight: 700; font-size: 16px; }
+  #mh-chat-header .mh-subtitle {
+    font-size: 12px; opacity: .92; display: flex; align-items: center; gap: 6px; margin-top: 2px;
+  }
+  #mh-chat-header .mh-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #6ee7a8;
+    box-shadow: 0 0 0 0 rgba(110,231,168,.7); animation: mh-pulse 2s infinite;
+  }
+  @keyframes mh-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(110,231,168,.7); }
+    70%  { box-shadow: 0 0 0 7px rgba(110,231,168,0); }
+    100% { box-shadow: 0 0 0 0 rgba(110,231,168,0); }
+  }
+
+  /* Log */
+  #mh-chat-log {
+    flex: 1; overflow-y: auto; padding: 18px;
+    background: #faf7f8; font-size: 15px; line-height: 1.5;
+  }
+  .mh-msg { margin-bottom: 14px; display: flex; gap: 10px; align-items: flex-end; }
+  .mh-msg.mh-user { justify-content: flex-end; }
+  .mh-msg .mh-msg-avatar {
+    width: 30px; height: 30px; border-radius: 50%; flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: center; font-size: 16px;
+    background: #efe7eb;
+  }
+  .mh-msg.mh-user .mh-msg-avatar { display: none; }
+  .mh-bubble {
+    padding: 11px 14px; border-radius: 14px; max-width: 80%;
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+  .mh-user .mh-bubble { background: var(--mh-accent); color: #fff; border-bottom-right-radius: 4px; }
+  .mh-bot  .mh-bubble { background: #fff; color: #222; border: 1px solid #ececec; border-bottom-left-radius: 4px; }
+
+  .mh-sources { margin-top: 9px; font-size: 12.5px; }
+  .mh-sources details { background: #fff; border: 1px solid #ececec; border-radius: 8px; padding: 7px 10px; margin-top: 6px; }
+  .mh-sources summary { cursor: pointer; color: var(--mh-accent); font-weight: 600; }
+  .mh-sources .mh-snippet { color: #555; margin-top: 6px; }
+  .mh-source-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+  .mh-source-actions a {
+    display: inline-block; font-size: 12px; font-weight: 600; text-decoration: none;
+    padding: 5px 10px; border-radius: 7px;
+  }
+  .mh-source-actions .mh-readmore { background: var(--mh-accent); color: #fff; }
+  .mh-source-actions .mh-readmore:hover { background: var(--mh-accent-dark); }
+  .mh-source-actions .mh-download { background: #f1eaee; color: var(--mh-accent); border: 1px solid #e6d8df; }
+  .mh-source-actions .mh-download:hover { background: #e9dde3; }
+
+  /* Answer mode badge */
+  .mh-badge {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .2px;
+    padding: 3px 9px; border-radius: 999px; margin-bottom: 8px;
+  }
+  .mh-badge-docs  { background: #e6f4ea; color: #1e7e44; }
+  .mh-badge-ai    { background: #fff3e0; color: #b25c00; }
+  .mh-badge-mixed { background: #e8eefc; color: #2a4bbd; }
+
+  .mh-typing span {
+    display: inline-block; width: 7px; height: 7px; margin: 0 1px; border-radius: 50%;
+    background: #bbb; animation: mh-blink 1.3s infinite both;
+  }
+  .mh-typing span:nth-child(2) { animation-delay: .2s; }
+  .mh-typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes mh-blink { 0%,80%,100% { opacity: .2; } 40% { opacity: 1; } }
+
+  /* Disclaimer */
+  #mh-chat-disclaimer {
+    font-size: 11.5px; color: #8a7e83; background: #f4eef1;
+    padding: 8px 14px; border-top: 1px solid #ece4e8; text-align: center;
+  }
+
+  /* Input */
+  #mh-chat-input-row { display: flex; gap: 8px; padding: 12px; background: #fff; border-top: 1px solid #eee; }
+  #mh-chat-input {
+    flex: 1; resize: none; border: 1px solid #ddd; border-radius: 12px;
+    padding: 11px 13px; font-size: 15px; font-family: inherit; max-height: 120px;
+  }
+  #mh-chat-input:focus { outline: none; border-color: var(--mh-accent); }
+  #mh-chat-send {
+    border: none; background: var(--mh-accent); color: #fff; border-radius: 12px;
+    padding: 0 20px; cursor: pointer; font-weight: 600; font-size: 15px;
+  }
+  #mh-chat-send:hover { background: var(--mh-accent-dark); }
+  #mh-chat-send:disabled { opacity: .5; cursor: default; }
+
+  @media (max-width: 600px) {
+    #mh-chat-card { height: 70vh; }
+  }
+</style>
+
+<script>
+(function () {
+  var API = (window.MH_CHAT_API_BASE || "").replace(/\/+$/, "");
+  var log     = document.getElementById("mh-chat-log");
+  var input   = document.getElementById("mh-chat-input");
+  var sendBtn = document.getElementById("mh-chat-send");
 
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
-  function addMsg(role, html) {
+  function addMsg(role, innerHtml) {
     var wrap = document.createElement("div");
     wrap.className = "mh-msg mh-" + role;
-    wrap.innerHTML = '<div class="mh-bubble">' + html + "</div>";
+    var avatar = role === "bot" ? '<div class="mh-msg-avatar" aria-hidden="true">🤖</div>' : "";
+    wrap.innerHTML = avatar + '<div class="mh-bubble">' + innerHtml + "</div>";
     log.appendChild(wrap);
     log.scrollTop = log.scrollHeight;
     return wrap;
   }
   function addUser(text) { return addMsg("user", esc(text)); }
-  function addBot(text)  { return addMsg("bot", esc(text)); }
+  function addBot(html)  { return addMsg("bot", html); }
+
+  function renderBadge(type) {
+    var map = {
+      documents:         { cls: "mh-badge-docs",  text: "📚 Answer from our guides" },
+      general_knowledge: { cls: "mh-badge-ai",    text: "🌐 General AI knowledge — not from our guides" },
+      mixed:             { cls: "mh-badge-mixed", text: "📚 + 🌐 Our guides plus general AI knowledge" }
+    };
+    var b = map[type] || map.documents;
+    return '<div class="mh-badge ' + b.cls + '">' + b.text + "</div>";
+  }
 
   function renderSources(sources) {
     if (!sources || !sources.length) return "";
     var html = '<div class="mh-sources">';
     sources.forEach(function (s) {
+      var viewUrl = API + "/docs/" + encodeURIComponent(s.filename) + (s.anchor ? "#" + s.anchor : "");
+      var dlUrl   = API + "/docs/" + encodeURIComponent(s.filename) + "/download";
       html +=
         "<details><summary>📄 " + esc(s.filename) +
         (s.heading ? " — " + esc(s.heading) : "") + "</summary>" +
-        '<div class="mh-snippet">' + esc(s.snippet || "") + "</div></details>";
+        '<div class="mh-snippet">' + esc(s.snippet || "") + "</div>" +
+        '<div class="mh-source-actions">' +
+          '<a class="mh-readmore" href="' + viewUrl + '" target="_blank" rel="noopener">Read more ↗</a>' +
+          '<a class="mh-download" href="' + dlUrl + '">Download .docx ⤓</a>' +
+        "</div></details>";
     });
     return html + "</div>";
   }
 
+  // Greeting that makes the AI nature explicit
+  addBot("👋 Hi! I'm the <strong>Mommy's Heart AI Assistant</strong>. I answer primarily from our guides (with sources you can open or download). If something isn't covered there, I'll use general AI knowledge and clearly label it. How can I help?");
+
   function send() {
     var text = input.value.trim();
     if (!text) return;
-    if (!API || API.indexOf("REPLACE-WITH-YOUR-APP") !== -1) {
-      addBot("⚠️ The widget isn't configured yet — set CHAT_API_BASE to your deployed API URL.");
+    if (!API) {
+      addBot("⚠️ The assistant isn't configured yet — set MH_CHAT_API_BASE to your API URL.");
       return;
     }
     addUser(text);
@@ -165,7 +229,7 @@
     input.style.height = "auto";
     sendBtn.disabled = true;
 
-    var typing = addMsg("bot", '<span class="mh-typing">Thinking…</span>');
+    var typing = addBot('<span class="mh-typing"><span></span><span></span><span></span></span>');
 
     fetch(API + "/api/chat", {
       method: "POST",
@@ -178,7 +242,7 @@
       })
       .then(function (data) {
         typing.querySelector(".mh-bubble").innerHTML =
-          esc(data.answer || "(no answer)") + renderSources(data.sources);
+          renderBadge(data.source_type) + esc(data.answer || "(no answer)") + renderSources(data.sources);
         log.scrollTop = log.scrollHeight;
       })
       .catch(function (err) {
@@ -197,7 +261,7 @@
   });
   input.addEventListener("input", function () {
     input.style.height = "auto";
-    input.style.height = Math.min(input.scrollHeight, 100) + "px";
+    input.style.height = Math.min(input.scrollHeight, 120) + "px";
   });
 })();
 </script>
