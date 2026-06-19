@@ -3,7 +3,8 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,6 +64,7 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 class ChatRequest(BaseModel):
     message: str
+    captcha_token: str | None = None
 
 
 class SourceInfo(BaseModel):
@@ -100,10 +102,40 @@ async def version():
     }
 
 
+TURNSTILE_VERIFY_URL = "https://challenge.cloudflare.com/turnstile/v0/siteverify"
+
+
+def _verify_captcha(token: str | None, remote_ip: str | None) -> bool:
+    """Verify a Cloudflare Turnstile token server-side.
+
+    Returns True if CAPTCHA is disabled (no secret configured) or the token is
+    valid; False otherwise.
+    """
+    secret = settings.TURNSTILE_SECRET_KEY
+    if not secret:
+        return True  # CAPTCHA disabled
+    if not token:
+        return False
+    data = {"secret": secret, "response": token}
+    if remote_ip:
+        data["remoteip"] = remote_ip
+    try:
+        resp = httpx.post(TURNSTILE_VERIFY_URL, data=data, timeout=10)
+        return bool(resp.json().get("success"))
+    except Exception as e:
+        logger.error(f"CAPTCHA verification request failed: {e}")
+        return False
+
+
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, http_request: Request):
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    if settings.TURNSTILE_SECRET_KEY:
+        remote_ip = http_request.client.host if http_request.client else None
+        if not _verify_captcha(request.captcha_token, remote_ip):
+            raise HTTPException(status_code=403, detail="CAPTCHA verification failed")
 
     try:
         result = query_documents(request.message)

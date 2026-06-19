@@ -33,6 +33,11 @@
       ⚠️ You're chatting with an AI assistant. It can make mistakes — verify important details and contact us directly for personal help.
     </div>
 
+    <div id="mh-captcha-row" style="display:none;">
+      <div id="mh-captcha-note">Please complete the verification below to start chatting.</div>
+      <div id="mh-captcha"></div>
+    </div>
+
     <div id="mh-chat-input-row">
       <textarea id="mh-chat-input" rows="1" placeholder="Ask a question about our guides…" aria-label="Your message"></textarea>
       <button id="mh-chat-send" type="button">Send</button>
@@ -43,6 +48,10 @@
 <script>
   // Deployed API URL (no trailing slash):
   window.MH_CHAT_API_BASE = "https://mommys-heart-api-ehh4aub4auadb2a7.westus-01.azurewebsites.net";
+
+  // Cloudflare Turnstile site key. Paste your site key here to ENABLE the CAPTCHA.
+  // Leave it as the placeholder below to keep the chat working without a CAPTCHA.
+  window.MH_TURNSTILE_SITE_KEY = "0x4AAAAAADn4xDbXSWvn163Y";
 </script>
 
 <style>
@@ -143,6 +152,13 @@
     padding: 8px 14px; border-top: 1px solid #ece4e8; text-align: center;
   }
 
+  /* CAPTCHA */
+  #mh-captcha-row {
+    padding: 12px 14px; background: #faf7f8; border-top: 1px solid #eee;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+  #mh-captcha-note { font-size: 12.5px; color: #6b5d63; text-align: center; }
+
   /* Input */
   #mh-chat-input-row { display: flex; gap: 8px; padding: 12px; background: #fff; border-top: 1px solid #eee; }
   #mh-chat-input {
@@ -168,6 +184,50 @@
   var log     = document.getElementById("mh-chat-log");
   var input   = document.getElementById("mh-chat-input");
   var sendBtn = document.getElementById("mh-chat-send");
+  var captchaRow = document.getElementById("mh-captcha-row");
+
+  // CAPTCHA is enabled only once you paste a real Turnstile site key.
+  var SITE_KEY = window.MH_TURNSTILE_SITE_KEY || "";
+  var captchaEnabled = SITE_KEY && SITE_KEY.indexOf("YOUR_TURNSTILE") === -1;
+  var captchaToken = null;
+  var captchaReady = !captchaEnabled;  // ready immediately when CAPTCHA is off
+
+  function setSendEnabled(on) {
+    sendBtn.disabled = !on;
+    input.disabled = !on;
+  }
+
+  function resetCaptcha() {
+    captchaToken = null;
+    captchaReady = false;
+    setSendEnabled(false);
+    if (window.turnstile) {
+      try { window.turnstile.reset(); } catch (e) {}
+    }
+  }
+
+  if (captchaEnabled) {
+    captchaRow.style.display = "flex";
+    setSendEnabled(false);  // must pass CAPTCHA first
+    // Turnstile calls this global once its script has loaded.
+    window.mhOnloadTurnstile = function () {
+      window.turnstile.render("#mh-captcha", {
+        sitekey: SITE_KEY,
+        callback: function (token) {
+          captchaToken = token;
+          captchaReady = true;
+          setSendEnabled(true);
+        },
+        "expired-callback": function () { resetCaptcha(); },
+        "error-callback": function () { resetCaptcha(); }
+      });
+    };
+    var s = document.createElement("script");
+    s.src = "https://challenge.cloudflare.com/turnstile/v0/api.js?onload=mhOnloadTurnstile";
+    s.async = true;
+    s.defer = true;
+    document.head.appendChild(s);
+  }
 
   function esc(s) {
     return String(s == null ? "" : s)
@@ -224,19 +284,27 @@
       addBot("⚠️ The assistant isn't configured yet — set MH_CHAT_API_BASE to your API URL.");
       return;
     }
+    if (captchaEnabled && (!captchaReady || !captchaToken)) {
+      addBot("⚠️ Please complete the verification below before sending a message.");
+      return;
+    }
     addUser(text);
     input.value = "";
     input.style.height = "auto";
-    sendBtn.disabled = true;
+    setSendEnabled(false);
+
+    var payload = { message: text };
+    if (captchaEnabled) payload.captcha_token = captchaToken;
 
     var typing = addBot('<span class="mh-typing"><span></span><span></span><span></span></span>');
 
     fetch(API + "/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text })
+      body: JSON.stringify(payload)
     })
       .then(function (r) {
+        if (r.status === 403) throw new Error("Verification failed — please try again.");
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
       })
@@ -250,7 +318,12 @@
           "⚠️ Sorry, something went wrong. (" + esc(err.message) + ")";
       })
       .finally(function () {
-        sendBtn.disabled = false;
+        if (captchaEnabled) {
+          // Turnstile tokens are single-use — get a fresh one for the next message.
+          resetCaptcha();
+        } else {
+          setSendEnabled(true);
+        }
         input.focus();
       });
   }

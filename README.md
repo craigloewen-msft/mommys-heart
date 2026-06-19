@@ -56,6 +56,16 @@ Runs as a **single Gunicorn worker** (ingestion writes to a local ChromaDB store
 
 Paste the contents of [`widget/squarespace-chat-widget.html`](widget/squarespace-chat-widget.html) into a **Code block** on the page where you want the assistant (Edit page → Add Block → Code). It renders an inline, full AI chat pane wired to the deployed API. If the API URL changes, update `window.MH_CHAT_API_BASE` in the snippet and the API's `ALLOWED_ORIGINS`.
 
+## CAPTCHA (Cloudflare Turnstile — optional)
+
+The widget supports [Cloudflare Turnstile](https://dash.cloudflare.com/?to=/:account/turnstile), a free, privacy-friendly CAPTCHA. It's **off by default** and turns on only when both keys are set:
+
+1. In the Cloudflare dashboard → **Turnstile**, add a widget for domain `mommysheartfoundation.com`. You'll get a **site key** and a **secret key**.
+2. Widget: set `window.MH_TURNSTILE_SITE_KEY` in the snippet to your **site key**, then re-paste it into Squarespace.
+3. API: set the `TURNSTILE_SECRET_KEY` app setting (or `.env`) to your **secret key** and redeploy.
+
+When both are set, the visitor must pass the CAPTCHA before sending; the API verifies each message's token server-side and rejects unverified requests with `403`. Leave either key empty to keep the chat fully open.
+
 ## API Endpoints
 
 | Method | Endpoint | Description |

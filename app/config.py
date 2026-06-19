@@ -5,7 +5,7 @@ load_dotenv()
 
 # Application version. Bump this whenever the app's behavior changes so the
 # deployed build can be checked via the GET /version endpoint.
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 
 class Settings:
@@ -20,6 +20,11 @@ class Settings:
     # Squarespace site). Use "*" to allow any origin. Defaults to "*" so the
     # embeddable chat widget works out of the box; tighten this in production.
     ALLOWED_ORIGINS: str = os.environ.get("ALLOWED_ORIGINS", "*")
+
+    # Cloudflare Turnstile CAPTCHA secret key. When set, the /api/chat endpoint
+    # requires a valid Turnstile token and verifies it server-side. Leave empty
+    # to disable CAPTCHA verification (e.g. local development).
+    TURNSTILE_SECRET_KEY: str = os.environ.get("TURNSTILE_SECRET_KEY", "")
 
     @property
     def allowed_origins_list(self) -> list[str]:
