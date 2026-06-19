@@ -105,7 +105,7 @@ async def version():
     }
 
 
-TURNSTILE_VERIFY_URL = "https://challenge.cloudflare.com/turnstile/v0/siteverify"
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
 
 def _verify_captcha(token: str | None, remote_ip: str | None) -> bool:
