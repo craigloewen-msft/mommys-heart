@@ -118,34 +118,12 @@ def render_docx_to_html(filename: str) -> str | None:
             color: #1a1a1a;
             line-height: 1.7;
         }}
-        .header {{
-            background: #1a73e8;
-            color: white;
-            padding: 16px 24px;
-            font-size: 16px;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .header a {{
-            color: white;
-            text-decoration: none;
-            opacity: 0.8;
-            font-size: 14px;
-            font-weight: 400;
-        }}
-        .header a:hover {{ opacity: 1; }}
         .content {{
             max-width: 800px;
             margin: 0 auto;
             padding: 32px 24px 80px;
             background: white;
-            min-height: calc(100vh - 56px);
+            min-height: 100vh;
             box-shadow: 0 0 20px rgba(0,0,0,0.05);
         }}
         .doc-title {{
@@ -199,12 +177,6 @@ def render_docx_to_html(filename: str) -> str | None:
     </style>
 </head>
 <body>
-    <div class="header">
-        <span>❤️</span>
-        <span>{title}</span>
-        <span style="flex:1"></span>
-        <a href="/">← Back to chat</a>
-    </div>
     <div class="content">
         <div class="doc-title">{title}</div>
         {"".join(body_html)}
