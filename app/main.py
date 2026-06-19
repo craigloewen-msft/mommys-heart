@@ -99,6 +99,9 @@ async def version():
         "version": APP_VERSION,
         "chat_model": settings.AZURE_OPENAI_CHAT_DEPLOYMENT,
         "embedding_model": settings.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
+        # Whether CAPTCHA enforcement is active (true when TURNSTILE_SECRET_KEY
+        # is configured). Never exposes the secret itself.
+        "captcha_enabled": bool(settings.TURNSTILE_SECRET_KEY),
     }
 
 

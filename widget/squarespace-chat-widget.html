@@ -210,17 +210,32 @@
     captchaRow.style.display = "flex";
     setSendEnabled(false);  // must pass CAPTCHA first
     // Turnstile calls this global once its script has loaded.
+    var captchaNote = document.getElementById("mh-captcha-note");
+    function captchaError(code) {
+      // Surface failures instead of silently showing an empty box. The most
+      // common cause is a hostname that isn't on the Turnstile widget's
+      // allowlist (e.g. viewing the Squarespace editor/preview instead of the
+      // live site, or a missing domain in the Cloudflare dashboard).
+      console.error("[Mommy's Heart] Turnstile error", code || "");
+      captchaNote.textContent =
+        "⚠️ Verification couldn't load on this page. Make sure you're viewing the published site and that this domain is added to your Turnstile widget.";
+    }
     window.mhOnloadTurnstile = function () {
-      window.turnstile.render("#mh-captcha", {
-        sitekey: SITE_KEY,
-        callback: function (token) {
-          captchaToken = token;
-          captchaReady = true;
-          setSendEnabled(true);
-        },
-        "expired-callback": function () { resetCaptcha(); },
-        "error-callback": function () { resetCaptcha(); }
-      });
+      try {
+        window.turnstile.render("#mh-captcha", {
+          sitekey: SITE_KEY,
+          callback: function (token) {
+            captchaToken = token;
+            captchaReady = true;
+            captchaNote.textContent = "Verification complete — you can start chatting.";
+            setSendEnabled(true);
+          },
+          "expired-callback": function () { resetCaptcha(); },
+          "error-callback": function (code) { resetCaptcha(); captchaError(code); }
+        });
+      } catch (e) {
+        captchaError(e && e.message);
+      }
     };
     var s = document.createElement("script");
     s.src = "https://challenge.cloudflare.com/turnstile/v0/api.js?onload=mhOnloadTurnstile";

@@ -5,7 +5,7 @@ load_dotenv()
 
 # Application version. Bump this whenever the app's behavior changes so the
 # deployed build can be checked via the GET /version endpoint.
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 
 class Settings:
