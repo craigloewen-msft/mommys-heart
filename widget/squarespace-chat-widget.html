@@ -189,8 +189,8 @@
   function renderBadge(type) {
     var map = {
       documents:         { cls: "mh-badge-docs",  text: "📚 Answer from our guides" },
-      general_knowledge: { cls: "mh-badge-ai",    text: "🌐 General AI knowledge — not from our guides" },
-      mixed:             { cls: "mh-badge-mixed", text: "📚 + 🌐 Our guides plus general AI knowledge" }
+      general_knowledge: { cls: "mh-badge-ai",    text: "🌐 Expanded answer — general AI knowledge, not from our guides" },
+      mixed:             { cls: "mh-badge-mixed", text: "📚 + 🌐 Our guides plus expanded knowledge" }
     };
     var b = map[type] || map.documents;
     return '<div class="mh-badge ' + b.cls + '">' + b.text + "</div>";

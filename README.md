@@ -62,6 +62,7 @@ Paste the contents of [`widget/squarespace-chat-widget.html`](widget/squarespace
 |--------|----------|-------------|
 | `GET`  | `/` | Chat web UI |
 | `GET`  | `/healthz` | Health check |
+| `GET`  | `/version` | Report the deployed app version |
 | `POST` | `/api/chat` | Send a message, get answer + sources + `source_type` |
 | `GET`  | `/docs/{filename}` | View a source document as HTML (with heading anchors) |
 | `GET`  | `/docs/{filename}/download` | Download the original `.docx` |

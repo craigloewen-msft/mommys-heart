@@ -12,20 +12,21 @@ client = AzureOpenAI(
     api_version=settings.AZURE_OPENAI_API_VERSION,
 )
 
-SYSTEM_PROMPT = """You are the Mommy's Heart AI Assistant. You are given context excerpts retrieved from Mommy's Heart's own documents.
+SYSTEM_PROMPT = """You are the Mommy's Heart AI Assistant. You are given numbered context excerpts retrieved from Mommy's Heart's own documents. They may or may not be relevant to the user's question.
 
 Answer the user's question following these rules:
-1. PREFER the provided document context. If it contains the answer, base your answer on it.
-2. If the document context does NOT contain enough information to answer, you MAY answer using your own general knowledge — but only if you are confident the information is accurate and helpful.
-3. If you cannot answer from either the documents or your own knowledge, say so honestly.
-4. Be concise but thorough. Do NOT include a source list in your answer text; sources are handled separately.
+1. PREFER the provided document context. If one or more excerpts actually contain the answer, base your answer on them.
+2. If the excerpts do NOT contain the answer (even though they were retrieved), DO still answer the question directly using your own general knowledge. Do not refuse or say "the documents don't contain this" — just answer helpfully from what you know.
+3. Only say you cannot help if you genuinely do not know the answer and it is not in the excerpts.
+4. Be concise but thorough. Do NOT include any source list, citations, or "Sources" section in your answer text — sources are handled separately by the application.
 
 Respond with a JSON object containing exactly these fields:
-- "answer": your answer as plain text.
+- "answer": your answer as plain text, with no source list.
+- "used_sources": an array of the integer numbers of the excerpts you ACTUALLY used to write the answer (e.g. [1, 3]). Use an empty array [] if you did not use any excerpt (for example when answering from general knowledge or when the documents are irrelevant). Never list an excerpt you did not actually rely on.
 - "source_type": one of:
-    - "documents"          → your answer comes entirely from the provided document context.
-    - "general_knowledge"  → the documents did not cover this, so you used your own general knowledge.
-    - "mixed"              → you combined the provided documents with your own general knowledge.
+    - "documents"          → your answer came entirely from the listed excerpts.
+    - "general_knowledge"  → you used your own general knowledge (used_sources must be []).
+    - "mixed"              → you combined listed excerpts with your own general knowledge.
 """
 
 
@@ -92,35 +93,59 @@ def query_documents(question: str) -> dict:
     )
 
     raw = response.choices[0].message.content or "{}"
+    used_indices: list[int] = []
     try:
         parsed = json.loads(raw)
         answer = parsed.get("answer") or "(no answer)"
         source_type = parsed.get("source_type", "documents")
+        raw_used = parsed.get("used_sources", [])
+        if isinstance(raw_used, list):
+            for v in raw_used:
+                try:
+                    used_indices.append(int(v))
+                except (ValueError, TypeError):
+                    continue
     except (json.JSONDecodeError, AttributeError):
         # Fall back to treating the whole response as the answer
         answer = raw
-        source_type = "documents"
+        source_type = "general_knowledge"
 
     if source_type not in ("documents", "general_knowledge", "mixed"):
         source_type = "documents"
 
-    # Only surface document source cards when the documents were actually used.
+    # Map the model's 1-based excerpt numbers back to retrieved contexts, keeping
+    # only valid, in-range indices. This ensures we ONLY show sources the model
+    # actually used — not every chunk that happened to be retrieved.
+    used_contexts = [
+        contexts[i - 1] for i in used_indices if 1 <= i <= len(contexts)
+    ]
+
+    # Reconcile the declared mode with what was actually cited so the badge and
+    # the source list can never contradict each other.
+    if not used_contexts:
+        # Nothing was genuinely cited → this is not a document-grounded answer.
+        if source_type in ("documents", "mixed"):
+            source_type = "general_knowledge"
+    elif source_type == "general_knowledge":
+        # Cited excerpts but claimed general knowledge → it's at least mixed.
+        source_type = "mixed"
+
+    # Build the (deduplicated) list of sources that were actually used.
     sources = []
-    if source_type in ("documents", "mixed"):
-        seen = set()
-        for ctx in contexts:
-            key = (ctx["filename"], ctx["heading"])
-            if key not in seen:
-                seen.add(key)
-                # Use the first heading for the anchor link
-                first_heading = ctx["heading"].split(",")[0].strip()
-                sources.append({
-                    "filename": ctx["filename"],
-                    "heading": ctx["heading"],
-                    "snippet": ctx["text"][:200] + "..." if len(ctx["text"]) > 200 else ctx["text"],
-                    "relevance": round(ctx["relevance_score"], 3),
-                    "anchor": slugify(first_heading),
-                })
+    seen = set()
+    for ctx in used_contexts:
+        key = (ctx["filename"], ctx["heading"])
+        if key in seen:
+            continue
+        seen.add(key)
+        first_heading = ctx["heading"].split(",")[0].strip()
+        sources.append({
+            "filename": ctx["filename"],
+            "heading": ctx["heading"],
+            "snippet": ctx["text"][:200] + "..." if len(ctx["text"]) > 200 else ctx["text"],
+            "relevance": round(ctx["relevance_score"], 3),
+            "anchor": slugify(first_heading),
+        })
 
     return {
         "answer": answer,

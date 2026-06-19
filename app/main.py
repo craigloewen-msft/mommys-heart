@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app.config import settings
+from app.config import settings, APP_VERSION
 from app.ingest import ingest_documents
 from app.query import query_documents
 from app.viewer import render_docx_to_html
@@ -88,6 +88,16 @@ async def root():
 async def healthz():
     """Lightweight liveness probe for Azure App Service health checks."""
     return {"status": "ok"}
+
+
+@app.get("/version")
+async def version():
+    """Report the deployed application version (use to confirm a deploy)."""
+    return {
+        "version": APP_VERSION,
+        "chat_model": settings.AZURE_OPENAI_CHAT_DEPLOYMENT,
+        "embedding_model": settings.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
+    }
 
 
 @app.post("/api/chat", response_model=ChatResponse)

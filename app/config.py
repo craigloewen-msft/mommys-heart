@@ -3,6 +3,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Application version. Bump this whenever the app's behavior changes so the
+# deployed build can be checked via the GET /version endpoint.
+APP_VERSION = "1.2.0"
+
 
 class Settings:
     AZURE_OPENAI_ENDPOINT: str = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
