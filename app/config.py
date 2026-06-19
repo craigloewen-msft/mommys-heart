@@ -12,6 +12,14 @@ class Settings:
     AZURE_OPENAI_API_VERSION: str = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
     DOCS_DIR: str = os.environ.get("DOCS_DIR", "docs")
     CHROMA_DIR: str = os.environ.get("CHROMA_DIR", "chroma_data")
+    # Comma-separated list of origins allowed to call the API (e.g. your
+    # Squarespace site). Use "*" to allow any origin. Defaults to "*" so the
+    # embeddable chat widget works out of the box; tighten this in production.
+    ALLOWED_ORIGINS: str = os.environ.get("ALLOWED_ORIGINS", "*")
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
 
 
 settings = Settings()

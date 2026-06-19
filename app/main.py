@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.config import settings
@@ -45,6 +46,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Document Search Chatbot", lifespan=lifespan)
 
+# Allow the embeddable chat widget (hosted on a different origin, e.g. a
+# Squarespace site) to call the API from the browser.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins_list,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
@@ -68,6 +79,12 @@ class ChatResponse(BaseModel):
 @app.get("/")
 async def root():
     return FileResponse("app/static/index.html")
+
+
+@app.get("/healthz")
+async def healthz():
+    """Lightweight liveness probe for Azure App Service health checks."""
+    return {"status": "ok"}
 
 
 @app.post("/api/chat", response_model=ChatResponse)
