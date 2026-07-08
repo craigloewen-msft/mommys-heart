@@ -1,1 +1,12 @@
+# Rust / cargo-leptos
+/target
+/dist
+
+# Env
 .env
+
+# Editor / OS
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json

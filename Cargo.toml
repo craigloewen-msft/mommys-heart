@@ -1,0 +1,73 @@
+[package]
+name = "mommys-heart-crm"
+version = "2.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+leptos = { version = "0.8" }
+leptos_router = { version = "0.8" }
+leptos_meta = { version = "0.8" }
+leptos_axum = { version = "0.8", optional = true }
+
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"], optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = ["cors", "fs"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+dotenvy = { version = "0.15", optional = true }
+
+gloo-net = { version = "0.6", optional = true }
+send_wrapper = { version = "0.6", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+wasm-bindgen = { version = "0.2" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = []
+hydrate = [
+    "leptos/hydrate",
+    "dep:gloo-net",
+    "dep:send_wrapper",
+    "dep:console_error_panic_hook",
+]
+ssr = [
+    "dep:axum",
+    "dep:tokio",
+    "dep:tower",
+    "dep:tower-http",
+    "dep:leptos_axum",
+    "dep:reqwest",
+    "dep:dotenvy",
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "leptos_router/ssr",
+]
+
+# Silence a false-positive cfg check emitted by the wasm build tooling.
+[package.metadata.cargo-all-features]
+denylist = ["axum", "tokio", "tower", "tower-http", "leptos_axum", "reqwest", "dotenvy"]
+
+[package.metadata.leptos]
+output-name = "mommys-heart-crm"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+tailwind-input-file = "style/tailwind.css"
+assets-dir = "public"
+site-addr = "127.0.0.1:3000"
+reload-port = 3001
+browserquery = "defaults"
+env = "DEV"
+bin-features = ["ssr"]
+bin-default-features = false
+lib-features = ["hydrate"]
+lib-default-features = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
