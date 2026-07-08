@@ -14,12 +14,7 @@ pub mod pages {
 }
 
 #[cfg(feature = "ssr")]
-pub mod server {
-    pub mod captcha;
-    pub mod data;
-    pub mod rest;
-    pub mod service;
-}
+pub mod server;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]

@@ -1,0 +1,9 @@
+//! Server-side (SSR-only) code: the dedicated JSON API, business-logic service
+//! layer, RAG chatbot pipeline, CAPTCHA verification, and mock CRM data.
+
+pub mod api;
+pub mod captcha;
+pub mod config;
+pub mod data;
+pub mod rag;
+pub mod service;

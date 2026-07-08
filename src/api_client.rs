@@ -27,7 +27,7 @@ pub async fn get_version() -> Result<VersionResponse, String> {
 
 #[cfg(feature = "ssr")]
 pub async fn send_chat(req: ChatRequest) -> Result<ChatResponse, String> {
-    Ok(crate::server::service::chat_reply(req.message.trim()))
+    Ok(crate::server::rag::answer(req.message.trim()).await)
 }
 
 // ---------------------------------------------------------------------------

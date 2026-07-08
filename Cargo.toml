@@ -18,6 +18,8 @@ tower = { version = "0.5", optional = true }
 tower-http = { version = "0.6", features = ["cors", "fs"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 dotenvy = { version = "0.15", optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+quick-xml = { version = "0.37", optional = true }
 
 gloo-net = { version = "0.6", optional = true }
 send_wrapper = { version = "0.6", optional = true }
@@ -43,6 +45,8 @@ ssr = [
     "dep:leptos_axum",
     "dep:reqwest",
     "dep:dotenvy",
+    "dep:zip",
+    "dep:quick-xml",
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",
@@ -50,7 +54,7 @@ ssr = [
 
 # Silence a false-positive cfg check emitted by the wasm build tooling.
 [package.metadata.cargo-all-features]
-denylist = ["axum", "tokio", "tower", "tower-http", "leptos_axum", "reqwest", "dotenvy"]
+denylist = ["axum", "tokio", "tower", "tower-http", "leptos_axum", "reqwest", "dotenvy", "zip", "quick-xml"]
 
 [package.metadata.leptos]
 output-name = "mommys-heart-crm"

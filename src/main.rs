@@ -6,10 +6,14 @@ async fn main() {
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use mommys_heart_crm::app::{shell, App};
-    use mommys_heart_crm::server::rest;
+    use mommys_heart_crm::server::{api, rag};
 
     // Load local .env in development (Azure OpenAI keys, ALLOWED_ORIGINS, etc.).
     let _ = dotenvy::dotenv();
+
+    // Kick off document ingestion in the background so the server starts
+    // serving immediately; the RAG store fills in once embeddings complete.
+    rag::start_background_ingest();
 
     let conf = get_configuration(None).unwrap();
     let leptos_options = conf.leptos_options;
@@ -22,7 +26,7 @@ async fn main() {
             move || shell(leptos_options.clone())
         })
         // The dedicated JSON API (+ CORS for the cross-origin Squarespace widget).
-        .merge(rest::router::<LeptosOptions>().layer(rest::cors_layer()))
+        .merge(api::router::<LeptosOptions>().layer(api::cors_layer()))
         .fallback(leptos_axum::file_and_error_handler(shell))
         .with_state(leptos_options);
 
