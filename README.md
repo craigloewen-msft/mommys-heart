@@ -1,79 +1,74 @@
-# Document Search Chatbot
+# Mommy's Heart CRM
 
-A RAG chatbot that answers questions about the `.docx` files in `docs/` and cites its sources. Documents are chunked and embedded with Azure OpenAI (stored in ChromaDB); questions are embedded, matched, and answered by the chat model. When the documents don't cover a question, the model falls back to its own general knowledge — each answer is tagged with a `source_type` (`documents` / `general_knowledge` / `mixed`) so the UI can clearly distinguish the two.
+A [Nuxt 3](https://nuxt.com) (Vue 3 + TypeScript) fullstack app that provides
+both a **CRM website** and a **dedicated JSON API** on a single toolchain and a
+single deployment. The API also backs the embeddable chat widget used on the
+Squarespace site.
+
+> **Migrating from Python.** This project began as a Python/FastAPI RAG chatbot.
+> That original app is archived under [`legacy/`](legacy/) (kept runnable) while
+> we rebuild on Nuxt. See [`legacy/README-legacy.md`](legacy/README-legacy.md).
+
+## Architecture
+
+- **Dedicated API** — Nitro server routes under `server/api/*` return JSON. This
+  is the single API consumed by both the CRM website and the Squarespace widget.
+- **Website** — Vue pages/components under `pages/`, `components/`, `layouts/`
+  form the CRM UI and call the same API via the typed `useApi()` composable.
+- **One build / one deploy** — `nuxt build` produces a single Node server
+  (`.output/server/index.mjs`) serving both the API and the site.
+
+```
+server/          # dedicated API (Nitro)
+  api/           #   /api/health, /api/version, /api/chat, /api/contacts
+  middleware/    #   CORS for cross-origin Squarespace widget calls
+  utils/         #   e.g. Cloudflare Turnstile CAPTCHA verification
+  data/          #   in-memory mock CRM data (to be replaced by a real DB)
+shared/types/    # API contract types shared by server + client
+pages/           # CRM website routes (Dashboard, Contacts, Chat)
+layouts/         # app shell (sidebar + top bar)
+composables/     # useApi() typed API client
+legacy/          # archived Python/FastAPI RAG app (reference for the port)
+```
+
+## Getting started
+
+```bash
+npm install
+cp .env.example .env    # fill in values when needed
+npm run dev             # http://localhost:3000
+```
+
+Other scripts: `npm run build`, `npm run start` (run the built server),
+`npm run lint`, `npm run format`.
 
 ## Configuration
 
-Set these as environment variables (locally via `.env`, copied from `.env.example`):
+Runtime config is driven by `NUXT_*` environment variables (see `.env.example`),
+mapped in `nuxt.config.ts`. The Azure OpenAI + Turnstile keys are carried over
+from the legacy app and used once the RAG chat is ported.
 
-```env
-AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com/
-AZURE_OPENAI_API_KEY=your-api-key-here
-AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-ada-002
-AZURE_OPENAI_API_VERSION=2024-12-01-preview
-ALLOWED_ORIGINS=*   # set to the embedding site's URL in production
-```
-
-> `AZURE_OPENAI_ENDPOINT` must be the bare resource URL (no `/openai/` suffix) or requests return `404`.
-
-## Run Locally (container)
-
-```powershell
-wslc.exe build -t doc-search .
-wslc.exe create --name doc-search -p 8000:8000 --env-file .env doc-search
-wslc.exe start doc-search
-```
-
-Open http://localhost:8000. To update documents, add `.docx` files to `docs/`, rebuild, and recreate the container (or `POST /api/reingest`).
-
-## Deploy to Azure App Service (Python 3.12, Linux)
-
-Code deploy — the included `startup.sh` runs the app under Gunicorn.
-
-```powershell
-# Startup command
-az webapp config set -g <rg> -n <app> --startup-file "startup.sh"
-
-# App settings (same keys as .env), plus build flag
-az webapp config appsettings set -g <rg> -n <app> --settings `
-  AZURE_OPENAI_ENDPOINT="https://your-resource-name.openai.azure.com/" `
-  AZURE_OPENAI_API_KEY="..." `
-  AZURE_OPENAI_CHAT_DEPLOYMENT="gpt-4o" `
-  AZURE_OPENAI_EMBEDDING_DEPLOYMENT="text-embedding-ada-002" `
-  AZURE_OPENAI_API_VERSION="2024-12-01-preview" `
-  ALLOWED_ORIGINS="https://www.mommysheartfoundation.com,https://mommysheartfoundation.com" `
-  SCM_DO_BUILD_DURING_DEPLOYMENT="true"
-
-# Deploy and verify
-az webapp up -g <rg> -n <app> --runtime "PYTHON:3.12"
-curl https://<app>.azurewebsites.net/healthz
-```
-
-Runs as a **single Gunicorn worker** (ingestion writes to a local ChromaDB store); scale *out* with more instances rather than adding workers.
-
-## Squarespace Chat Widget
-
-Paste the contents of [`widget/squarespace-chat-widget.html`](widget/squarespace-chat-widget.html) into a **Code block** on the page where you want the assistant (Edit page → Add Block → Code). It renders an inline, full AI chat pane wired to the deployed API. If the API URL changes, update `window.MH_CHAT_API_BASE` in the snippet and the API's `ALLOWED_ORIGINS`.
-
-## CAPTCHA (Cloudflare Turnstile — optional)
-
-The widget supports [Cloudflare Turnstile](https://dash.cloudflare.com/?to=/:account/turnstile), a free, privacy-friendly CAPTCHA. It's **off by default** and turns on only when both keys are set:
-
-1. In the Cloudflare dashboard → **Turnstile**, add a widget for domain `mommysheartfoundation.com`. You'll get a **site key** and a **secret key**.
-2. Widget: set `window.MH_TURNSTILE_SITE_KEY` in the snippet to your **site key**, then re-paste it into Squarespace.
-3. API: set the `TURNSTILE_SECRET_KEY` app setting (or `.env`) to your **secret key** and redeploy.
-
-When both are set, the visitor must pass the CAPTCHA before sending; the API verifies each message's token server-side and rejects unverified requests with `403`. Leave either key empty to keep the chat fully open.
-
-## API Endpoints
+## API endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET`  | `/` | Chat web UI |
-| `GET`  | `/healthz` | Health check |
-| `GET`  | `/version` | Report the deployed app version |
-| `POST` | `/api/chat` | Send a message, get answer + sources + `source_type` |
-| `GET`  | `/docs/{filename}` | View a source document as HTML (with heading anchors) |
-| `GET`  | `/docs/{filename}/download` | Download the original `.docx` |
-| `POST` | `/api/reingest` | Force re-ingestion of documents |
+| `GET`  | `/api/health` | Liveness probe |
+| `GET`  | `/api/version` | Deployed version + model config |
+| `POST` | `/api/chat` | Chat (currently a stub; RAG port pending) |
+| `GET`  | `/api/contacts` | List CRM contacts (mock data) |
+| `GET`  | `/api/contacts/:id` | Fetch a single contact (mock data) |
+
+## Status / roadmap
+
+This is the **scaffold**. Working now: project structure, dedicated API with a
+stubbed `/api/chat` (matching the legacy contract), CORS for the widget, and a
+basic CRM template (Dashboard / Contacts / Chat).
+
+Next phases:
+
+- **Port the RAG chatbot** from `legacy/` to the JS SDK; wire the real
+  `/api/chat` + a vector store (e.g. SQLite + `sqlite-vec`).
+- **Real persistence** for the CRM (SQLite via Drizzle) + authentication.
+- **Deployment** — update the Azure App Service startup command to the Node
+  server and refresh the GitHub Actions workflow (currently still the Python
+  pipeline).
