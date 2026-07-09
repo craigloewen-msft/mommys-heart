@@ -324,6 +324,8 @@ fn CaseDetail(case: Case) -> impl IntoView {
     let state = expect_context::<AppState>();
     let case_id = case.id.clone();
 
+    let owner = StoredValue::new(Owner::current().expect("component owner"));
+
     // Capability gates for this case.
     let can_edit = state.case_can(&case, CaseCapability::EditCase);
     let can_note = state.case_can(&case, CaseCapability::AddNotes);
@@ -355,11 +357,13 @@ fn CaseDetail(case: Case) -> impl IntoView {
     let make_row = move |key: String, value: String| -> PropRow {
         let id = row_seq.get_untracked();
         row_seq.set(id + 1);
-        PropRow {
-            id,
-            key: RwSignal::new(key),
-            value: RwSignal::new(value),
-        }
+        owner.with_value(|o| {
+            o.with(|| PropRow {
+                id,
+                key: RwSignal::new(key),
+                value: RwSignal::new(value),
+            })
+        })
     };
 
     let begin_edit = move |_| {
