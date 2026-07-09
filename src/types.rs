@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::taxonomy::ServiceType;
+
 /// A single cited source returned by the RAG chat endpoint.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SourceInfo {
@@ -439,6 +441,9 @@ pub struct Case {
     pub title: String,
     pub client_id: String,
     pub category: NeedCategory,
+    /// Taxonomy services this case addresses. A case may span more than one
+    /// service type (e.g. a custody matter that also needs safety planning).
+    pub service_types: Vec<ServiceType>,
     pub summary: String,
     pub status: CaseStatus,
     pub priority: CasePriority,

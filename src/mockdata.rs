@@ -4,6 +4,7 @@
 //! management experience works without a database. Replaced by a real backend
 //! in a later phase.
 
+use crate::taxonomy::ServiceType;
 use crate::types::{
     Case, CaseDocument, CaseNote, CasePriority, CaseStatus, Client, NeedCategory, Role,
     TimelineEvent, TimelineKind, User, Volunteer, VolunteerStatus,
@@ -133,6 +134,7 @@ pub fn cases() -> Vec<Case> {
             title: "Emergency housing placement".into(),
             client_id: "cl-1".into(),
             category: NeedCategory::Housing,
+            service_types: vec![ServiceType::ShelterPlacement, ServiceType::HousingSubsidies],
             summary: "Needs emergency shelter and a longer-term housing plan.".into(),
             status: CaseStatus::InProgress,
             priority: CasePriority::High,
@@ -174,6 +176,10 @@ pub fn cases() -> Vec<Case> {
             title: "Family court advocacy".into(),
             client_id: "cl-1".into(),
             category: NeedCategory::FamilyCourt,
+            service_types: vec![
+                ServiceType::CustodyVisitation,
+                ServiceType::OrdersOfProtection,
+            ],
             summary: "Support through custody proceedings and safety planning.".into(),
             status: CaseStatus::Open,
             priority: CasePriority::High,
@@ -193,6 +199,11 @@ pub fn cases() -> Vec<Case> {
             title: "Public benefits enrollment".into(),
             client_id: "cl-1".into(),
             category: NeedCategory::PublicBenefits,
+            service_types: vec![
+                ServiceType::Snap,
+                ServiceType::CashAssistance,
+                ServiceType::ChildCareAssistance,
+            ],
             summary: "Assist with SNAP, Medicaid, and childcare subsidy applications.".into(),
             status: CaseStatus::OnHold,
             priority: CasePriority::Medium,
@@ -209,6 +220,7 @@ pub fn cases() -> Vec<Case> {
             title: "Immigration support".into(),
             client_id: "cl-2".into(),
             category: NeedCategory::Immigration,
+            service_types: vec![ServiceType::WorkAuthorization, ServiceType::Vawa],
             summary: "Guidance on work authorization and document preparation.".into(),
             status: CaseStatus::Open,
             priority: CasePriority::Medium,
@@ -224,6 +236,10 @@ pub fn cases() -> Vec<Case> {
             title: "Mental health referral".into(),
             client_id: "cl-3".into(),
             category: NeedCategory::MentalHealth,
+            service_types: vec![
+                ServiceType::TherapyReferrals,
+                ServiceType::SupportGroups,
+            ],
             summary: "Connect with a partner clinic for ongoing counseling.".into(),
             status: CaseStatus::InProgress,
             priority: CasePriority::Medium,
@@ -239,6 +255,10 @@ pub fn cases() -> Vec<Case> {
             title: "Survivor support intake".into(),
             client_id: "cl-4".into(),
             category: NeedCategory::Other,
+            service_types: vec![
+                ServiceType::CrisisIntervention,
+                ServiceType::SafetyPlanning,
+            ],
             summary: "New intake — needs risk assessment and a wellness check-in schedule.".into(),
             status: CaseStatus::Open,
             priority: CasePriority::High,

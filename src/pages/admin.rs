@@ -4,6 +4,7 @@ use leptos_router::components::Redirect;
 use crate::components::case_card::CaseCard;
 use crate::components::layout::Layout;
 use crate::state::AppState;
+use crate::taxonomy::{ServiceCategory, ServiceType};
 use crate::types::{CaseStatus, NeedCategory, Role, VolunteerStatus};
 
 /// Admin-only control center: manage volunteers, cases, documents, and
@@ -39,6 +40,7 @@ pub fn AdminDashboardPage() -> impl IntoView {
     let nc_title = RwSignal::new(String::new());
     let nc_client_id = RwSignal::new(String::new());
     let nc_category = RwSignal::new(NeedCategory::Housing.slug().to_string());
+    let nc_services = RwSignal::new(Vec::<ServiceType>::new());
     let nc_summary = RwSignal::new(String::new());
     let nc_error = RwSignal::new(String::new());
     let add_case = move |_| {
@@ -47,12 +49,14 @@ pub fn AdminDashboardPage() -> impl IntoView {
             &nc_client_id.get(),
             &nc_title.get(),
             category,
+            nc_services.get(),
             &nc_summary.get(),
         ) {
             Ok(()) => {
                 nc_title.set(String::new());
                 nc_client_id.set(String::new());
                 nc_category.set(NeedCategory::Housing.slug().to_string());
+                nc_services.set(Vec::new());
                 nc_summary.set(String::new());
                 nc_error.set(String::new());
             }
@@ -268,6 +272,10 @@ pub fn AdminDashboardPage() -> impl IntoView {
                                 .collect_view()}
                         </select>
                     </div>
+                    <p class="mt-3 mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                        "Service types"
+                    </p>
+                    <ServiceTypePicker selected=nc_services />
                     <textarea
                         class=format!("{input_class} mt-2")
                         rows="2"
@@ -291,4 +299,54 @@ pub fn AdminDashboardPage() -> impl IntoView {
         </Layout>
     }
     .into_any()
+}
+
+/// A category-grouped multi-select of taxonomy service types, bound to a local
+/// `Vec<ServiceType>` signal. Used by the new-case form.
+#[component]
+fn ServiceTypePicker(selected: RwSignal<Vec<ServiceType>>) -> impl IntoView {
+    move || {
+        let current = selected.get();
+        ServiceCategory::ALL
+            .into_iter()
+            .map(|cat| {
+                let boxes = cat
+                    .types()
+                    .iter()
+                    .map(|st| {
+                        let st = *st;
+                        let checked = current.contains(&st);
+                        view! {
+                            <label class="flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800">
+                                <input
+                                    r#type="checkbox"
+                                    class="accent-primary-500"
+                                    prop:checked=checked
+                                    on:change=move |_| {
+                                        selected
+                                            .update(|list| {
+                                                if let Some(pos) = list.iter().position(|s| *s == st) {
+                                                    list.remove(pos);
+                                                } else {
+                                                    list.push(st);
+                                                }
+                                            });
+                                    }
+                                />
+                                {st.label()}
+                            </label>
+                        }
+                    })
+                    .collect_view();
+                view! {
+                    <div class="mb-2">
+                        <p class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                            {cat.label()}
+                        </p>
+                        <div class="flex flex-wrap gap-1.5">{boxes}</div>
+                    </div>
+                }
+            })
+            .collect_view()
+    }
 }

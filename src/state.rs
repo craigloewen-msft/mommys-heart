@@ -5,6 +5,7 @@
 use leptos::prelude::*;
 
 use crate::mockdata;
+use crate::taxonomy::{ServiceCategory, ServiceType};
 use crate::types::{
     Case, CaseDocument, CaseNote, Client, NeedCategory, Role, TimelineEvent, TimelineKind, User,
     Volunteer, VolunteerStatus,
@@ -283,6 +284,7 @@ impl AppState {
         client_id: &str,
         title: &str,
         category: NeedCategory,
+        service_types: Vec<ServiceType>,
         summary: &str,
     ) -> Result<(), String> {
         let title = title.trim().to_string();
@@ -304,6 +306,7 @@ impl AppState {
             title,
             client_id: client_id.to_string(),
             category,
+            service_types,
             summary: summary.trim().to_string(),
             status: crate::types::CaseStatus::Open,
             priority: crate::types::CasePriority::Medium,
@@ -355,6 +358,13 @@ impl AppState {
             .unwrap_or_else(|| id.to_string())
     }
 
+    /// Display name for the client that owns a case (falls back gracefully).
+    pub fn client_name_for(&self, case: &Case) -> String {
+        self.client(&case.client_id)
+            .map(|c| c.display_name)
+            .unwrap_or_else(|| "Unknown client".into())
+    }
+
     /// All cases belonging to a given client.
     pub fn cases_for_client(&self, client_id: &str) -> Vec<Case> {
         self.cases
@@ -370,6 +380,116 @@ impl AppState {
             .get()
             .into_iter()
             .filter(|c| c.assigned_volunteer_ids.iter().any(|v| v == volunteer_id))
+            .collect()
+    }
+
+    /// Add or remove a taxonomy service type tag on a case.
+    pub fn toggle_case_service_type(&self, case_id: &str, service: ServiceType) {
+        self.cases.update(|list| {
+            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
+                if let Some(pos) = c.service_types.iter().position(|s| *s == service) {
+                    c.service_types.remove(pos);
+                } else {
+                    c.service_types.push(service);
+                }
+            }
+        });
+    }
+
+    // --- analytics (service pathways & gaps) --------------------------------
+
+    /// Number of (open) cases touching each service type, in taxonomy order.
+    /// When `open_only` is true, closed cases are excluded.
+    pub fn service_type_counts(&self, open_only: bool) -> Vec<(ServiceType, usize)> {
+        let cases = self.cases.get();
+        ServiceType::ALL
+            .into_iter()
+            .map(|st| {
+                let count = cases
+                    .iter()
+                    .filter(|c| !open_only || c.status != crate::types::CaseStatus::Closed)
+                    .filter(|c| c.service_types.contains(&st))
+                    .count();
+                (st, count)
+            })
+            .collect()
+    }
+
+    /// Number of cases touching each service category, in taxonomy order.
+    pub fn category_counts(&self) -> Vec<(ServiceCategory, usize)> {
+        let cases = self.cases.get();
+        ServiceCategory::ALL
+            .into_iter()
+            .map(|cat| {
+                let count = cases
+                    .iter()
+                    .filter(|c| c.service_types.iter().any(|s| s.category() == cat))
+                    .count();
+                (cat, count)
+            })
+            .collect()
+    }
+
+    /// The set of service categories a client currently has needs in.
+    pub fn categories_for_client(&self, client_id: &str) -> Vec<ServiceCategory> {
+        let mut cats: Vec<ServiceCategory> = Vec::new();
+        for case in self.cases_for_client(client_id) {
+            for st in case.service_types {
+                let cat = st.category();
+                if !cats.contains(&cat) {
+                    cats.push(cat);
+                }
+            }
+        }
+        ServiceCategory::ALL
+            .into_iter()
+            .filter(|c| cats.contains(c))
+            .collect()
+    }
+
+    /// Referral pathways inferred from co-occurrence: how many clients have
+    /// needs in both categories of each pair, most common first.
+    pub fn category_cooccurrence(&self) -> Vec<(ServiceCategory, ServiceCategory, usize)> {
+        let clients = self.clients.get();
+        let mut pairs: Vec<(ServiceCategory, ServiceCategory, usize)> = Vec::new();
+        let cats = ServiceCategory::ALL;
+        for i in 0..cats.len() {
+            for j in (i + 1)..cats.len() {
+                let count = clients
+                    .iter()
+                    .filter(|cl| {
+                        let client_cats = self.categories_for_client(&cl.id);
+                        client_cats.contains(&cats[i]) && client_cats.contains(&cats[j])
+                    })
+                    .count();
+                if count > 0 {
+                    pairs.push((cats[i], cats[j], count));
+                }
+            }
+        }
+        pairs.sort_by_key(|p| std::cmp::Reverse(p.2));
+        pairs
+    }
+
+    /// Service gaps: per category, the count of open needs that are unassigned
+    /// or on hold — a rough signal of where capacity is missing.
+    pub fn service_gaps(&self) -> Vec<(ServiceCategory, usize)> {
+        use crate::types::CaseStatus;
+        let cases = self.cases.get();
+        ServiceCategory::ALL
+            .into_iter()
+            .map(|cat| {
+                let count = cases
+                    .iter()
+                    .filter(|c| c.service_types.iter().any(|s| s.category() == cat))
+                    .filter(|c| {
+                        c.assigned_volunteer_ids.is_empty() || c.status == CaseStatus::OnHold
+                    })
+                    .filter(|c| c.status != CaseStatus::Closed)
+                    .count();
+                (cat, count)
+            })
+            .filter(|(_, count)| *count > 0)
             .collect()
     }
 }

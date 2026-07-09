@@ -127,6 +127,16 @@ directory and `/clients/:id` pathway view show a client's connected needs
 together rather than as isolated interactions. Data lives in
 `src/mockdata.rs` + reactive `src/state.rs` signals (no database yet).
 
+**Case taxonomy, client mapping & service pathways:** cases are tagged against a
+built-in **service taxonomy** (`src/taxonomy.rs`) of five categories — Family
+Law, Housing, Immigration, Social Services, and Mental Health & Support — each
+with granular service types (e.g. Custody & visitation, Shelter placement, VAWA,
+SNAP, Safety planning). Admins tag services when opening a case and edit them
+inline on the case card. The **Insights** page (`/insights`) surfaces org-wide
+service pathways: demand by category, top service needs, referral pathways
+(categories that co-occur for the same client), and service gaps (open needs
+that are unassigned or on hold).
+
 Next phases:
 
 - **Services provided, referrals, and outcomes** as structured records on a

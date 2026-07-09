@@ -6,6 +6,7 @@
 use leptos::prelude::*;
 
 use crate::state::AppState;
+use crate::taxonomy::ServiceCategory;
 use crate::types::CaseStatus;
 
 const SELECT_CLASS: &str = "rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 focus:border-primary-500 focus:outline-none";
@@ -40,6 +41,17 @@ pub fn CaseCard(id: String, #[prop(default = true)] editable: bool) -> impl Into
                         "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {}",
                         c.category.badge_classes(),
                     );
+                    let tags = c
+                        .service_types
+                        .iter()
+                        .map(|st| {
+                            let cls = format!(
+                                "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {}",
+                                st.badge_classes(),
+                            );
+                            view! { <span class=cls>{st.label()}</span> }
+                        })
+                        .collect_view();
                     view! {
                         <div class="flex items-start justify-between gap-3">
                             <div>
@@ -57,6 +69,7 @@ pub fn CaseCard(id: String, #[prop(default = true)] editable: bool) -> impl Into
                             </div>
                         </div>
                         <p class="mt-2 text-sm text-slate-400">{c.summary.clone()}</p>
+                        <div class="mt-2 flex flex-wrap gap-1">{tags}</div>
                     }
                         .into_any()
                 }
@@ -80,6 +93,45 @@ fn CaseControls(
     let state = expect_context::<AppState>();
     let status_id = id.clone();
     let assignments_id = id.clone();
+    let services_id = id.clone();
+
+    // Editable service-type tags, grouped by category.
+    let service_editor = move || {
+        let selected = case.get().map(|c| c.service_types).unwrap_or_default();
+        ServiceCategory::ALL
+            .into_iter()
+            .map(|cat| {
+                let boxes = cat
+                    .types()
+                    .iter()
+                    .map(|st| {
+                        let st = *st;
+                        let checked = selected.contains(&st);
+                        let case_id = services_id.clone();
+                        view! {
+                            <label class="flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800">
+                                <input
+                                    r#type="checkbox"
+                                    class="accent-primary-500"
+                                    prop:checked=checked
+                                    on:change=move |_| state.toggle_case_service_type(&case_id, st)
+                                />
+                                {st.label()}
+                            </label>
+                        }
+                    })
+                    .collect_view();
+                view! {
+                    <div class="mb-2">
+                        <p class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                            {cat.label()}
+                        </p>
+                        <div class="flex flex-wrap gap-1.5">{boxes}</div>
+                    </div>
+                }
+            })
+            .collect_view()
+    };
 
     let assignments = move || {
         let assigned = case
@@ -121,6 +173,17 @@ fn CaseControls(
             .collect_view()
     };
 
+    let service_section = editable.then(|| {
+        view! {
+            <div class="mt-4">
+                <p class="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                    "Service types"
+                </p>
+                {service_editor}
+            </div>
+        }
+    });
+
     view! {
         <div class="mt-4 flex items-center gap-2">
             <span class="text-xs text-slate-400">"Status"</span>
@@ -160,6 +223,8 @@ fn CaseControls(
             </p>
             <div class="flex flex-wrap gap-2">{assignments}</div>
         </div>
+
+        {service_section}
     }
 }
 
