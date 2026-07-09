@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 jobs:
-  docker:
+  build-container:
     runs-on: ubuntu-latest
 
     steps:

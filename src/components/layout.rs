@@ -106,6 +106,10 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                 <h1 class="text-2xl font-semibold tracking-tight mb-6">{title}</h1>
                 {children()}
             </main>
+
+            <footer class="mx-auto max-w-7xl px-4 sm:px-6 py-6 text-right text-xs text-slate-500">
+                {format!("v{}", env!("CARGO_PKG_VERSION"))}
+            </footer>
         </div>
     }
     .into_any()
