@@ -5,12 +5,14 @@ pub mod state;
 pub mod types;
 
 pub mod components {
+    pub mod case_card;
     pub mod layout;
 }
 
 pub mod pages {
     pub mod admin;
     pub mod chat;
+    pub mod clients;
     pub mod contact_detail;
     pub mod contacts;
     pub mod dashboard;

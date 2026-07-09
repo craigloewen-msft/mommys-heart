@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 
+use crate::components::case_card::CaseCard;
 use crate::components::layout::Layout;
 use crate::state::AppState;
 use crate::types::{Case, Role};
@@ -45,63 +46,7 @@ pub fn VolunteerDashboardPage() -> impl IntoView {
         }
         cases
             .into_iter()
-            .map(|c| {
-                let status_badge = format!(
-                    "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {}",
-                    c.status.badge_classes(),
-                );
-                let prio_badge = format!(
-                    "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {}",
-                    c.priority.badge_classes(),
-                );
-                let docs = if c.documents.is_empty() {
-                    view! {
-                        <li class="rounded-lg bg-slate-950/70 px-3 py-1.5 text-xs text-slate-500">
-                            "No documents attached."
-                        </li>
-                    }
-                    .into_any()
-                } else {
-                    c.documents
-                        .iter()
-                        .map(|d| {
-                            view! {
-                                <li class="flex items-center justify-between rounded-lg bg-slate-950/70 px-3 py-1.5 text-xs">
-                                    <span class="text-slate-200">{d.name.clone()}</span>
-                                    <span class="text-slate-500">{d.uploaded_at.clone()}</span>
-                                </li>
-                            }
-                        })
-                        .collect_view()
-                        .into_any()
-                };
-                view! {
-                    <div class="rounded-xl border border-slate-800 bg-slate-900 p-5">
-                        <div class="flex items-start justify-between gap-3">
-                            <div>
-                                <h3 class="font-semibold text-white">{c.title}</h3>
-                                <p class="text-xs text-slate-500">{c.client_name}</p>
-                            </div>
-                            <div class="flex shrink-0 flex-wrap justify-end gap-1">
-                                <span class=status_badge>{c.status.label()}</span>
-                                <span class=prio_badge>
-                                    {format!("{} priority", c.priority.label())}
-                                </span>
-                            </div>
-                        </div>
-                        <p class="mt-2 text-sm text-slate-400">{c.summary}</p>
-                        <p class="mt-3 text-xs text-slate-500">
-                            "Opened " {c.opened_at}
-                        </p>
-                        <div class="mt-3">
-                            <p class="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                                "Documents"
-                            </p>
-                            <ul class="space-y-1.5">{docs}</ul>
-                        </div>
-                    </div>
-                }
-            })
+            .map(|c| view! { <CaseCard id=c.id.clone() editable=false /> })
             .collect_view()
             .into_any()
     };

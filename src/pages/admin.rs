@@ -1,9 +1,10 @@
 use leptos::prelude::*;
 use leptos_router::components::Redirect;
 
+use crate::components::case_card::CaseCard;
 use crate::components::layout::Layout;
 use crate::state::AppState;
-use crate::types::{CaseStatus, Role, VolunteerStatus};
+use crate::types::{CaseStatus, NeedCategory, Role, VolunteerStatus};
 
 /// Admin-only control center: manage volunteers, cases, documents, and
 /// assignments over the local demo store.
@@ -23,8 +24,8 @@ pub fn AdminDashboardPage() -> impl IntoView {
     let nv_email = RwSignal::new(String::new());
     let nv_specialty = RwSignal::new(String::new());
     let nv_error = RwSignal::new(String::new());
-    let add_volunteer = move |_| {
-        match state.add_volunteer(&nv_name.get(), &nv_email.get(), &nv_specialty.get()) {
+    let add_volunteer =
+        move |_| match state.add_volunteer(&nv_name.get(), &nv_email.get(), &nv_specialty.get()) {
             Ok(()) => {
                 nv_name.set(String::new());
                 nv_email.set(String::new());
@@ -32,19 +33,26 @@ pub fn AdminDashboardPage() -> impl IntoView {
                 nv_error.set(String::new());
             }
             Err(e) => nv_error.set(e),
-        }
-    };
+        };
 
     // --- new case form ---
     let nc_title = RwSignal::new(String::new());
-    let nc_client = RwSignal::new(String::new());
+    let nc_client_id = RwSignal::new(String::new());
+    let nc_category = RwSignal::new(NeedCategory::Housing.slug().to_string());
     let nc_summary = RwSignal::new(String::new());
     let nc_error = RwSignal::new(String::new());
     let add_case = move |_| {
-        match state.add_case(&nc_title.get(), &nc_client.get(), &nc_summary.get()) {
+        let category = NeedCategory::from_slug(&nc_category.get()).unwrap_or(NeedCategory::Other);
+        match state.add_case(
+            &nc_client_id.get(),
+            &nc_title.get(),
+            category,
+            &nc_summary.get(),
+        ) {
             Ok(()) => {
                 nc_title.set(String::new());
-                nc_client.set(String::new());
+                nc_client_id.set(String::new());
+                nc_category.set(NeedCategory::Housing.slug().to_string());
                 nc_summary.set(String::new());
                 nc_error.set(String::new());
             }
@@ -59,6 +67,7 @@ pub fn AdminDashboardPage() -> impl IntoView {
     let stat_cards = move || {
         let volunteers = state.volunteers.get();
         let cases = state.cases.get();
+        let clients = state.clients.get();
         let active = volunteers
             .iter()
             .filter(|v| v.status == VolunteerStatus::Active)
@@ -72,10 +81,10 @@ pub fn AdminDashboardPage() -> impl IntoView {
             .filter(|c| c.assigned_volunteer_ids.is_empty())
             .count();
         [
-            ("Volunteers", volunteers.len()),
-            ("Active volunteers", active),
+            ("Clients served", clients.len()),
             ("Open cases", open),
             ("Unassigned cases", unassigned),
+            ("Active volunteers", active),
         ]
         .into_iter()
         .map(|(label, value)| {
@@ -221,12 +230,43 @@ pub fn AdminDashboardPage() -> impl IntoView {
                             prop:value=move || nc_title.get()
                             on:input=move |ev| nc_title.set(event_target_value(&ev))
                         />
-                        <input
+                        <select
                             class=input_class
-                            placeholder="Client (confidential)"
-                            prop:value=move || nc_client.get()
-                            on:input=move |ev| nc_client.set(event_target_value(&ev))
-                        />
+                            prop:value=move || nc_client_id.get()
+                            on:change=move |ev| nc_client_id.set(event_target_value(&ev))
+                        >
+                            <option value="">"Select client\u{2026}"</option>
+                            {move || {
+                                state
+                                    .clients
+                                    .get()
+                                    .into_iter()
+                                    .map(|cl| {
+                                        view! {
+                                            <option value=cl.id.clone()>{cl.display_name}</option>
+                                        }
+                                    })
+                                    .collect_view()
+                            }}
+                        </select>
+                    </div>
+                    <div class="mt-2">
+                        <select
+                            class=input_class
+                            prop:value=move || nc_category.get()
+                            on:change=move |ev| nc_category.set(event_target_value(&ev))
+                        >
+                            {NeedCategory::ALL
+                                .into_iter()
+                                .map(|cat| {
+                                    view! {
+                                        <option value=cat.slug()>
+                                            {format!("Need: {}", cat.label())}
+                                        </option>
+                                    }
+                                })
+                                .collect_view()}
+                        </select>
                     </div>
                     <textarea
                         class=format!("{input_class} mt-2")
@@ -251,168 +291,4 @@ pub fn AdminDashboardPage() -> impl IntoView {
         </Layout>
     }
     .into_any()
-}
-
-/// A single, live-editable case card: status, volunteer assignments, and
-/// documents. Reads its case reactively by id so edits reflect immediately
-/// while local inputs keep focus.
-#[component]
-fn CaseCard(id: String) -> impl IntoView {
-    let state = expect_context::<AppState>();
-
-    let lookup_id = id.clone();
-    let case = Memo::new(move |_| {
-        state
-            .cases
-            .get()
-            .into_iter()
-            .find(|c| c.id == lookup_id)
-    });
-
-    let doc_name = RwSignal::new(String::new());
-    let add_doc_id = id.clone();
-    let add_doc = move |_| {
-        state.add_case_document(&add_doc_id, &doc_name.get());
-        doc_name.set(String::new());
-    };
-
-    let status_id = id.clone();
-    let select_class = "rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 focus:border-primary-500 focus:outline-none";
-    let doc_input_class = "flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none";
-
-    let assignments_id = id.clone();
-    let assignments = move || {
-        let current = case.get();
-        let assigned: Vec<String> = current
-            .as_ref()
-            .map(|c| c.assigned_volunteer_ids.clone())
-            .unwrap_or_default();
-        state
-            .volunteers
-            .get()
-            .into_iter()
-            .map(|v| {
-                let is_assigned = assigned.iter().any(|a| a == &v.id);
-                let case_id = assignments_id.clone();
-                let vid = v.id.clone();
-                view! {
-                    <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800">
-                        <input
-                            r#type="checkbox"
-                            class="accent-primary-500"
-                            prop:checked=is_assigned
-                            on:change=move |_| state.toggle_case_volunteer(&case_id, &vid)
-                        />
-                        {v.name.clone()}
-                    </label>
-                }
-            })
-            .collect_view()
-    };
-
-    let documents = move || {
-        match case.get() {
-            Some(c) if !c.documents.is_empty() => c
-                .documents
-                .into_iter()
-                .map(|d| {
-                    view! {
-                        <li class="flex items-center justify-between rounded-lg bg-slate-950/70 px-3 py-1.5 text-xs">
-                            <span class="text-slate-200">{d.name}</span>
-                            <span class="text-slate-500">{d.uploaded_at}</span>
-                        </li>
-                    }
-                })
-                .collect_view()
-                .into_any(),
-            _ => view! {
-                <li class="rounded-lg bg-slate-950/70 px-3 py-1.5 text-xs text-slate-500">
-                    "No documents yet."
-                </li>
-            }
-            .into_any(),
-        }
-    };
-
-    view! {
-        <div class="rounded-xl border border-slate-800 bg-slate-900 p-5">
-            {move || match case.get() {
-                Some(c) => {
-                    let status_badge = format!(
-                        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {}",
-                        c.status.badge_classes(),
-                    );
-                    let prio_badge = format!(
-                        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {}",
-                        c.priority.badge_classes(),
-                    );
-                    view! {
-                        <div class="flex items-start justify-between gap-3">
-                            <div>
-                                <h3 class="font-semibold text-white">{c.title}</h3>
-                                <p class="text-xs text-slate-500">{c.client_name}</p>
-                            </div>
-                            <div class="flex shrink-0 flex-wrap justify-end gap-1">
-                                <span class=status_badge>{c.status.label()}</span>
-                                <span class=prio_badge>
-                                    {format!("{} priority", c.priority.label())}
-                                </span>
-                            </div>
-                        </div>
-                        <p class="mt-2 text-sm text-slate-400">{c.summary}</p>
-                    }
-                        .into_any()
-                }
-                None => ().into_any(),
-            }}
-
-            <div class="mt-4 flex items-center gap-2">
-                <span class="text-xs text-slate-400">"Status"</span>
-                <select
-                    class=select_class
-                    prop:value=move || {
-                        case.get().map(|c| c.status.slug()).unwrap_or("open")
-                    }
-                    on:change=move |ev| {
-                        if let Some(s) = CaseStatus::from_slug(&event_target_value(&ev)) {
-                            state.set_case_status(&status_id, s);
-                        }
-                    }
-                >
-                    {CaseStatus::ALL
-                        .into_iter()
-                        .map(|s| view! { <option value=s.slug()>{s.label()}</option> })
-                        .collect_view()}
-                </select>
-            </div>
-
-            <div class="mt-4">
-                <p class="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                    "Assigned volunteers"
-                </p>
-                <div class="flex flex-wrap gap-2">{assignments}</div>
-            </div>
-
-            <div class="mt-4">
-                <p class="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                    "Documents"
-                </p>
-                <ul class="space-y-1.5">{documents}</ul>
-                <div class="mt-2 flex gap-2">
-                    <input
-                        class=doc_input_class
-                        placeholder="Document name\u{2026}"
-                        prop:value=move || doc_name.get()
-                        on:input=move |ev| doc_name.set(event_target_value(&ev))
-                    />
-                    <button
-                        on:click=add_doc
-                        class="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800"
-                    >
-                        "Add document"
-                    </button>
-                </div>
-            </div>
-        </div>
-    }
 }

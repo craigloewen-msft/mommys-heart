@@ -118,7 +118,18 @@ Working now: project structure, dedicated API split by feature, the real RAG
 `/api/chat` over the `docs/` corpus, CORS for the widget, and a basic CRM
 template (Dashboard / Contacts / Chat) served with SSR + hydration.
 
+**Case management (in-memory demo):** a client-centric model where each
+**Client** owns multiple **Cases** — one per need area (Housing, Family Court,
+Immigration, Public Benefits, Mental Health, …). Cases capture volunteer
+assignments, **case notes**, documents, cross-links to a client's other
+(interconnected) cases, and a **timeline** of actions taken. The `/clients`
+directory and `/clients/:id` pathway view show a client's connected needs
+together rather than as isolated interactions. Data lives in
+`src/mockdata.rs` + reactive `src/state.rs` signals (no database yet).
+
 Next phases:
 
+- **Services provided, referrals, and outcomes** as structured records on a
+  case (design hooks already noted alongside the case model).
 - **Real persistence** for the CRM (e.g. SQLite/SQLx) + authentication.
 - **Deployment** — containerize the Leptos server and add CI.
