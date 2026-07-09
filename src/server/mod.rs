@@ -5,5 +5,6 @@ pub mod api;
 pub mod captcha;
 pub mod config;
 pub mod data;
+pub mod docs;
 pub mod rag;
 pub mod service;

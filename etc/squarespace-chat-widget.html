@@ -1,0 +1,382 @@
+<!--
+  Mommy's Heart Foundation — Embedded AI Chat Pane (inline)
+  ------------------------------------------------------------------
+  HOW TO ADD THIS TO SQUARESPACE:
+    1. Edit the page where you want the chat to appear.
+    2. Add a "Code" block (Add Block → Code) where you want it.
+    3. Paste this entire snippet in and save.
+    The chat pane renders inline in the page (full width of its container).
+
+  Configured for this deployment:
+    - API:     https://mommys-heart-api-ehh4aub4auadb2a7.westus-01.azurewebsites.net
+    - Website: https://www.mommysheartfoundation.com
+  The API's ALLOWED_ORIGINS must include https://www.mommysheartfoundation.com.
+
+  Self-contained: no external libraries, no build step. Everything is scoped
+  under the "mh-chat" prefix to avoid clashing with Squarespace styles.
+-->
+<div id="mh-chat-root">
+  <div id="mh-chat-card">
+    <div id="mh-chat-header">
+      <div class="mh-avatar" aria-hidden="true">🤖</div>
+      <div class="mh-head-text">
+        <div class="mh-title">Mommy's Heart AI Assistant</div>
+        <div class="mh-subtitle">
+          <span class="mh-dot"></span>AI agent · answers from our guides with sources
+        </div>
+      </div>
+    </div>
+
+    <div id="mh-chat-log" aria-live="polite"></div>
+
+    <div id="mh-chat-disclaimer">
+      ⚠️ You're chatting with an AI assistant. It can make mistakes — verify important details and contact us directly for personal help.
+    </div>
+
+    <div id="mh-captcha-row" style="display:none;">
+      <div id="mh-captcha-note">Please complete the verification below to start chatting.</div>
+      <div id="mh-captcha"></div>
+    </div>
+
+    <div id="mh-chat-input-row">
+      <textarea id="mh-chat-input" rows="1" placeholder="Ask a question about our guides…" aria-label="Your message"></textarea>
+      <button id="mh-chat-send" type="button">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Deployed API URL (no trailing slash):
+  window.MH_CHAT_API_BASE = "https://mommys-heart-api-ehh4aub4auadb2a7.westus-01.azurewebsites.net";
+
+  // Cloudflare Turnstile site key. Paste your site key here to ENABLE the CAPTCHA.
+  // Leave it as the placeholder below to keep the chat working without a CAPTCHA.
+  window.MH_TURNSTILE_SITE_KEY = "0x4AAAAAADn4xDbXSWvn163Y";
+</script>
+
+<style>
+  #mh-chat-root {
+    --mh-accent: #c2185b;
+    --mh-accent-dark: #9c134a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  #mh-chat-card {
+    display: flex; flex-direction: column;
+    height: 600px; max-height: 80vh;
+    border: 1px solid #e7e2e4; border-radius: 16px; overflow: hidden;
+    background: #fff; box-shadow: 0 8px 30px rgba(0,0,0,.08);
+  }
+
+  /* Header */
+  #mh-chat-header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 18px; color: #fff;
+    background: linear-gradient(135deg, var(--mh-accent), var(--mh-accent-dark));
+  }
+  #mh-chat-header .mh-avatar {
+    width: 42px; height: 42px; border-radius: 50%;
+    background: rgba(255,255,255,.2);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; flex: 0 0 auto;
+  }
+  #mh-chat-header .mh-title { font-weight: 700; font-size: 16px; }
+  #mh-chat-header .mh-subtitle {
+    font-size: 12px; opacity: .92; display: flex; align-items: center; gap: 6px; margin-top: 2px;
+  }
+  #mh-chat-header .mh-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #6ee7a8;
+    box-shadow: 0 0 0 0 rgba(110,231,168,.7); animation: mh-pulse 2s infinite;
+  }
+  @keyframes mh-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(110,231,168,.7); }
+    70%  { box-shadow: 0 0 0 7px rgba(110,231,168,0); }
+    100% { box-shadow: 0 0 0 0 rgba(110,231,168,0); }
+  }
+
+  /* Log */
+  #mh-chat-log {
+    flex: 1; overflow-y: auto; padding: 18px;
+    background: #faf7f8; font-size: 15px; line-height: 1.5;
+  }
+  .mh-msg { margin-bottom: 14px; display: flex; gap: 10px; align-items: flex-end; }
+  .mh-msg.mh-user { justify-content: flex-end; }
+  .mh-msg .mh-msg-avatar {
+    width: 30px; height: 30px; border-radius: 50%; flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: center; font-size: 16px;
+    background: #efe7eb;
+  }
+  .mh-msg.mh-user .mh-msg-avatar { display: none; }
+  .mh-bubble {
+    padding: 11px 14px; border-radius: 14px; max-width: 80%;
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+  .mh-user .mh-bubble { background: var(--mh-accent); color: #fff; border-bottom-right-radius: 4px; }
+  .mh-bot  .mh-bubble { background: #fff; color: #222; border: 1px solid #ececec; border-bottom-left-radius: 4px; }
+
+  .mh-sources { margin-top: 9px; font-size: 12.5px; }
+  .mh-sources details { background: #fff; border: 1px solid #ececec; border-radius: 8px; padding: 7px 10px; margin-top: 6px; }
+  .mh-sources summary { cursor: pointer; color: var(--mh-accent); font-weight: 600; }
+  .mh-sources .mh-snippet { color: #555; margin-top: 6px; }
+  .mh-source-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+  .mh-source-actions a {
+    display: inline-block; font-size: 12px; font-weight: 600; text-decoration: none;
+    padding: 5px 10px; border-radius: 7px;
+  }
+  .mh-source-actions .mh-readmore { background: var(--mh-accent); color: #fff; }
+  .mh-source-actions .mh-readmore:hover { background: var(--mh-accent-dark); }
+  .mh-source-actions .mh-download { background: #f1eaee; color: var(--mh-accent); border: 1px solid #e6d8df; }
+  .mh-source-actions .mh-download:hover { background: #e9dde3; }
+
+  /* Answer mode badge */
+  .mh-badge {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .2px;
+    padding: 3px 9px; border-radius: 999px; margin-bottom: 8px;
+  }
+  .mh-badge-docs  { background: #e6f4ea; color: #1e7e44; }
+  .mh-badge-ai    { background: #fff3e0; color: #b25c00; }
+  .mh-badge-mixed { background: #e8eefc; color: #2a4bbd; }
+
+  .mh-typing span {
+    display: inline-block; width: 7px; height: 7px; margin: 0 1px; border-radius: 50%;
+    background: #bbb; animation: mh-blink 1.3s infinite both;
+  }
+  .mh-typing span:nth-child(2) { animation-delay: .2s; }
+  .mh-typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes mh-blink { 0%,80%,100% { opacity: .2; } 40% { opacity: 1; } }
+
+  /* Disclaimer */
+  #mh-chat-disclaimer {
+    font-size: 11.5px; color: #8a7e83; background: #f4eef1;
+    padding: 8px 14px; border-top: 1px solid #ece4e8; text-align: center;
+  }
+
+  /* CAPTCHA */
+  #mh-captcha-row {
+    padding: 12px 14px; background: #faf7f8; border-top: 1px solid #eee;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+  #mh-captcha-note { font-size: 12.5px; color: #6b5d63; text-align: center; }
+
+  /* Input */
+  #mh-chat-input-row { display: flex; gap: 8px; padding: 12px; background: #fff; border-top: 1px solid #eee; }
+  #mh-chat-input {
+    flex: 1; resize: none; border: 1px solid #ddd; border-radius: 12px;
+    padding: 11px 13px; font-size: 15px; font-family: inherit; max-height: 120px;
+  }
+  #mh-chat-input:focus { outline: none; border-color: var(--mh-accent); }
+  #mh-chat-send {
+    border: none; background: var(--mh-accent); color: #fff; border-radius: 12px;
+    padding: 0 20px; cursor: pointer; font-weight: 600; font-size: 15px;
+  }
+  #mh-chat-send:hover { background: var(--mh-accent-dark); }
+  #mh-chat-send:disabled { opacity: .5; cursor: default; }
+
+  @media (max-width: 600px) {
+    #mh-chat-card { height: 70vh; }
+  }
+</style>
+
+<script>
+(function () {
+  var API = (window.MH_CHAT_API_BASE || "").replace(/\/+$/, "");
+  var log     = document.getElementById("mh-chat-log");
+  var input   = document.getElementById("mh-chat-input");
+  var sendBtn = document.getElementById("mh-chat-send");
+  var captchaRow = document.getElementById("mh-captcha-row");
+
+  // CAPTCHA is enabled only once you paste a real Turnstile site key.
+  var SITE_KEY = window.MH_TURNSTILE_SITE_KEY || "";
+  var captchaEnabled = SITE_KEY && SITE_KEY.indexOf("YOUR_TURNSTILE") === -1;
+  var captchaToken = null;
+  var captchaReady = !captchaEnabled;  // ready immediately when CAPTCHA is off
+
+  function setSendEnabled(on) {
+    sendBtn.disabled = !on;
+    input.disabled = !on;
+  }
+
+  var captchaRevealTimer = null;
+
+  function showCaptchaBox(msg) {
+    captchaRow.style.display = "flex";
+    var note = document.getElementById("mh-captcha-note");
+    if (msg && note) note.textContent = msg;
+  }
+
+  function hideCaptchaBox() {
+    captchaRow.style.display = "none";
+  }
+
+  // silent=true refreshes the token in the background without showing the box
+  // (used between messages, since Turnstile tokens are single-use). The box is
+  // only revealed again on a failure, or if a fresh token doesn't arrive
+  // promptly. silent=false (a real failure) shows the box for re-verification.
+  function resetCaptcha(silent) {
+    captchaToken = null;
+    captchaReady = false;
+    setSendEnabled(false);
+    if (window.turnstile) {
+      try { window.turnstile.reset(); } catch (e) {}
+    }
+    clearTimeout(captchaRevealTimer);
+    if (silent) {
+      captchaRevealTimer = setTimeout(function () {
+        if (!captchaReady) showCaptchaBox("Please complete the verification to continue.");
+      }, 4000);
+    } else {
+      showCaptchaBox();
+    }
+  }
+
+  if (captchaEnabled) {
+    captchaRow.style.display = "flex";
+    setSendEnabled(false);  // must pass CAPTCHA first
+    // Turnstile calls this global once its script has loaded.
+    var captchaNote = document.getElementById("mh-captcha-note");
+    function captchaError(code) {
+      // Surface failures instead of silently showing an empty box. The most
+      // common cause is a hostname that isn't on the Turnstile widget's
+      // allowlist (e.g. viewing the Squarespace editor/preview instead of the
+      // live site, or a missing domain in the Cloudflare dashboard).
+      console.error("[Mommy's Heart] Turnstile error", code || "");
+      captchaNote.textContent =
+        "⚠️ Verification couldn't load on this page. Make sure you're viewing the published site and that this domain is added to your Turnstile widget.";
+    }
+    window.mhOnloadTurnstile = function () {
+      try {
+        window.turnstile.render("#mh-captcha", {
+          sitekey: SITE_KEY,
+          callback: function (token) {
+            captchaToken = token;
+            captchaReady = true;
+            clearTimeout(captchaRevealTimer);
+            hideCaptchaBox();  // hide once solved; don't nag the user
+            setSendEnabled(true);
+          },
+          "expired-callback": function () { resetCaptcha(true); },
+          "error-callback": function (code) { resetCaptcha(false); captchaError(code); }
+        });
+      } catch (e) {
+        captchaError(e && e.message);
+      }
+    };
+    var s = document.createElement("script");
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?onload=mhOnloadTurnstile";
+    s.async = true;
+    s.defer = true;
+    document.head.appendChild(s);
+  }
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function addMsg(role, innerHtml) {
+    var wrap = document.createElement("div");
+    wrap.className = "mh-msg mh-" + role;
+    var avatar = role === "bot" ? '<div class="mh-msg-avatar" aria-hidden="true">🤖</div>' : "";
+    wrap.innerHTML = avatar + '<div class="mh-bubble">' + innerHtml + "</div>";
+    log.appendChild(wrap);
+    log.scrollTop = log.scrollHeight;
+    return wrap;
+  }
+  function addUser(text) { return addMsg("user", esc(text)); }
+  function addBot(html)  { return addMsg("bot", html); }
+
+  function renderBadge(type) {
+    var map = {
+      documents:         { cls: "mh-badge-docs",  text: "📚 Answer from our guides" },
+      general_knowledge: { cls: "mh-badge-ai",    text: "🌐 Expanded answer — general AI knowledge, not from our guides" },
+      mixed:             { cls: "mh-badge-mixed", text: "📚 + 🌐 Our guides plus expanded knowledge" }
+    };
+    var b = map[type] || map.documents;
+    return '<div class="mh-badge ' + b.cls + '">' + b.text + "</div>";
+  }
+
+  function renderSources(sources) {
+    if (!sources || !sources.length) return "";
+    var html = '<div class="mh-sources">';
+    sources.forEach(function (s) {
+      var viewUrl = API + "/api/docs/" + encodeURIComponent(s.filename) + (s.anchor ? "#" + s.anchor : "");
+      var dlUrl   = API + "/api/docs/" + encodeURIComponent(s.filename) + "/download";
+      html +=
+        "<details><summary>📄 " + esc(s.filename) +
+        (s.heading ? " — " + esc(s.heading) : "") + "</summary>" +
+        '<div class="mh-snippet">' + esc(s.snippet || "") + "</div>" +
+        '<div class="mh-source-actions">' +
+          '<a class="mh-readmore" href="' + viewUrl + '" target="_blank" rel="noopener">Read more ↗</a>' +
+          '<a class="mh-download" href="' + dlUrl + '">Download .docx ⤓</a>' +
+        "</div></details>";
+    });
+    return html + "</div>";
+  }
+
+  // Greeting that makes the AI nature explicit
+  addBot("👋 Hi! I'm the <strong>Mommy's Heart AI Assistant</strong>. I answer primarily from our guides (with sources you can open or download). If something isn't covered there, I'll use general AI knowledge and clearly label it. How can I help?");
+
+  function send() {
+    var text = input.value.trim();
+    if (!text) return;
+    if (!API) {
+      addBot("⚠️ The assistant isn't configured yet — set MH_CHAT_API_BASE to your API URL.");
+      return;
+    }
+    if (captchaEnabled && (!captchaReady || !captchaToken)) {
+      showCaptchaBox("Please complete the verification to continue.");
+      addBot("⚠️ Please complete the verification above before sending a message.");
+      return;
+    }
+    addUser(text);
+    input.value = "";
+    input.style.height = "auto";
+    setSendEnabled(false);
+
+    var payload = { message: text };
+    if (captchaEnabled) payload.captcha_token = captchaToken;
+
+    var typing = addBot('<span class="mh-typing"><span></span><span></span><span></span></span>');
+
+    fetch(API + "/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    })
+      .then(function (r) {
+        if (r.status === 403) throw new Error("Verification failed — please try again.");
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        typing.querySelector(".mh-bubble").innerHTML =
+          renderBadge(data.source_type) + esc(data.answer || "(no answer)") + renderSources(data.sources);
+        log.scrollTop = log.scrollHeight;
+      })
+      .catch(function (err) {
+        typing.querySelector(".mh-bubble").innerHTML =
+          "⚠️ Sorry, something went wrong. (" + esc(err.message) + ")";
+      })
+      .finally(function () {
+        if (captchaEnabled) {
+          // Turnstile tokens are single-use — silently fetch a fresh one for the
+          // next message without re-showing the box (it only reappears on error).
+          resetCaptcha(true);
+        } else {
+          setSendEnabled(true);
+        }
+        input.focus();
+      });
+  }
+
+  sendBtn.addEventListener("click", send);
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  input.addEventListener("input", function () {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 120) + "px";
+  });
+})();
+</script>

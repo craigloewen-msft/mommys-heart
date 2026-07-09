@@ -95,6 +95,8 @@ still runs and `/api/chat` returns a graceful "not configured" response.
 | `GET`  | `/api/version` | Deployed version + model config |
 | `POST` | `/api/chat` | RAG chat over the `docs/` knowledge base |
 | `POST` | `/api/reingest` | Rebuild the vector store from `docs/` |
+| `GET`  | `/api/docs/:filename` | Render a `.docx` as a styled HTML page (source viewer) |
+| `GET`  | `/api/docs/:filename/download` | Download the original `.docx` |
 | `GET`  | `/api/contacts` | List CRM contacts (mock data) |
 | `GET`  | `/api/contacts/:id` | Fetch a single contact (mock data) |
 
