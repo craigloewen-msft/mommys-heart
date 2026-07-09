@@ -18,14 +18,12 @@ pub fn RegisterPage() -> impl IntoView {
 
     let submit = {
         let navigate = navigate.clone();
-        move || {
-            match state.register(&name.get(), &email.get(), &password.get()) {
-                Ok(_) => {
-                    error.set(String::new());
-                    navigate("/volunteer", Default::default());
-                }
-                Err(e) => error.set(e),
+        move || match state.register(&name.get(), &email.get(), &password.get()) {
+            Ok(_) => {
+                error.set(String::new());
+                navigate("/volunteer", Default::default());
             }
+            Err(e) => error.set(e),
         }
     };
 

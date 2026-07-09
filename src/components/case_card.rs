@@ -371,11 +371,17 @@ fn CaseNotes(id: String, case: Memo<Option<crate::types::Case>>) -> impl IntoVie
 
 #[component]
 fn CaseDocuments(id: String, case: Memo<Option<crate::types::Case>>) -> impl IntoView {
+    use crate::types::DocumentClassification;
     let state = expect_context::<AppState>();
     let doc_name = RwSignal::new(String::new());
+    let doc_class = RwSignal::new(DocumentClassification::Internal.label().to_string());
     let add_id = id.clone();
     let add_doc = move |_| {
-        state.add_case_document(&add_id, &doc_name.get());
+        let classification = DocumentClassification::ALL
+            .into_iter()
+            .find(|c| c.label() == doc_class.get())
+            .unwrap_or(DocumentClassification::Internal);
+        state.add_case_document(&add_id, &doc_name.get(), classification);
         doc_name.set(String::new());
     };
 
@@ -385,10 +391,43 @@ fn CaseDocuments(id: String, case: Memo<Option<crate::types::Case>>) -> impl Int
             .documents
             .into_iter()
             .map(|d| {
+                let badge = format!(
+                    "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium {}",
+                    d.classification.badge_classes(),
+                );
+                // RBAC: sensitive documents are only openable by authorization
+                // levels that grant it; otherwise the name is masked and any
+                // open attempt is recorded as denied.
+                let viewable = state.can_view_document(d.classification);
+                let doc = d.clone();
+                let name = if viewable {
+                    d.name.clone()
+                } else {
+                    "\u{1F512} Restricted \u{2014} access controlled".to_string()
+                };
                 view! {
-                    <li class="flex items-center justify-between rounded-lg bg-slate-950/70 px-3 py-1.5 text-xs">
-                        <span class="text-slate-200">{d.name}</span>
-                        <span class="text-slate-500">{d.uploaded_at}</span>
+                    <li class="flex items-center justify-between gap-2 rounded-lg bg-slate-950/70 px-3 py-1.5 text-xs">
+                        <span class="flex items-center gap-1.5 text-slate-200">
+                            // Lock denotes encryption-at-rest (see governance notes).
+                            <span class="text-slate-500" title="Encrypted at rest">
+                                "\u{1F512}"
+                            </span>
+                            {name}
+                            <span class=badge>{d.classification.label()}</span>
+                        </span>
+                        <button
+                            prop:disabled=!viewable
+                            on:click=move |_| {
+                                state.access_document(&doc);
+                            }
+                            class=if viewable {
+                                "shrink-0 rounded border border-slate-700 px-2 py-0.5 text-[10px] font-medium text-slate-300 hover:bg-slate-800"
+                            } else {
+                                "shrink-0 rounded border border-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-600 cursor-not-allowed"
+                            }
+                        >
+                            {if viewable { "Open" } else { "Locked" }}
+                        </button>
                     </li>
                 }
             })
@@ -409,13 +448,29 @@ fn CaseDocuments(id: String, case: Memo<Option<crate::types::Case>>) -> impl Int
                 "Documents"
             </p>
             <ul class="space-y-1.5">{documents}</ul>
-            <div class="mt-2 flex gap-2">
+            <div class="mt-2 flex flex-wrap gap-2">
                 <input
                     class=INPUT_CLASS
                     placeholder="Document name\u{2026}"
                     prop:value=move || doc_name.get()
                     on:input=move |ev| doc_name.set(event_target_value(&ev))
                 />
+                <select
+                    class="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 focus:border-primary-500 focus:outline-none"
+                    on:change=move |ev| doc_class.set(event_target_value(&ev))
+                >
+                    {DocumentClassification::ALL
+                        .into_iter()
+                        .map(|c| {
+                            let selected = c == DocumentClassification::Internal;
+                            view! {
+                                <option value=c.label() selected=selected>
+                                    {c.label()}
+                                </option>
+                            }
+                        })
+                        .collect_view()}
+                </select>
                 <button
                     on:click=add_doc
                     class="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800"

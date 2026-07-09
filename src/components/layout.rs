@@ -3,7 +3,7 @@ use leptos_router::components::{Redirect, A};
 use leptos_router::hooks::{use_location, use_navigate};
 
 use crate::state::AppState;
-use crate::types::Role;
+use crate::types::Permission;
 
 /// A top-navbar link that highlights when its route is active.
 #[component]
@@ -50,6 +50,10 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let role = user.role;
     let user_name = user.name.clone();
     let role_label = role.label();
+    let role_badge = format!(
+        "rounded-full px-2 py-0.5 text-xs font-medium {}",
+        role.badge_classes(),
+    );
 
     let logout = move |_| {
         state.logout();
@@ -69,38 +73,55 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                         </A>
 
                         <nav class="hidden md:flex items-center gap-1">
-                            {match role {
-                                Role::Admin => {
-                                    view! {
-                                        <NavLink href="/admin" label="Admin" />
-                                        <NavLink href="/clients" label="Clients" />
-                                        <NavLink href="/insights" label="Insights" />
-                                        <NavLink href="/dashboard" label="Overview" />
-                                        <NavLink href="/contacts" label="Contacts" />
-                                        <NavLink href="/evidence" label="Evidence" />
-                                        <NavLink href="/analytics" label="Analytics" />
-                                        <NavLink href="/inbox" label="Inbox" />
-                                        <NavLink href="/volunteer" label="Volunteer view" />
-                                        <NavLink href="/chat" label="Chat" />
-                                    }
-                                        .into_any()
-                                }
-                                Role::Volunteer => {
-                                    view! {
-                                        <NavLink href="/volunteer" label="My cases" />
-                                        <NavLink href="/evidence" label="Evidence" />
-                                        <NavLink href="/inbox" label="Inbox" />
-                                        <NavLink href="/chat" label="Chat" />
-                                    }
-                                        .into_any()
-                                }
+                            // Nav is permission-aware (RBAC): links appear only for
+                            // authorization levels that grant the backing permission.
+                            {if role.is_staff_level() {
+                                view! {
+                                    <NavLink href="/admin" label="Admin" />
+                                    <NavLink href="/clients" label="Clients" />
+                                    <NavLink href="/insights" label="Insights" />
+                                    <NavLink href="/evidence" label="Evidence" />
+                                    <NavLink href="/analytics" label="Analytics" />
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <NavLink href="/volunteer" label="My cases" />
+                                    <NavLink href="/evidence" label="Evidence" />
+                                }.into_any()
                             }}
+                            <NavLink href="/inbox" label="Inbox" />
+                            {if role.can(Permission::ViewAllCases) {
+                                view! {
+                                    <NavLink href="/dashboard" label="Overview" />
+                                    <NavLink href="/contacts" label="Contacts" />
+                                }
+                                    .into_any()
+                            } else {
+                                ().into_any()
+                            }}
+                            {if role.can(Permission::ManageKnowledge) {
+                                view! { <NavLink href="/knowledge" label="Knowledge" /> }.into_any()
+                            } else {
+                                ().into_any()
+                            }}
+                            {if role.can(Permission::ManageRetention) {
+                                view! { <NavLink href="/governance" label="Governance" /> }
+                                    .into_any()
+                            } else {
+                                ().into_any()
+                            }}
+                            {if role.can(Permission::ViewAuditLog) {
+                                view! { <NavLink href="/audit" label="Audit log" /> }.into_any()
+                            } else {
+                                ().into_any()
+                            }}
+                            <NavLink href="/chat" label="Chat" />
                         </nav>
 
                         <div class="ml-auto flex items-center gap-3">
                             <div class="hidden sm:flex flex-col items-end leading-tight">
                                 <span class="text-sm font-medium">{user_name}</span>
-                                <span class="text-xs text-primary-300">{role_label}</span>
+                                <span class=role_badge>{role_label}</span>
                             </div>
                             <button
                                 on:click=logout

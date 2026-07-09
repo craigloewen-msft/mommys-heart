@@ -171,6 +171,17 @@ service pathways: demand by category, top service needs, referral pathways
 (categories that co-occur for the same client), and service gaps (open needs
 that are unassigned or on hold).
 
+A **privacy, security & data-governance demo layer** is also included (mocked in
+the same in-memory style as the rest of the CRM): role-based access control with
+four authorization levels (Admin / Staff / Volunteer / Read-only) and a
+permission matrix, permission-aware route guards, an audit trail (`/audit`),
+document classification + access gating, records-retention policies with legal
+holds and disposal (`/governance`), explicit organization data-ownership, and an
+institutional Knowledge Base (`/knowledge`) with volunteer offboarding that
+preserves case context. See [`PRIVACY_AND_GOVERNANCE.md`](PRIVACY_AND_GOVERNANCE.md)
+for what each feature demonstrates and the concrete steps to make it
+production-grade.
+
 Next phases:
 
 - **Services provided, referrals, and outcomes** as structured records on a
@@ -179,4 +190,6 @@ Next phases:
   `CommRepository` trait) + real authentication and access control.
 - **External channels** — org-owned phone numbers, SMS, voice, and email via a
   provider (e.g. Twilio) feeding the same conversation records.
+- **Move governance enforcement server-side** (see `PRIVACY_AND_GOVERNANCE.md`):
+  API-enforced RBAC, tamper-evident audit logs, encryption at rest + TLS.
 - **Deployment** — containerize the Leptos server and add CI.

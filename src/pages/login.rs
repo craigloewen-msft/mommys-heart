@@ -3,7 +3,6 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 
 use crate::state::AppState;
-use crate::types::Role;
 
 /// Standalone (no navbar) sign-in screen with demo autofill helpers.
 #[component]
@@ -17,18 +16,17 @@ pub fn LoginPage() -> impl IntoView {
 
     let submit = {
         let navigate = navigate.clone();
-        move || {
-            match state.login(&email.get(), &password.get()) {
-                Ok(user) => {
-                    error.set(String::new());
-                    let dest = match user.role {
-                        Role::Admin => "/admin",
-                        Role::Volunteer => "/volunteer",
-                    };
-                    navigate(dest, Default::default());
-                }
-                Err(e) => error.set(e),
+        move || match state.login(&email.get(), &password.get()) {
+            Ok(user) => {
+                error.set(String::new());
+                let dest = if user.role.is_staff_level() {
+                    "/admin"
+                } else {
+                    "/volunteer"
+                };
+                navigate(dest, Default::default());
             }
+            Err(e) => error.set(e),
         }
     };
 
@@ -36,9 +34,17 @@ pub fn LoginPage() -> impl IntoView {
         email.set("admin@mommysheart.org".into());
         password.set("admin123".into());
     };
+    let fill_staff = move |_| {
+        email.set("dana@mommysheart.org".into());
+        password.set("staff123".into());
+    };
     let fill_volunteer = move |_| {
         email.set("priya@mommysheart.org".into());
         password.set("volunteer123".into());
+    };
+    let fill_readonly = move |_| {
+        email.set("board@mommysheart.org".into());
+        password.set("readonly123".into());
     };
 
     let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
@@ -108,20 +114,34 @@ pub fn LoginPage() -> impl IntoView {
                         <p class="mt-1 text-xs text-slate-500">
                             "Prefill credentials to explore the app end to end."
                         </p>
-                        <div class="mt-3 flex gap-2">
+                        <div class="mt-3 grid grid-cols-2 gap-2">
                             <button
                                 r#type="button"
                                 on:click=fill_admin
-                                class="flex-1 rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                                class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
                             >
                                 "Fill admin"
                             </button>
                             <button
                                 r#type="button"
+                                on:click=fill_staff
+                                class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                            >
+                                "Fill staff"
+                            </button>
+                            <button
+                                r#type="button"
                                 on:click=fill_volunteer
-                                class="flex-1 rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                                class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
                             >
                                 "Fill volunteer"
+                            </button>
+                            <button
+                                r#type="button"
+                                on:click=fill_readonly
+                                class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                            >
+                                "Fill read-only"
                             </button>
                         </div>
                     </div>

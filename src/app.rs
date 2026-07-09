@@ -4,14 +4,14 @@ use leptos_router::components::{Redirect, Route, Router, Routes};
 use leptos_router::path;
 
 use crate::pages::{
-    admin::AdminDashboardPage, analytics::AnalyticsPage, chat::ChatPage,
+    admin::AdminDashboardPage, analytics::AnalyticsPage, audit_log::AuditLogPage, chat::ChatPage,
     clients::ClientDetailPage, clients::ClientsPage, contact_detail::ContactDetailPage,
     contacts::ContactsPage, dashboard::DashboardPage, evidence::EvidenceRepositoryPage,
-    inbox::InboxPage, insights::InsightsPage, login::LoginPage, register::RegisterPage,
+    governance::GovernancePage, inbox::InboxPage, insights::InsightsPage,
+    knowledge::KnowledgeBasePage, login::LoginPage, register::RegisterPage,
     volunteer::VolunteerDashboardPage,
 };
 use crate::state::AppState;
-use crate::types::Role;
 
 /// The HTML document shell rendered on the server around the hydrated app.
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -37,7 +37,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 fn HomeRedirect() -> impl IntoView {
     let state = expect_context::<AppState>();
     let path = match state.current_user.get_untracked() {
-        Some(u) if u.role == Role::Admin => "/admin",
+        Some(u) if u.role.is_staff_level() => "/admin",
         Some(_) => "/volunteer",
         None => "/login",
     };
@@ -67,6 +67,9 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/evidence") view=EvidenceRepositoryPage />
                 <Route path=path!("/analytics") view=AnalyticsPage />
                 <Route path=path!("/volunteer") view=VolunteerDashboardPage />
+                <Route path=path!("/audit") view=AuditLogPage />
+                <Route path=path!("/governance") view=GovernancePage />
+                <Route path=path!("/knowledge") view=KnowledgeBasePage />
                 <Route path=path!("/dashboard") view=DashboardPage />
                 <Route path=path!("/contacts") view=ContactsPage />
                 <Route path=path!("/contacts/:id") view=ContactDetailPage />

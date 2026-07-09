@@ -113,21 +113,130 @@ pub struct Contact {
 // Auth + volunteer/case management types (local demo data).
 // ---------------------------------------------------------------------------
 
-/// Who a user is within the organization.
+/// Who a user is within the organization. Roles map to authorization *levels*
+/// via a permission matrix (see [`Permission`] and [`Role::permissions`]) rather
+/// than features checking role equality directly, so new levels slot in cleanly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
+    /// Full administrative control, including governance and access management.
     Admin,
+    /// Employed staff: manage cases/volunteers/knowledge, but not org settings.
+    Staff,
+    /// Time-limited volunteer/intern: work only their assigned cases.
     Volunteer,
+    /// Read-only observer (e.g. auditor, board member): can view, never edit.
+    ReadOnly,
 }
 
 impl Role {
+    pub const ALL: [Role; 4] = [Role::Admin, Role::Staff, Role::Volunteer, Role::ReadOnly];
+
     pub fn label(self) -> &'static str {
         match self {
             Role::Admin => "Admin",
+            Role::Staff => "Staff",
             Role::Volunteer => "Volunteer",
+            Role::ReadOnly => "Read-only",
         }
     }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            Role::Admin => "admin",
+            Role::Staff => "staff",
+            Role::Volunteer => "volunteer",
+            Role::ReadOnly => "read_only",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.slug() == s)
+    }
+
+    /// Short description of the authorization level, for admin screens.
+    pub fn description(self) -> &'static str {
+        match self {
+            Role::Admin => "Full control: governance, access management, all records.",
+            Role::Staff => "Manage cases, volunteers, and knowledge across the organization.",
+            Role::Volunteer => "Work only their own assigned cases and documents.",
+            Role::ReadOnly => "View-only access; cannot create or change records.",
+        }
+    }
+
+    pub fn badge_classes(self) -> &'static str {
+        match self {
+            Role::Admin => "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/30",
+            Role::Staff => "bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30",
+            Role::Volunteer => "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
+            Role::ReadOnly => "bg-slate-500/15 text-slate-300 ring-1 ring-slate-500/30",
+        }
+    }
+
+    /// Whether this role lands in the admin/staff control center (vs. the
+    /// volunteer view) after signing in.
+    pub fn is_staff_level(self) -> bool {
+        matches!(self, Role::Admin | Role::Staff)
+    }
+
+    /// The set of permissions granted to this authorization level. This is the
+    /// single source of truth for role-based access control.
+    pub fn permissions(self) -> &'static [Permission] {
+        use Permission::*;
+        match self {
+            Role::Admin => &[
+                ViewAllCases,
+                EditCases,
+                ManageVolunteers,
+                ManageUsers,
+                ViewAuditLog,
+                ManageRetention,
+                ViewConfidentialDocs,
+                ManageKnowledge,
+                OffboardVolunteers,
+            ],
+            Role::Staff => &[
+                ViewAllCases,
+                EditCases,
+                ManageVolunteers,
+                ViewConfidentialDocs,
+                ManageKnowledge,
+                OffboardVolunteers,
+            ],
+            Role::Volunteer => &[EditCases],
+            Role::ReadOnly => &[ViewAllCases],
+        }
+    }
+
+    /// Whether this role is granted a given permission.
+    pub fn can(self, perm: Permission) -> bool {
+        self.permissions().contains(&perm)
+    }
+}
+
+/// A discrete action gated by role-based access control. Features check
+/// `Role::can(permission)` rather than comparing roles directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Permission {
+    /// See every case in the organization (vs. only one's own assignments).
+    ViewAllCases,
+    /// Create cases and change case data (status, assignments, documents).
+    EditCases,
+    /// Add volunteers and change their lifecycle status.
+    ManageVolunteers,
+    /// Change other users' roles / authorization levels.
+    ManageUsers,
+    /// Read the audit trail.
+    ViewAuditLog,
+    /// Manage records-retention policy: legal holds and disposal.
+    ManageRetention,
+    /// Open documents classified Confidential or Restricted.
+    ViewConfidentialDocs,
+    /// Create and edit shared institutional-knowledge resources.
+    ManageKnowledge,
+    /// Offboard a volunteer, reassigning their work to the organization.
+    OffboardVolunteers,
 }
 
 /// An application user account (demo credentials only — never real auth).
@@ -622,6 +731,13 @@ pub struct CaseDocument {
     pub id: String,
     pub name: String,
     pub uploaded_at: String,
+    /// Sensitivity classification, used for access control.
+    #[serde(default = "default_classification")]
+    pub classification: DocumentClassification,
+}
+
+fn default_classification() -> DocumentClassification {
+    DocumentClassification::Internal
 }
 
 /// The kind of evidence an [`EvidenceItem`] represents. Mirrors the categories
@@ -826,6 +942,18 @@ pub struct Case {
     /// Follow-up touchpoints (completed and outstanding).
     #[serde(default)]
     pub follow_ups: Vec<FollowUp>,
+    /// Name of the user who opened the case (provenance).
+    #[serde(default)]
+    pub created_by: String,
+    /// Name of the party currently accountable for the case.
+    #[serde(default)]
+    pub steward: String,
+    /// Retention class governing how long the record is kept.
+    #[serde(default = "default_retention")]
+    pub retention: RetentionClass,
+    /// When true, disposal is blocked regardless of retention (e.g. litigation).
+    #[serde(default)]
+    pub legal_hold: bool,
 }
 
 fn default_matter_type() -> MatterType {
@@ -834,6 +962,10 @@ fn default_matter_type() -> MatterType {
 
 fn default_case_outcome() -> CaseOutcome {
     CaseOutcome::Ongoing
+}
+
+fn default_retention() -> RetentionClass {
+    RetentionClass::Standard
 }
 
 // ---------------------------------------------------------------------------
@@ -1064,4 +1196,240 @@ pub struct LinkCaseRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StatusRequest {
     pub status: ConversationStatus,
+}
+
+// ---------------------------------------------------------------------------
+// Privacy, security & data-governance types.
+// ---------------------------------------------------------------------------
+
+/// Sensitivity classification for a stored document. Drives access control
+/// (who may open it) and retention handling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentClassification {
+    /// Shareable outside the organization.
+    Public,
+    /// Internal use; visible to any authenticated staff/volunteer on the case.
+    Internal,
+    /// Sensitive; requires the `ViewConfidentialDocs` permission.
+    Confidential,
+    /// Highly sensitive (e.g. safety plans, court records); staff-level only.
+    Restricted,
+}
+
+impl DocumentClassification {
+    pub const ALL: [DocumentClassification; 4] = [
+        DocumentClassification::Public,
+        DocumentClassification::Internal,
+        DocumentClassification::Confidential,
+        DocumentClassification::Restricted,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DocumentClassification::Public => "Public",
+            DocumentClassification::Internal => "Internal",
+            DocumentClassification::Confidential => "Confidential",
+            DocumentClassification::Restricted => "Restricted",
+        }
+    }
+
+    /// Whether opening this document requires elevated permission.
+    pub fn is_sensitive(self) -> bool {
+        matches!(
+            self,
+            DocumentClassification::Confidential | DocumentClassification::Restricted
+        )
+    }
+
+    pub fn badge_classes(self) -> &'static str {
+        match self {
+            DocumentClassification::Public => {
+                "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+            }
+            DocumentClassification::Internal => "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
+            DocumentClassification::Confidential => {
+                "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"
+            }
+            DocumentClassification::Restricted => {
+                "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30"
+            }
+        }
+    }
+}
+
+/// Records-retention class applied to a case. Determines how long records are
+/// kept before they become eligible for disposal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionClass {
+    /// Kept for the life of the case plus a short tail.
+    Standard,
+    /// Longer statutory retention (e.g. legal/court involvement).
+    Extended,
+    /// Never auto-dispose (e.g. ongoing safety concern).
+    Permanent,
+}
+
+impl RetentionClass {
+    pub const ALL: [RetentionClass; 3] = [
+        RetentionClass::Standard,
+        RetentionClass::Extended,
+        RetentionClass::Permanent,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RetentionClass::Standard => "Standard (7 yrs)",
+            RetentionClass::Extended => "Extended (10 yrs)",
+            RetentionClass::Permanent => "Permanent",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            RetentionClass::Standard => "standard",
+            RetentionClass::Extended => "extended",
+            RetentionClass::Permanent => "permanent",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.slug() == s)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Audit trail (demo, in-memory).
+// ---------------------------------------------------------------------------
+
+/// The category of action recorded in the audit trail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditAction {
+    Login,
+    Logout,
+    Register,
+    ViewCase,
+    CreateCase,
+    UpdateCaseStatus,
+    AssignVolunteer,
+    UploadDocument,
+    AccessDocument,
+    DeniedAccess,
+    AddVolunteer,
+    UpdateVolunteerStatus,
+    ChangeUserRole,
+    OffboardVolunteer,
+    LegalHoldChange,
+    DisposeRecord,
+    EditKnowledge,
+}
+
+impl AuditAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            AuditAction::Login => "Signed in",
+            AuditAction::Logout => "Signed out",
+            AuditAction::Register => "Registered account",
+            AuditAction::ViewCase => "Viewed case",
+            AuditAction::CreateCase => "Created case",
+            AuditAction::UpdateCaseStatus => "Changed case status",
+            AuditAction::AssignVolunteer => "Changed case assignment",
+            AuditAction::UploadDocument => "Uploaded document",
+            AuditAction::AccessDocument => "Opened document",
+            AuditAction::DeniedAccess => "Access denied",
+            AuditAction::AddVolunteer => "Added volunteer",
+            AuditAction::UpdateVolunteerStatus => "Changed volunteer status",
+            AuditAction::ChangeUserRole => "Changed user role",
+            AuditAction::OffboardVolunteer => "Offboarded volunteer",
+            AuditAction::LegalHoldChange => "Changed legal hold",
+            AuditAction::DisposeRecord => "Disposed record",
+            AuditAction::EditKnowledge => "Edited knowledge resource",
+        }
+    }
+
+    /// Whether this event represents a security-relevant denial.
+    pub fn is_denial(self) -> bool {
+        matches!(self, AuditAction::DeniedAccess)
+    }
+}
+
+/// A single entry in the audit trail: who did what, to which target, and when.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AuditEvent {
+    pub id: String,
+    /// Name of the actor who performed the action.
+    pub actor: String,
+    /// The actor's role at the time of the action.
+    pub actor_role: Role,
+    pub action: AuditAction,
+    /// Human-readable description of the affected record.
+    pub target: String,
+    /// Timestamp label (demo: a display string, not a real clock).
+    pub at: String,
+}
+
+// ---------------------------------------------------------------------------
+// Institutional knowledge base (demo, in-memory).
+// ---------------------------------------------------------------------------
+
+/// The kind of institutional-knowledge resource, so knowledge is retained by
+/// the organization rather than leaving with individual volunteers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeCategory {
+    /// Reusable document template (intake forms, letters, checklists).
+    Template,
+    /// External resource or referral (shelters, hotlines, legal aid).
+    Resource,
+    /// Best-practice guidance or standard operating procedure.
+    BestPractice,
+    /// Retained case context / handover notes.
+    CaseContext,
+}
+
+impl KnowledgeCategory {
+    pub const ALL: [KnowledgeCategory; 4] = [
+        KnowledgeCategory::Template,
+        KnowledgeCategory::Resource,
+        KnowledgeCategory::BestPractice,
+        KnowledgeCategory::CaseContext,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            KnowledgeCategory::Template => "Template",
+            KnowledgeCategory::Resource => "Resource",
+            KnowledgeCategory::BestPractice => "Best practice",
+            KnowledgeCategory::CaseContext => "Case context",
+        }
+    }
+
+    pub fn badge_classes(self) -> &'static str {
+        match self {
+            KnowledgeCategory::Template => "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
+            KnowledgeCategory::Resource => {
+                "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+            }
+            KnowledgeCategory::BestPractice => {
+                "bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30"
+            }
+            KnowledgeCategory::CaseContext => {
+                "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"
+            }
+        }
+    }
+}
+
+/// An institutional-knowledge entry owned by the organization.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KnowledgeItem {
+    pub id: String,
+    pub title: String,
+    pub category: KnowledgeCategory,
+    pub summary: String,
+    /// Who contributed it (provenance) — ownership stays with the organization.
+    pub contributed_by: String,
+    pub updated_at: String,
 }

@@ -35,7 +35,10 @@ fn docs_dir() -> String {
 /// in `.docx` and pointing at an existing file is accepted, matching the
 /// Python download guard.
 fn safe_docx_path(filename: &str) -> Option<PathBuf> {
-    let base = Path::new(filename).file_name()?.to_string_lossy().to_string();
+    let base = Path::new(filename)
+        .file_name()?
+        .to_string_lossy()
+        .to_string();
     if base != filename {
         return None;
     }
@@ -360,7 +363,9 @@ fn table_to_html(table: &[Vec<String>]) -> String {
 
 /// Escape the HTML entities Python's viewer escapes (`&`, `<`, `>`).
 fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Extract a heading level from a style name like "Heading2" (capped at 6,

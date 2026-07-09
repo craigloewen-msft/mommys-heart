@@ -7,7 +7,7 @@ use crate::components::case_card::CaseCard;
 use crate::components::layout::Layout;
 use crate::state::AppState;
 use crate::taxonomy::{ServiceCategory, ServiceType};
-use crate::types::{CaseStatus, MatterType, NeedCategory, Role, VolunteerStatus};
+use crate::types::{CaseStatus, MatterType, NeedCategory, VolunteerStatus};
 
 /// Admin-only control center: manage volunteers, cases, documents, and
 /// assignments over the local demo store.
@@ -17,7 +17,7 @@ pub fn AdminDashboardPage() -> impl IntoView {
 
     // Role guard.
     match state.current_user.get_untracked() {
-        Some(u) if u.role == Role::Admin => {}
+        Some(u) if u.role.is_staff_level() => {}
         Some(_) => return view! { <Redirect path="/volunteer" /> }.into_any(),
         None => return view! { <Redirect path="/login" /> }.into_any(),
     }

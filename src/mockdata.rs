@@ -6,10 +6,14 @@
 
 use crate::taxonomy::ServiceType;
 use crate::types::{
-    Case, CaseDocument, CaseNote, CaseOutcome, CasePriority, CaseStatus, Client, EvidenceItem,
-    EvidenceType, FollowUp, MatterType, NeedCategory, Referral, ReviewStatus, Role, ServiceRecord,
-    TimelineEvent, TimelineKind, TrainingRecord, User, Volunteer, VolunteerStatus,
+    AuditAction, AuditEvent, Case, CaseDocument, CaseNote, CaseOutcome, CasePriority, CaseStatus,
+    Client, DocumentClassification, EvidenceItem, EvidenceType, FollowUp, KnowledgeCategory,
+    KnowledgeItem, MatterType, NeedCategory, Referral, RetentionClass, ReviewStatus, Role,
+    ServiceRecord, TimelineEvent, TimelineKind, TrainingRecord, User, Volunteer, VolunteerStatus,
 };
+
+/// Display name used everywhere data is owned by the organization itself.
+pub const ORG_NAME: &str = "Mommy's Heart (organization)";
 
 /// Convenience constructor for seed evidence, keeping the case fixtures compact.
 #[allow(clippy::too_many_arguments)]
@@ -50,6 +54,14 @@ pub fn users() -> Vec<User> {
             volunteer_id: None,
         },
         User {
+            id: "u-dana".into(),
+            name: "Dana Whitfield".into(),
+            email: "dana@mommysheart.org".into(),
+            password: "staff123".into(),
+            role: Role::Staff,
+            volunteer_id: None,
+        },
+        User {
             id: "u-priya".into(),
             name: "Priya Nair".into(),
             email: "priya@mommysheart.org".into(),
@@ -64,6 +76,14 @@ pub fn users() -> Vec<User> {
             password: "volunteer123".into(),
             role: Role::Volunteer,
             volunteer_id: Some("v-2".into()),
+        },
+        User {
+            id: "u-glen".into(),
+            name: "Glen Osei (Board)".into(),
+            email: "board@mommysheart.org".into(),
+            password: "readonly123".into(),
+            role: Role::ReadOnly,
+            volunteer_id: None,
         },
     ]
 }
@@ -220,11 +240,13 @@ pub fn cases() -> Vec<Case> {
                     id: "d-1".into(),
                     name: "Intake assessment.pdf".into(),
                     uploaded_at: "2026-06-14".into(),
+                    classification: DocumentClassification::Confidential,
                 },
                 CaseDocument {
                     id: "d-2".into(),
                     name: "Housing application.docx".into(),
                     uploaded_at: "2026-06-20".into(),
+                    classification: DocumentClassification::Internal,
                 },
             ],
             evidence: vec![
@@ -323,6 +345,10 @@ pub fn cases() -> Vec<Case> {
                     completed: false,
                 },
             ],
+            created_by: "Sarah Mitchell".into(),
+            steward: "Priya Nair".into(),
+            retention: RetentionClass::Standard,
+            legal_hold: false,
         },
         Case {
             id: "c-1002".into(),
@@ -343,6 +369,7 @@ pub fn cases() -> Vec<Case> {
                 id: "d-3".into(),
                 name: "Court schedule.pdf".into(),
                 uploaded_at: "2026-07-01".into(),
+                classification: DocumentClassification::Restricted,
             }],
             evidence: vec![
                 evi(
@@ -397,6 +424,10 @@ pub fn cases() -> Vec<Case> {
                 date: "2026-07-08".into(),
                 completed: false,
             }],
+            created_by: "Dana Whitfield".into(),
+            steward: "Maria Gonzalez".into(),
+            retention: RetentionClass::Extended,
+            legal_hold: true,
         },
         Case {
             id: "c-1003".into(),
@@ -456,6 +487,10 @@ pub fn cases() -> Vec<Case> {
                     completed: true,
                 },
             ],
+            created_by: "Sarah Mitchell".into(),
+            steward: "Priya Nair".into(),
+            retention: RetentionClass::Standard,
+            legal_hold: false,
         },
         // --- Other clients: single-need cases -------------------------------
         Case {
@@ -490,6 +525,10 @@ pub fn cases() -> Vec<Case> {
                 date: "2026-07-05".into(),
                 completed: false,
             }],
+            created_by: "Dana Whitfield".into(),
+            steward: "Maria Gonzalez".into(),
+            retention: RetentionClass::Standard,
+            legal_hold: false,
         },
         Case {
             id: "c-1005".into(),
@@ -532,6 +571,10 @@ pub fn cases() -> Vec<Case> {
                 date: "2026-06-10".into(),
                 completed: true,
             }],
+            created_by: "Sarah Mitchell".into(),
+            steward: "Priya Nair".into(),
+            retention: RetentionClass::Standard,
+            legal_hold: false,
         },
         Case {
             id: "c-1006".into(),
@@ -548,7 +591,12 @@ pub fn cases() -> Vec<Case> {
             assigned_volunteer_ids: Vec::new(),
             related_case_ids: Vec::new(),
             notes: Vec::new(),
-            documents: Vec::new(),
+            documents: vec![CaseDocument {
+                id: "d-4".into(),
+                name: "Safety plan (draft).docx".into(),
+                uploaded_at: "2026-07-06".into(),
+                classification: DocumentClassification::Restricted,
+            }],
             evidence: Vec::new(),
             timeline: vec![ev("e-8", "2026-07-05", TimelineKind::Opened, "Case opened")],
             opened_at: "2026-07-05".into(),
@@ -565,6 +613,87 @@ pub fn cases() -> Vec<Case> {
                 date: "2026-07-12".into(),
                 completed: false,
             }],
+            created_by: "Dana Whitfield".into(),
+            steward: ORG_NAME.into(),
+            retention: RetentionClass::Permanent,
+            legal_hold: false,
+        },
+    ]
+}
+
+/// A starter audit trail so the log is populated on first load.
+pub fn audit_log() -> Vec<AuditEvent> {
+    vec![
+        AuditEvent {
+            id: "a-1".into(),
+            actor: "Sarah Mitchell".into(),
+            actor_role: Role::Admin,
+            action: AuditAction::Login,
+            target: "admin@mommysheart.org".into(),
+            at: "2026-07-06 09:02".into(),
+        },
+        AuditEvent {
+            id: "a-2".into(),
+            actor: "Sarah Mitchell".into(),
+            actor_role: Role::Admin,
+            action: AuditAction::CreateCase,
+            target: "Survivor support intake".into(),
+            at: "2026-07-05 16:40".into(),
+        },
+        AuditEvent {
+            id: "a-3".into(),
+            actor: "Maria Gonzalez".into(),
+            actor_role: Role::Volunteer,
+            action: AuditAction::AccessDocument,
+            target: "Court schedule.pdf (Restricted)".into(),
+            at: "2026-07-02 11:15".into(),
+        },
+        AuditEvent {
+            id: "a-4".into(),
+            actor: "Priya Nair".into(),
+            actor_role: Role::Volunteer,
+            action: AuditAction::DeniedAccess,
+            target: "Safety plan (draft).docx (Restricted)".into(),
+            at: "2026-07-06 13:28".into(),
+        },
+    ]
+}
+
+/// The organization's retained institutional knowledge, independent of any
+/// single volunteer.
+pub fn knowledge() -> Vec<KnowledgeItem> {
+    vec![
+        KnowledgeItem {
+            id: "k-1".into(),
+            title: "Intake assessment template".into(),
+            category: KnowledgeCategory::Template,
+            summary: "Standardized survivor intake form with risk-screening questions.".into(),
+            contributed_by: "Sarah Mitchell".into(),
+            updated_at: "2026-05-02".into(),
+        },
+        KnowledgeItem {
+            id: "k-2".into(),
+            title: "Local emergency shelter directory".into(),
+            category: KnowledgeCategory::Resource,
+            summary: "Vetted shelters and hotlines with capacity and intake contacts.".into(),
+            contributed_by: "Priya Nair".into(),
+            updated_at: "2026-06-11".into(),
+        },
+        KnowledgeItem {
+            id: "k-3".into(),
+            title: "Safety planning best practices".into(),
+            category: KnowledgeCategory::BestPractice,
+            summary: "Guidance for building a survivor safety plan and warm handoffs.".into(),
+            contributed_by: "Dana Whitfield".into(),
+            updated_at: "2026-06-25".into(),
+        },
+        KnowledgeItem {
+            id: "k-4".into(),
+            title: "Family court advocacy — handover notes".into(),
+            category: KnowledgeCategory::CaseContext,
+            summary: "Retained context so custody cases survive volunteer turnover.".into(),
+            contributed_by: "Maria Gonzalez".into(),
+            updated_at: "2026-07-01".into(),
         },
     ]
 }

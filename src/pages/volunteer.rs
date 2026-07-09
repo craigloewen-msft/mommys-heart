@@ -4,7 +4,7 @@ use crate::components::case_card::CaseCard;
 use crate::components::communications::{CommScope, CommunicationsTimeline};
 use crate::components::layout::Layout;
 use crate::state::AppState;
-use crate::types::{Case, Role};
+use crate::types::Case;
 
 /// Volunteer's personal dashboard: the cases assigned to them and any attached
 /// documents. Admins get a read-only overview of every case.
@@ -15,7 +15,7 @@ pub fn VolunteerDashboardPage() -> impl IntoView {
     let user = state.current_user.get_untracked();
     let (is_admin, volunteer_id, greeting) = match user {
         Some(u) => (
-            u.role == Role::Admin,
+            u.role.is_staff_level(),
             u.volunteer_id.clone(),
             format!("Hi {}", u.name),
         ),
