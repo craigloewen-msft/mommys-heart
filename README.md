@@ -59,6 +59,12 @@ rustup target add wasm32-unknown-unknown
 cargo install cargo-leptos
 ```
 
+> **Tip:** a [dev container](.devcontainer/devcontainer.json) is provided. Open
+> the repo in VS Code (or a Codespace) and "Reopen in Container" to get the full
+> toolchain — Rust stable, the `wasm32-unknown-unknown` target, `cargo-leptos`,
+> and ports `3000`/`3001` forwarded — with no local setup. Build artifacts and
+> the crate cache live on named volumes, so builds stay fast on Windows/macOS.
+
 ## Getting started
 
 ```bash

@@ -16,8 +16,8 @@ pub fn DashboardPage() -> impl IntoView {
     );
 
     view! {
-        <Layout title="Dashboard">
-            <Suspense fallback=|| view! { <p class="text-gray-400">"Loading\u{2026}"</p> }>
+        <Layout title="Overview">
+            <Suspense fallback=|| view! { <p class="text-slate-400">"Loading\u{2026}"</p> }>
                 {move || Suspend::new(async move {
                     let (contacts, version) = data.await;
                     let total = contacts.len();
@@ -40,24 +40,24 @@ pub fn DashboardPage() -> impl IntoView {
                                 .into_iter()
                                 .map(|(label, value)| {
                                     view! {
-                                        <div class="bg-white rounded-lg border border-gray-200 p-5">
-                                            <p class="text-2xl font-semibold">{value}</p>
-                                            <p class="text-sm text-gray-500">{label}</p>
+                                        <div class="rounded-xl border border-slate-800 bg-slate-900 p-5">
+                                            <p class="text-3xl font-semibold text-white">{value}</p>
+                                            <p class="mt-1 text-sm text-slate-400">{label}</p>
                                         </div>
                                     }
                                 })
                                 .collect_view()}
                         </div>
 
-                        <div class="mt-6 bg-white rounded-lg border border-gray-200 p-5">
+                        <div class="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-5">
                             <div class="flex items-center justify-between mb-2">
-                                <h2 class="font-semibold">"Welcome"</h2>
-                                <span class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600">
+                                <h2 class="font-semibold text-white">"Welcome"</h2>
+                                <span class="text-xs px-2 py-1 rounded-full bg-slate-800 text-slate-300 ring-1 ring-slate-700">
                                     {version_label}
                                 </span>
                             </div>
-                            <p class="text-sm text-gray-600">
-                                "This is the Mommy's Heart CRM, built with Leptos + Axum. Use the sidebar to browse contacts or talk to the assistant. The dashboard, data, and chat are wired to the dedicated API \u{2014} ready to augment."
+                            <p class="text-sm text-slate-400">
+                                "This is the Mommy's Heart CRM, built with Leptos + Axum. Use the top navigation to manage volunteers and cases, browse contacts, or talk to the assistant. The dashboard, data, and chat are wired to the dedicated API \u{2014} ready to augment."
                             </p>
                         </div>
                     }

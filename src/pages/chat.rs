@@ -67,10 +67,10 @@ pub fn ChatPage() -> impl IntoView {
 
     view! {
         <Layout title="Chat assistant">
-            <div class="max-w-3xl mx-auto bg-white rounded-lg border border-gray-200 flex flex-col">
+            <div class="max-w-3xl mx-auto rounded-xl border border-slate-800 bg-slate-900 flex flex-col">
                 <div class="p-4 space-y-4 min-h-[50vh]">
                     <Show when=move || messages.read().is_empty()>
-                        <p class="text-sm text-gray-400 text-center py-12">
+                        <p class="text-sm text-slate-500 text-center py-12">
                             "Ask a question to try the dedicated /api/chat endpoint."
                         </p>
                     </Show>
@@ -82,7 +82,7 @@ pub fn ChatPage() -> impl IntoView {
                             let bubble = if is_user {
                                 "max-w-[80%] rounded-lg px-4 py-2 text-sm bg-primary-500 text-white"
                             } else {
-                                "max-w-[80%] rounded-lg px-4 py-2 text-sm bg-gray-100 text-gray-900"
+                                "max-w-[80%] rounded-lg px-4 py-2 text-sm bg-slate-800 text-slate-100"
                             };
                             let row = if is_user {
                                 "flex justify-end"
@@ -117,14 +117,14 @@ pub fn ChatPage() -> impl IntoView {
                 </div>
 
                 <form
-                    class="border-t border-gray-200 p-3 flex gap-2"
+                    class="border-t border-slate-800 p-3 flex gap-2"
                     on:submit=move |ev| {
                         ev.prevent_default();
                         send();
                     }
                 >
                     <input
-                        class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-400"
+                        class="flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40"
                         placeholder="Type a message\u{2026}"
                         prop:value=move || input.get()
                         on:input=move |ev| input.set(event_target_value(&ev))

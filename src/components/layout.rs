@@ -1,8 +1,11 @@
 use leptos::prelude::*;
-use leptos_router::components::A;
-use leptos_router::hooks::use_location;
+use leptos_router::components::{Redirect, A};
+use leptos_router::hooks::{use_location, use_navigate};
 
-/// A sidebar navigation link that highlights when its route is active.
+use crate::state::AppState;
+use crate::types::Role;
+
+/// A top-navbar link that highlights when its route is active.
 #[component]
 fn NavLink(href: &'static str, label: &'static str) -> impl IntoView {
     let location = use_location();
@@ -19,11 +22,11 @@ fn NavLink(href: &'static str, label: &'static str) -> impl IntoView {
         <A
             href=href
             attr:class=move || {
-                let base = "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors";
+                let base = "px-3 py-2 rounded-lg text-sm font-medium transition-colors";
                 if active() {
-                    format!("{base} bg-primary-50 text-primary-700")
+                    format!("{base} bg-primary-500/15 text-primary-300")
                 } else {
-                    format!("{base} text-gray-600 hover:bg-gray-100")
+                    format!("{base} text-slate-300 hover:bg-slate-800 hover:text-white")
                 }
             }
         >
@@ -32,38 +35,82 @@ fn NavLink(href: &'static str, label: &'static str) -> impl IntoView {
     }
 }
 
-/// App shell: fixed sidebar + top bar, with the page rendered in the main area.
+/// App shell: a dark top navbar with role-aware links, plus the page content.
+/// Redirects to `/login` when there is no signed-in user.
 #[component]
 pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView {
-    view! {
-        <div class="min-h-screen flex bg-gray-50 text-gray-900">
-            <aside class="w-60 shrink-0 border-r border-gray-200 bg-white flex flex-col">
-                <div class="h-16 flex items-center gap-2 px-4 border-b border-gray-200">
-                    <span class="text-2xl text-primary-500">"\u{2665}"</span>
-                    <span class="font-semibold">"Mommy's Heart CRM"</span>
-                </div>
-                <nav class="flex-1 p-3 space-y-1">
-                    <NavLink href="/" label="Dashboard" />
-                    <NavLink href="/contacts" label="Contacts" />
-                    <NavLink href="/chat" label="Chat" />
-                </nav>
-                <div class="p-3 text-xs text-gray-400 border-t border-gray-200">
-                    "v" {env!("CARGO_PKG_VERSION")}
-                </div>
-            </aside>
+    let state = expect_context::<AppState>();
+    let navigate = use_navigate();
 
-            <div class="flex-1 flex flex-col min-w-0">
-                <header class="h-16 shrink-0 border-b border-gray-200 bg-white flex items-center justify-between px-6">
-                    <h1 class="text-lg font-semibold">{title}</h1>
-                    <A
-                        href="/chat"
-                        attr:class="text-sm font-medium text-primary-600 hover:text-primary-700"
-                    >
-                        "Ask the assistant"
-                    </A>
-                </header>
-                <main class="flex-1 overflow-auto p-6">{children()}</main>
-            </div>
+    let user = state.current_user.get_untracked();
+    if user.is_none() {
+        return view! { <Redirect path="/login" /> }.into_any();
+    }
+    let user = user.unwrap();
+    let role = user.role;
+    let user_name = user.name.clone();
+    let role_label = role.label();
+
+    let logout = move |_| {
+        state.logout();
+        navigate("/login", Default::default());
+    };
+
+    view! {
+        <div class="min-h-screen bg-slate-950 text-slate-100">
+            <header class="sticky top-0 z-20 border-b border-slate-800 bg-slate-900/80 backdrop-blur">
+                <div class="mx-auto max-w-7xl px-4 sm:px-6">
+                    <div class="flex h-16 items-center gap-4">
+                        <A href="/" attr:class="flex items-center gap-2 shrink-0">
+                            <span class="grid h-8 w-8 place-items-center rounded-lg bg-primary-500/20 text-lg text-primary-400">
+                                "\u{2665}"
+                            </span>
+                            <span class="font-semibold tracking-tight">"Mommy's Heart"</span>
+                        </A>
+
+                        <nav class="hidden md:flex items-center gap-1">
+                            {match role {
+                                Role::Admin => {
+                                    view! {
+                                        <NavLink href="/admin" label="Admin" />
+                                        <NavLink href="/dashboard" label="Overview" />
+                                        <NavLink href="/contacts" label="Contacts" />
+                                        <NavLink href="/volunteer" label="Volunteer view" />
+                                        <NavLink href="/chat" label="Chat" />
+                                    }
+                                        .into_any()
+                                }
+                                Role::Volunteer => {
+                                    view! {
+                                        <NavLink href="/volunteer" label="My cases" />
+                                        <NavLink href="/chat" label="Chat" />
+                                    }
+                                        .into_any()
+                                }
+                            }}
+                        </nav>
+
+                        <div class="ml-auto flex items-center gap-3">
+                            <div class="hidden sm:flex flex-col items-end leading-tight">
+                                <span class="text-sm font-medium">{user_name}</span>
+                                <span class="text-xs text-primary-300">{role_label}</span>
+                            </div>
+                            <button
+                                on:click=logout
+                                class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
+                            >
+                                "Log out"
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <main class="mx-auto max-w-7xl px-4 sm:px-6 py-8">
+                <h1 class="text-2xl font-semibold tracking-tight mb-6">{title}</h1>
+                {children()}
+            </main>
         </div>
     }
+    .into_any()
 }

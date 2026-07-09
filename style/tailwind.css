@@ -16,3 +16,17 @@
   --color-primary-800: #9d174d;
   --color-primary-900: #831843;
 }
+
+/* Dark theme base: keep the whole viewport dark, even outside components. */
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: #020617;
+    /* slate-950 */
+    color: #e2e8f0;
+    /* slate-200 */
+  }
+}

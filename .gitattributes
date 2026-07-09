@@ -1,0 +1,26 @@
+# Normalize line endings: treat all text files as LF in the repo and working tree.
+* text=auto eol=lf
+
+# Explicitly LF for source and config files.
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.css   text eol=lf
+*.json  text eol=lf
+*.html  text eol=lf
+*.js    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+.gitignore   text eol=lf
+.env.example text eol=lf
+
+# Binary files: never touch line endings.
+*.docx  binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary

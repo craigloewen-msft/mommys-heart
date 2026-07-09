@@ -1,0 +1,58 @@
+{
+  "name": "Mommy's Heart CRM (Leptos + Axum)",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+
+  // Handy extras: the GitHub CLI for working with the repo from inside the box.
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  // Named volumes keep heavy, churn-y directories OFF the cross-OS bind mount,
+  // which is where Rust builds crawl on Windows/macOS hosts.
+  //   - target/                 -> compiled artifacts (by far the biggest win)
+  //   - cargo registry + git    -> downloaded crate sources, persisted across
+  //                                container rebuilds so `cargo fetch` is warm.
+  "mounts": [
+    "source=${localWorkspaceFolderBasename}-target,target=${containerWorkspaceFolder}/target,type=volume",
+    "source=${localWorkspaceFolderBasename}-cargo-registry,target=/usr/local/cargo/registry,type=volume",
+    "source=${localWorkspaceFolderBasename}-cargo-git,target=/usr/local/cargo/git,type=volume"
+  ],
+
+  // Fresh volumes mount as root:root, so hand them to the vscode user, then
+  // warm the crate cache and confirm the toolchain is wired up.
+  "postCreateCommand": "sudo chown -R vscode:vscode target /usr/local/cargo/registry /usr/local/cargo/git && cargo fetch && cargo leptos --version",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "fill-labs.dependi",
+        "bradlc.vscode-tailwindcss",
+        "vadimcn.vscode-lldb",
+        "usernamehw.errorlens",
+        "eamodio.gitlens"
+      ],
+      "settings": {
+        // Analyze the server-side build; `ssr` and `hydrate` are mutually
+        // exclusive, so pin one feature set for rust-analyzer.
+        "rust-analyzer.cargo.features": ["ssr"],
+        "rust-analyzer.cargo.noDefaultFeatures": true,
+        "rust-analyzer.check.command": "clippy",
+        "editor.formatOnSave": true,
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        },
+        // Tailwind v4 lives in a .css input file, so light up IntelliSense there.
+        "tailwindCSS.experimental.configFile": "style/tailwind.css",
+        "files.watcherExclude": {
+          "**/target/**": true
+        }
+      }
+    }
+  },
+
+  "remoteUser": "vscode"
+}
