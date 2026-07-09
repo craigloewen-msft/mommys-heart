@@ -78,6 +78,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                                         <NavLink href="/dashboard" label="Overview" />
                                         <NavLink href="/contacts" label="Contacts" />
                                         <NavLink href="/evidence" label="Evidence" />
+                                        <NavLink href="/analytics" label="Analytics" />
                                         <NavLink href="/volunteer" label="Volunteer view" />
                                         <NavLink href="/chat" label="Chat" />
                                     }

@@ -115,6 +115,10 @@ impl AppState {
             phone: String::new(),
             specialty: "General support".into(),
             status: VolunteerStatus::Pending,
+            hours_logged: 0.0,
+            weekly_availability_hours: 0.0,
+            client_contacts: 0,
+            trainings: Vec::new(),
         };
         let user = User {
             id: format!("u-{seq}"),
@@ -156,6 +160,10 @@ impl AppState {
                 }
             },
             status: VolunteerStatus::Pending,
+            hours_logged: 0.0,
+            weekly_availability_hours: 0.0,
+            client_contacts: 0,
+            trainings: Vec::new(),
         };
         self.volunteers.update(|v| v.push(volunteer));
         Ok(())
@@ -384,6 +392,7 @@ impl AppState {
         category: NeedCategory,
         service_types: Vec<ServiceType>,
         summary: &str,
+        matter_type: crate::types::MatterType,
     ) -> Result<(), String> {
         let title = title.trim().to_string();
         if title.is_empty() {
@@ -415,6 +424,13 @@ impl AppState {
             evidence: Vec::new(),
             timeline: vec![opened],
             opened_at: "just now".into(),
+            matter_type,
+            outcome: crate::types::CaseOutcome::Ongoing,
+            intake_date: "just now".into(),
+            resolved_date: None,
+            referrals: Vec::new(),
+            services: Vec::new(),
+            follow_ups: Vec::new(),
         };
         self.cases.update(|list| list.push(case));
         Ok(())

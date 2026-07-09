@@ -5,7 +5,7 @@ use crate::components::case_card::CaseCard;
 use crate::components::layout::Layout;
 use crate::state::AppState;
 use crate::taxonomy::{ServiceCategory, ServiceType};
-use crate::types::{CaseStatus, NeedCategory, Role, VolunteerStatus};
+use crate::types::{CaseStatus, MatterType, NeedCategory, Role, VolunteerStatus};
 
 /// Admin-only control center: manage volunteers, cases, documents, and
 /// assignments over the local demo store.
@@ -40,22 +40,26 @@ pub fn AdminDashboardPage() -> impl IntoView {
     let nc_title = RwSignal::new(String::new());
     let nc_client_id = RwSignal::new(String::new());
     let nc_category = RwSignal::new(NeedCategory::Housing.slug().to_string());
+    let nc_matter = RwSignal::new(MatterType::Housing.slug().to_string());
     let nc_services = RwSignal::new(Vec::<ServiceType>::new());
     let nc_summary = RwSignal::new(String::new());
     let nc_error = RwSignal::new(String::new());
     let add_case = move |_| {
         let category = NeedCategory::from_slug(&nc_category.get()).unwrap_or(NeedCategory::Other);
+        let matter_type = MatterType::from_slug(&nc_matter.get()).unwrap_or(MatterType::Other);
         match state.add_case(
             &nc_client_id.get(),
             &nc_title.get(),
             category,
             nc_services.get(),
             &nc_summary.get(),
+            matter_type,
         ) {
             Ok(()) => {
                 nc_title.set(String::new());
                 nc_client_id.set(String::new());
                 nc_category.set(NeedCategory::Housing.slug().to_string());
+                nc_matter.set(MatterType::Housing.slug().to_string());
                 nc_services.set(Vec::new());
                 nc_summary.set(String::new());
                 nc_error.set(String::new());
@@ -266,6 +270,24 @@ pub fn AdminDashboardPage() -> impl IntoView {
                                     view! {
                                         <option value=cat.slug()>
                                             {format!("Need: {}", cat.label())}
+                                        </option>
+                                    }
+                                })
+                                .collect_view()}
+                        </select>
+                    </div>
+                    <div class="mt-2">
+                        <select
+                            class=input_class
+                            prop:value=move || nc_matter.get()
+                            on:change=move |ev| nc_matter.set(event_target_value(&ev))
+                        >
+                            {MatterType::ALL
+                                .into_iter()
+                                .map(|mt| {
+                                    view! {
+                                        <option value=mt.slug()>
+                                            {format!("Matter: {}", mt.label())}
                                         </option>
                                     }
                                 })

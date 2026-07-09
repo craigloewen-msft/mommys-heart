@@ -6,8 +6,9 @@
 
 use crate::taxonomy::ServiceType;
 use crate::types::{
-    Case, CaseDocument, CaseNote, CasePriority, CaseStatus, Client, EvidenceItem, EvidenceType,
-    NeedCategory, ReviewStatus, Role, TimelineEvent, TimelineKind, User, Volunteer, VolunteerStatus,
+    Case, CaseDocument, CaseNote, CaseOutcome, CasePriority, CaseStatus, Client, EvidenceItem,
+    EvidenceType, FollowUp, MatterType, NeedCategory, Referral, ReviewStatus, Role, ServiceRecord,
+    TimelineEvent, TimelineKind, TrainingRecord, User, Volunteer, VolunteerStatus,
 };
 
 /// Convenience constructor for seed evidence, keeping the case fixtures compact.
@@ -76,6 +77,19 @@ pub fn volunteers() -> Vec<Volunteer> {
             phone: "+1 (312) 555-0175".into(),
             specialty: "Case management".into(),
             status: VolunteerStatus::Active,
+            hours_logged: 142.5,
+            weekly_availability_hours: 16.0,
+            client_contacts: 48,
+            trainings: vec![
+                TrainingRecord {
+                    name: "Trauma-informed care".into(),
+                    completed_on: "2026-02-11".into(),
+                },
+                TrainingRecord {
+                    name: "Safety planning".into(),
+                    completed_on: "2026-04-03".into(),
+                },
+            ],
         },
         Volunteer {
             id: "v-2".into(),
@@ -84,6 +98,19 @@ pub fn volunteers() -> Vec<Volunteer> {
             phone: "+1 (415) 555-0132".into(),
             specialty: "Legal advocacy".into(),
             status: VolunteerStatus::Active,
+            hours_logged: 98.0,
+            weekly_availability_hours: 12.0,
+            client_contacts: 31,
+            trainings: vec![
+                TrainingRecord {
+                    name: "Trauma-informed care".into(),
+                    completed_on: "2026-02-11".into(),
+                },
+                TrainingRecord {
+                    name: "Immigration law basics".into(),
+                    completed_on: "2026-05-20".into(),
+                },
+            ],
         },
         Volunteer {
             id: "v-3".into(),
@@ -92,6 +119,13 @@ pub fn volunteers() -> Vec<Volunteer> {
             phone: "+1 (206) 555-0188".into(),
             specialty: "Housing support".into(),
             status: VolunteerStatus::OnLeave,
+            hours_logged: 61.5,
+            weekly_availability_hours: 6.0,
+            client_contacts: 19,
+            trainings: vec![TrainingRecord {
+                name: "Trauma-informed care".into(),
+                completed_on: "2026-03-18".into(),
+            }],
         },
         Volunteer {
             id: "v-4".into(),
@@ -100,6 +134,13 @@ pub fn volunteers() -> Vec<Volunteer> {
             phone: "+1 (617) 555-0143".into(),
             specialty: "Mental health".into(),
             status: VolunteerStatus::Pending,
+            hours_logged: 12.0,
+            weekly_availability_hours: 8.0,
+            client_contacts: 4,
+            trainings: vec![TrainingRecord {
+                name: "Trauma-informed care".into(),
+                completed_on: String::new(),
+            }],
         },
     ]
 }
@@ -254,6 +295,34 @@ pub fn cases() -> Vec<Case> {
                 ev("e-3", "2026-06-15", TimelineKind::NoteAdded, "Note added"),
             ],
             opened_at: "2026-06-12".into(),
+            matter_type: MatterType::Housing,
+            outcome: CaseOutcome::Ongoing,
+            intake_date: "2026-06-10".into(),
+            resolved_date: None,
+            referrals: vec![Referral {
+                agency: "City Housing Authority".into(),
+                date: "2026-06-20".into(),
+            }],
+            services: vec![
+                ServiceRecord {
+                    kind: "Legal clinic".into(),
+                    date: "2026-06-14".into(),
+                },
+                ServiceRecord {
+                    kind: "Housing navigation".into(),
+                    date: "2026-06-25".into(),
+                },
+            ],
+            follow_ups: vec![
+                FollowUp {
+                    date: "2026-06-30".into(),
+                    completed: true,
+                },
+                FollowUp {
+                    date: "2026-07-10".into(),
+                    completed: false,
+                },
+            ],
         },
         Case {
             id: "c-1002".into(),
@@ -312,6 +381,22 @@ pub fn cases() -> Vec<Case> {
             ],
             timeline: vec![ev("e-4", "2026-06-28", TimelineKind::Opened, "Case opened")],
             opened_at: "2026-06-28".into(),
+            matter_type: MatterType::CustodyVisitation,
+            outcome: CaseOutcome::Ongoing,
+            intake_date: "2026-06-26".into(),
+            resolved_date: None,
+            referrals: vec![Referral {
+                agency: "Family Court Self-Help Center".into(),
+                date: "2026-07-01".into(),
+            }],
+            services: vec![ServiceRecord {
+                kind: "Legal advice".into(),
+                date: "2026-06-30".into(),
+            }],
+            follow_ups: vec![FollowUp {
+                date: "2026-07-08".into(),
+                completed: false,
+            }],
         },
         Case {
             id: "c-1003".into(),
@@ -343,6 +428,34 @@ pub fn cases() -> Vec<Case> {
             )],
             timeline: vec![ev("e-5", "2026-05-19", TimelineKind::Opened, "Case opened")],
             opened_at: "2026-05-19".into(),
+            matter_type: MatterType::PublicBenefits,
+            outcome: CaseOutcome::Resolved,
+            intake_date: "2026-05-15".into(),
+            resolved_date: Some("2026-06-20".into()),
+            referrals: vec![Referral {
+                agency: "SNAP Benefits Office".into(),
+                date: "2026-05-22".into(),
+            }],
+            services: vec![
+                ServiceRecord {
+                    kind: "Benefits application".into(),
+                    date: "2026-05-18".into(),
+                },
+                ServiceRecord {
+                    kind: "Appeal filing".into(),
+                    date: "2026-06-05".into(),
+                },
+            ],
+            follow_ups: vec![
+                FollowUp {
+                    date: "2026-06-01".into(),
+                    completed: true,
+                },
+                FollowUp {
+                    date: "2026-06-18".into(),
+                    completed: true,
+                },
+            ],
         },
         // --- Other clients: single-need cases -------------------------------
         Case {
@@ -361,6 +474,22 @@ pub fn cases() -> Vec<Case> {
             evidence: Vec::new(),
             timeline: vec![ev("e-6", "2026-06-28", TimelineKind::Opened, "Case opened")],
             opened_at: "2026-06-28".into(),
+            matter_type: MatterType::Immigration,
+            outcome: CaseOutcome::Ongoing,
+            intake_date: "2026-06-26".into(),
+            resolved_date: None,
+            referrals: vec![Referral {
+                agency: "Immigration Legal Aid".into(),
+                date: "2026-07-02".into(),
+            }],
+            services: vec![ServiceRecord {
+                kind: "Consultation".into(),
+                date: "2026-06-30".into(),
+            }],
+            follow_ups: vec![FollowUp {
+                date: "2026-07-05".into(),
+                completed: false,
+            }],
         },
         Case {
             id: "c-1005".into(),
@@ -381,6 +510,28 @@ pub fn cases() -> Vec<Case> {
             evidence: Vec::new(),
             timeline: vec![ev("e-7", "2026-05-19", TimelineKind::Opened, "Case opened")],
             opened_at: "2026-05-19".into(),
+            matter_type: MatterType::MentalHealth,
+            outcome: CaseOutcome::Ongoing,
+            intake_date: "2026-05-15".into(),
+            resolved_date: None,
+            referrals: vec![Referral {
+                agency: "Community Counseling Center".into(),
+                date: "2026-05-25".into(),
+            }],
+            services: vec![
+                ServiceRecord {
+                    kind: "Counseling referral".into(),
+                    date: "2026-05-20".into(),
+                },
+                ServiceRecord {
+                    kind: "Wellness check".into(),
+                    date: "2026-06-02".into(),
+                },
+            ],
+            follow_ups: vec![FollowUp {
+                date: "2026-06-10".into(),
+                completed: true,
+            }],
         },
         Case {
             id: "c-1006".into(),
@@ -401,6 +552,19 @@ pub fn cases() -> Vec<Case> {
             evidence: Vec::new(),
             timeline: vec![ev("e-8", "2026-07-05", TimelineKind::Opened, "Case opened")],
             opened_at: "2026-07-05".into(),
+            matter_type: MatterType::Other,
+            outcome: CaseOutcome::ReferredOut,
+            intake_date: "2026-07-03".into(),
+            resolved_date: Some("2026-07-04".into()),
+            referrals: vec![Referral {
+                agency: "Partner Advocacy Agency".into(),
+                date: "2026-07-04".into(),
+            }],
+            services: Vec::new(),
+            follow_ups: vec![FollowUp {
+                date: "2026-07-12".into(),
+                completed: false,
+            }],
         },
     ]
 }

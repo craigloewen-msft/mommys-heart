@@ -4,10 +4,11 @@ use leptos_router::components::{Redirect, Route, Router, Routes};
 use leptos_router::path;
 
 use crate::pages::{
-    admin::AdminDashboardPage, chat::ChatPage, clients::ClientDetailPage, clients::ClientsPage,
-    contact_detail::ContactDetailPage, contacts::ContactsPage, dashboard::DashboardPage,
-    evidence::EvidenceRepositoryPage, insights::InsightsPage, login::LoginPage,
-    register::RegisterPage, volunteer::VolunteerDashboardPage,
+    admin::AdminDashboardPage, analytics::AnalyticsPage, chat::ChatPage,
+    clients::ClientDetailPage, clients::ClientsPage, contact_detail::ContactDetailPage,
+    contacts::ContactsPage, dashboard::DashboardPage, evidence::EvidenceRepositoryPage,
+    insights::InsightsPage, login::LoginPage, register::RegisterPage,
+    volunteer::VolunteerDashboardPage,
 };
 use crate::state::AppState;
 use crate::types::Role;
@@ -64,6 +65,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/clients/:id") view=ClientDetailPage />
                 <Route path=path!("/insights") view=InsightsPage />
                 <Route path=path!("/evidence") view=EvidenceRepositoryPage />
+                <Route path=path!("/analytics") view=AnalyticsPage />
                 <Route path=path!("/volunteer") view=VolunteerDashboardPage />
                 <Route path=path!("/dashboard") view=DashboardPage />
                 <Route path=path!("/contacts") view=ContactsPage />

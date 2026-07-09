@@ -187,6 +187,21 @@ impl VolunteerStatus {
     }
 }
 
+/// A completed (or scheduled) training a volunteer participated in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrainingRecord {
+    pub name: String,
+    /// ISO `YYYY-MM-DD`. Empty string means enrolled but not yet completed.
+    pub completed_on: String,
+}
+
+impl TrainingRecord {
+    /// Whether this training has been completed.
+    pub fn is_completed(&self) -> bool {
+        !self.completed_on.trim().is_empty()
+    }
+}
+
 /// A volunteer record.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Volunteer {
@@ -196,6 +211,174 @@ pub struct Volunteer {
     pub phone: String,
     pub specialty: String,
     pub status: VolunteerStatus,
+    /// Total service hours logged to date.
+    #[serde(default)]
+    pub hours_logged: f64,
+    /// Typical weekly availability in hours (used for scheduling insight).
+    #[serde(default)]
+    pub weekly_availability_hours: f64,
+    /// Count of logged client contacts / follow-up touches.
+    #[serde(default)]
+    pub client_contacts: u32,
+    /// Trainings the volunteer has enrolled in or completed.
+    #[serde(default)]
+    pub trainings: Vec<TrainingRecord>,
+}
+
+/// The programmatic category (matter type) a case falls under. Drives the
+/// programmatic metrics used for service-utilization and grant reporting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatterType {
+    Housing,
+    Immigration,
+    Divorce,
+    CustodyVisitation,
+    ChildSupport,
+    OrderOfProtection,
+    DomesticViolence,
+    MentalHealth,
+    PublicBenefits,
+    SafetyPlanning,
+    Other,
+}
+
+impl MatterType {
+    pub const ALL: [MatterType; 11] = [
+        MatterType::Housing,
+        MatterType::Immigration,
+        MatterType::Divorce,
+        MatterType::CustodyVisitation,
+        MatterType::ChildSupport,
+        MatterType::OrderOfProtection,
+        MatterType::DomesticViolence,
+        MatterType::MentalHealth,
+        MatterType::PublicBenefits,
+        MatterType::SafetyPlanning,
+        MatterType::Other,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MatterType::Housing => "Housing",
+            MatterType::Immigration => "Immigration",
+            MatterType::Divorce => "Divorce",
+            MatterType::CustodyVisitation => "Custody & visitation",
+            MatterType::ChildSupport => "Child support",
+            MatterType::OrderOfProtection => "Orders of protection",
+            MatterType::DomesticViolence => "Domestic violence advocacy",
+            MatterType::MentalHealth => "Mental health referral",
+            MatterType::PublicBenefits => "Public benefits",
+            MatterType::SafetyPlanning => "Safety planning",
+            MatterType::Other => "Other",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            MatterType::Housing => "housing",
+            MatterType::Immigration => "immigration",
+            MatterType::Divorce => "divorce",
+            MatterType::CustodyVisitation => "custody_visitation",
+            MatterType::ChildSupport => "child_support",
+            MatterType::OrderOfProtection => "order_of_protection",
+            MatterType::DomesticViolence => "domestic_violence",
+            MatterType::MentalHealth => "mental_health",
+            MatterType::PublicBenefits => "public_benefits",
+            MatterType::SafetyPlanning => "safety_planning",
+            MatterType::Other => "other",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.slug() == s)
+    }
+}
+
+/// The resolution outcome of a case, for outcome tracking and impact reporting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaseOutcome {
+    Ongoing,
+    Resolved,
+    ReferredOut,
+    Withdrawn,
+    Unresolved,
+}
+
+impl CaseOutcome {
+    pub const ALL: [CaseOutcome; 5] = [
+        CaseOutcome::Ongoing,
+        CaseOutcome::Resolved,
+        CaseOutcome::ReferredOut,
+        CaseOutcome::Withdrawn,
+        CaseOutcome::Unresolved,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CaseOutcome::Ongoing => "Ongoing",
+            CaseOutcome::Resolved => "Resolved",
+            CaseOutcome::ReferredOut => "Referred out",
+            CaseOutcome::Withdrawn => "Withdrawn",
+            CaseOutcome::Unresolved => "Unresolved",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            CaseOutcome::Ongoing => "ongoing",
+            CaseOutcome::Resolved => "resolved",
+            CaseOutcome::ReferredOut => "referred_out",
+            CaseOutcome::Withdrawn => "withdrawn",
+            CaseOutcome::Unresolved => "unresolved",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.slug() == s)
+    }
+
+    pub fn badge_classes(self) -> &'static str {
+        match self {
+            CaseOutcome::Resolved => {
+                "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+            }
+            CaseOutcome::Ongoing => "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
+            CaseOutcome::ReferredOut => {
+                "bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30"
+            }
+            CaseOutcome::Withdrawn => "bg-slate-500/15 text-slate-400 ring-1 ring-slate-500/30",
+            CaseOutcome::Unresolved => "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",
+        }
+    }
+}
+
+/// A referral made on behalf of a client to an external agency or program.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Referral {
+    /// The agency or program the client was referred to.
+    pub agency: String,
+    /// ISO `YYYY-MM-DD`.
+    pub date: String,
+}
+
+/// A discrete service provided as part of a case.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ServiceRecord {
+    /// Short description of the service (e.g. "Legal clinic", "Counseling").
+    pub kind: String,
+    /// ISO `YYYY-MM-DD`.
+    pub date: String,
+}
+
+/// A scheduled or completed follow-up touchpoint for a case.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FollowUp {
+    /// ISO `YYYY-MM-DD` the follow-up was due / performed.
+    pub date: String,
+    /// Whether the follow-up was completed.
+    pub completed: bool,
 }
 
 /// Lifecycle status of a support case.
@@ -613,4 +796,33 @@ pub struct Case {
     pub evidence: Vec<EvidenceItem>,
     pub timeline: Vec<TimelineEvent>,
     pub opened_at: String,
+    /// Programmatic category, for service-utilization / grant reporting.
+    #[serde(default = "default_matter_type")]
+    pub matter_type: MatterType,
+    /// Resolution outcome, for outcome tracking.
+    #[serde(default = "default_case_outcome")]
+    pub outcome: CaseOutcome,
+    /// ISO `YYYY-MM-DD` the client was intaked.
+    #[serde(default)]
+    pub intake_date: String,
+    /// ISO `YYYY-MM-DD` the case was resolved, if it has been.
+    #[serde(default)]
+    pub resolved_date: Option<String>,
+    /// Referrals made on behalf of the client.
+    #[serde(default)]
+    pub referrals: Vec<Referral>,
+    /// Services provided as part of the case.
+    #[serde(default)]
+    pub services: Vec<ServiceRecord>,
+    /// Follow-up touchpoints (completed and outstanding).
+    #[serde(default)]
+    pub follow_ups: Vec<FollowUp>,
+}
+
+fn default_matter_type() -> MatterType {
+    MatterType::Other
+}
+
+fn default_case_outcome() -> CaseOutcome {
+    CaseOutcome::Ongoing
 }

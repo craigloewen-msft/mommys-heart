@@ -1,5 +1,6 @@
 pub mod api_client;
 pub mod app;
+pub mod analytics;
 pub mod mockdata;
 pub mod state;
 pub mod taxonomy;
@@ -7,11 +8,13 @@ pub mod types;
 
 pub mod components {
     pub mod case_card;
+    pub mod charts;
     pub mod layout;
 }
 
 pub mod pages {
     pub mod admin;
+    pub mod analytics;
     pub mod chat;
     pub mod clients;
     pub mod contact_detail;
