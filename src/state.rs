@@ -1,37 +1,41 @@
-//! Client-side application state for the demo: the signed-in user plus the
-//! local volunteer/case store. All data lives in reactive signals so the admin
-//! screens can edit it live. Nothing is persisted — this is a local demo.
+//! Client-side application state for the V1 app: the signed-in user plus the
+//! local in-memory stores (users, cases, grants, messages). All data lives in
+//! reactive signals so screens can edit it live. Nothing is persisted — this is
+//! a mock until a real backend is wired in.
 
 use leptos::prelude::*;
 
-use crate::mockdata::{self, ORG_NAME};
-use crate::taxonomy::{ServiceCategory, ServiceType};
+use crate::mockdata;
 use crate::types::{
-    AuditAction, AuditEvent, Case, CaseDocument, CaseNote, CaseStatus, Client,
-    DocumentClassification, EvidenceItem, EvidenceType, KnowledgeItem, NeedCategory, Permission,
-    ReviewStatus, Role, TimelineEvent, TimelineKind, User, Volunteer, VolunteerStatus,
+    AccountRole, Case, CaseAssignment, CaseCapability, CaseNote, CaseProperty, CaseStatus,
+    ChangeLogEntry, Evidence, Grant, Message, User,
 };
 
-/// Fields collected when adding a new piece of evidence to a case.
-#[derive(Clone, Debug, Default)]
-pub struct EvidenceDraft {
-    pub name: String,
-    pub evidence_type: EvidenceType,
-    pub description: String,
-    pub source: String,
-    pub party: String,
-    pub occurred_on: String,
-    pub tags: Vec<String>,
+/// Current local date-time as `YYYY-MM-DD HH:MM`, read from the browser clock.
+/// On the server build (where user mutations never run) it returns a fixed
+/// placeholder so the same code compiles for both targets.
+pub fn now_stamp() -> String {
+    #[cfg(feature = "hydrate")]
+    {
+        let d = js_sys::Date::new_0();
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}",
+            d.get_full_year(),
+            d.get_month() + 1,
+            d.get_date(),
+            d.get_hours(),
+            d.get_minutes(),
+        )
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        "1970-01-01 00:00".to_string()
+    }
 }
 
-/// A flattened evidence item paired with its owning case, for the cross-case
-/// Evidence Repository views.
-#[derive(Clone, Debug, PartialEq)]
-pub struct EvidenceRow {
-    pub case_id: String,
-    pub case_title: String,
-    pub client_name: String,
-    pub item: EvidenceItem,
+/// Current local date as `YYYY-MM-DD` (see [`now_stamp`]).
+pub fn today() -> String {
+    now_stamp().chars().take(10).collect()
 }
 
 /// Shared, reactive application state. `RwSignal` is `Copy`, so the whole
@@ -40,14 +44,16 @@ pub struct EvidenceRow {
 pub struct AppState {
     pub current_user: RwSignal<Option<User>>,
     pub users: RwSignal<Vec<User>>,
-    pub volunteers: RwSignal<Vec<Volunteer>>,
-    pub clients: RwSignal<Vec<Client>>,
     pub cases: RwSignal<Vec<Case>>,
-    /// Append-only audit trail (demo, in-memory).
-    pub audit_log: RwSignal<Vec<AuditEvent>>,
-    /// Organization-owned institutional knowledge.
-    pub knowledge: RwSignal<Vec<KnowledgeItem>>,
+    pub grants: RwSignal<Vec<Grant>>,
+    pub messages: RwSignal<Vec<Message>>,
     seq: RwSignal<u32>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AppState {
@@ -55,12 +61,10 @@ impl AppState {
         Self {
             current_user: RwSignal::new(None),
             users: RwSignal::new(mockdata::users()),
-            volunteers: RwSignal::new(mockdata::volunteers()),
-            clients: RwSignal::new(mockdata::clients()),
             cases: RwSignal::new(mockdata::cases()),
-            audit_log: RwSignal::new(mockdata::audit_log()),
-            knowledge: RwSignal::new(mockdata::knowledge()),
-            seq: RwSignal::new(2000),
+            grants: RwSignal::new(mockdata::grants()),
+            messages: RwSignal::new(mockdata::messages()),
+            seq: RwSignal::new(5000),
         }
     }
 
@@ -71,33 +75,24 @@ impl AppState {
         next
     }
 
-    // --- audit trail --------------------------------------------------------
-
-    /// Append an entry to the audit trail, attributed to the signed-in user
-    /// (or "system" when no one is signed in, e.g. registration).
-    pub fn record(&self, action: AuditAction, target: impl Into<String>) {
-        let (actor, actor_role) = match self.current_user.get_untracked() {
-            Some(u) => (u.name, u.role),
-            None => ("system".to_string(), Role::ReadOnly),
-        };
-        let seq = self.next_seq();
-        let event = AuditEvent {
-            id: format!("a-{seq}"),
-            actor,
-            actor_role,
-            action,
-            target: target.into(),
-            at: "just now".into(),
-        };
-        // Newest first.
-        self.audit_log.update(|log| log.insert(0, event));
+    /// Display name of the signed-in user (or "system").
+    fn actor_name(&self) -> String {
+        self.current_user
+            .get_untracked()
+            .map(|u| u.full_name())
+            .unwrap_or_else(|| "system".into())
     }
 
-    // --- authorization (RBAC) ----------------------------------------------
-
-    /// The permission set granted to the current user, if any.
-    pub fn can(&self, perm: Permission) -> bool {
-        self.role().map(|r| r.can(perm)).unwrap_or(false)
+    fn change_entry(&self, field: &str, old_value: &str, new_value: &str) -> ChangeLogEntry {
+        let seq = self.next_seq();
+        ChangeLogEntry {
+            id: format!("cl-{seq}"),
+            actor: self.actor_name(),
+            field: field.into(),
+            old_value: old_value.into(),
+            new_value: new_value.into(),
+            at: now_stamp(),
+        }
     }
 
     // --- auth ---------------------------------------------------------------
@@ -106,8 +101,12 @@ impl AppState {
         self.current_user.get().is_some()
     }
 
-    pub fn role(&self) -> Option<Role> {
+    pub fn role(&self) -> Option<AccountRole> {
         self.current_user.get().map(|u| u.role)
+    }
+
+    pub fn is_admin(&self) -> bool {
+        self.role().map(|r| r.is_admin()).unwrap_or(false)
     }
 
     pub fn login(&self, email: &str, password: &str) -> Result<User, String> {
@@ -120,18 +119,24 @@ impl AppState {
         match found {
             Some(user) => {
                 self.current_user.set(Some(user.clone()));
-                self.record(AuditAction::Login, user.email.clone());
                 Ok(user)
             }
             None => Err("Invalid email or password.".into()),
         }
     }
 
-    pub fn register(&self, name: &str, email: &str, password: &str) -> Result<User, String> {
-        let name = name.trim().to_string();
+    pub fn register(
+        &self,
+        first_name: &str,
+        last_name: &str,
+        email: &str,
+        password: &str,
+    ) -> Result<User, String> {
+        let first_name = first_name.trim().to_string();
+        let last_name = last_name.trim().to_string();
         let email = email.trim().to_string();
-        if name.is_empty() || email.is_empty() || password.is_empty() {
-            return Err("Please fill in every field.".into());
+        if first_name.is_empty() || email.is_empty() || password.is_empty() {
+            return Err("Please fill in first name, email, and password.".into());
         }
         let exists = self
             .users
@@ -142,711 +147,486 @@ impl AppState {
             return Err("An account with that email already exists.".into());
         }
 
-        // New self-service sign-ups become volunteers with a matching record.
+        // Self-service sign-ups become clients by default; admins promote later.
         let seq = self.next_seq();
-        let volunteer_id = format!("v-{seq}");
-        let volunteer = Volunteer {
-            id: volunteer_id.clone(),
-            name: name.clone(),
-            email: email.clone(),
-            phone: String::new(),
-            specialty: "General support".into(),
-            status: VolunteerStatus::Pending,
-            hours_logged: 0.0,
-            weekly_availability_hours: 0.0,
-            client_contacts: 0,
-            trainings: Vec::new(),
-        };
         let user = User {
             id: format!("u-{seq}"),
-            name,
+            first_name,
+            last_name,
             email,
+            phone: String::new(),
+            home_address: String::new(),
             password: password.to_string(),
-            role: Role::Volunteer,
-            volunteer_id: Some(volunteer_id),
+            role: AccountRole::Client,
+            assigned_cases: Vec::new(),
+            audit_log: Vec::new(),
         };
-        self.volunteers.update(|v| v.push(volunteer));
         self.users.update(|u| u.push(user.clone()));
         self.current_user.set(Some(user.clone()));
-        self.record(AuditAction::Register, user.email.clone());
         Ok(user)
     }
 
     pub fn logout(&self) {
-        if let Some(u) = self.current_user.get_untracked() {
-            self.record(AuditAction::Logout, u.email);
-        }
         self.current_user.set(None);
-    }
-
-    // --- volunteers ---------------------------------------------------------
-
-    pub fn add_volunteer(&self, name: &str, email: &str, specialty: &str) -> Result<(), String> {
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            return Err("A name is required.".into());
-        }
-        let seq = self.next_seq();
-        let volunteer = Volunteer {
-            id: format!("v-{seq}"),
-            name: name.clone(),
-            email: email.trim().to_string(),
-            phone: String::new(),
-            specialty: {
-                let s = specialty.trim();
-                if s.is_empty() {
-                    "General support".into()
-                } else {
-                    s.to_string()
-                }
-            },
-            status: VolunteerStatus::Pending,
-            hours_logged: 0.0,
-            weekly_availability_hours: 0.0,
-            client_contacts: 0,
-            trainings: Vec::new(),
-        };
-        self.volunteers.update(|v| v.push(volunteer));
-        self.record(AuditAction::AddVolunteer, name);
-        Ok(())
-    }
-
-    pub fn set_volunteer_status(&self, id: &str, status: VolunteerStatus) {
-        let mut label = String::new();
-        self.volunteers.update(|list| {
-            if let Some(v) = list.iter_mut().find(|v| v.id == id) {
-                v.status = status;
-                label = v.name.clone();
-            }
-        });
-        self.record(
-            AuditAction::UpdateVolunteerStatus,
-            format!("{label} → {}", status.label()),
-        );
-    }
-
-    /// Change a user's role / authorization level (RBAC administration).
-    pub fn set_user_role(&self, user_id: &str, role: Role) {
-        let mut label = String::new();
-        self.users.update(|list| {
-            if let Some(u) = list.iter_mut().find(|u| u.id == user_id) {
-                u.role = role;
-                label = u.name.clone();
-            }
-        });
-        // Keep the signed-in user's cached copy in sync if they changed self.
-        self.current_user.update(|cur| {
-            if let Some(u) = cur.as_mut() {
-                if u.id == user_id {
-                    u.role = role;
-                }
-            }
-        });
-        self.record(
-            AuditAction::ChangeUserRole,
-            format!("{label} → {}", role.label()),
-        );
-    }
-
-    /// Offboard a volunteer: mark them inactive and reassign their case
-    /// stewardship to the organization so institutional knowledge and case
-    /// context stay with Mommy's Heart rather than leaving with the person.
-    pub fn offboard_volunteer(&self, volunteer_id: &str) {
-        let mut name = String::new();
-        self.volunteers.update(|list| {
-            if let Some(v) = list.iter_mut().find(|v| v.id == volunteer_id) {
-                v.status = VolunteerStatus::Inactive;
-                name = v.name.clone();
-            }
-        });
-        // Reassign stewardship of any case this volunteer stewarded to the org.
-        self.cases.update(|list| {
-            for c in list.iter_mut() {
-                if c.steward == name {
-                    c.steward = ORG_NAME.to_string();
-                }
-            }
-        });
-        self.record(AuditAction::OffboardVolunteer, name);
     }
 
     // --- cases --------------------------------------------------------------
 
-    /// Build a timeline event with a fresh id and a demo "just now" timestamp.
-    fn new_event(&self, kind: TimelineKind, summary: String) -> TimelineEvent {
-        let seq = self.next_seq();
-        TimelineEvent {
-            id: format!("e-{seq}"),
-            at: "just now".into(),
-            kind,
-            summary,
+    /// Cases the signed-in user can see: admins see all; everyone else sees
+    /// only the cases they are assigned to (or own).
+    pub fn visible_cases(&self) -> Vec<Case> {
+        let all = self.cases.get();
+        match self.current_user.get() {
+            Some(u) if u.role.is_admin() => all,
+            Some(u) => all
+                .into_iter()
+                .filter(|c| c.owner_id == u.id || u.is_assigned_to(&c.id))
+                .collect(),
+            None => Vec::new(),
         }
     }
 
-    /// Name of the currently signed-in user, for authoring notes/events.
-    fn actor_name(&self) -> String {
-        self.current_user
-            .get_untracked()
-            .map(|u| u.name)
-            .unwrap_or_else(|| "System".into())
-    }
-
-    /// Look up a single case by id.
-    pub fn case(&self, id: &str) -> Option<Case> {
-        self.cases.get().into_iter().find(|c| c.id == id)
-    }
-
-    /// Record that the signed-in user viewed a case (audit trail).
-    pub fn view_case(&self, id: &str) {
-        if let Some(c) = self.case(id) {
-            self.record(AuditAction::ViewCase, c.title);
+    /// The signed-in user's capabilities on a case. Admins and the case owner
+    /// implicitly hold every capability; everyone else holds exactly the set
+    /// granted by their assignment.
+    pub fn capabilities_on(&self, case: &Case) -> Vec<CaseCapability> {
+        match self.current_user.get() {
+            Some(u) if u.role.is_admin() || case.owner_id == u.id => CaseCapability::ALL.to_vec(),
+            Some(u) => u.capabilities_for(&case.id),
+            None => Vec::new(),
         }
     }
 
-    pub fn set_case_status(&self, id: &str, status: CaseStatus) {
-        let event = self.new_event(
-            TimelineKind::StatusChanged,
-            format!("Status set to {}", status.label()),
-        );
-        let mut label = String::new();
-        self.cases.update(|list| {
-            if let Some(c) = list.iter_mut().find(|c| c.id == id) {
-                if c.status == status {
-                    return;
-                }
-                c.status = status;
-                c.timeline.push(event);
-                label = c.title.clone();
-            }
-        });
-        self.record(
-            AuditAction::UpdateCaseStatus,
-            format!("{label} → {}", status.label()),
-        );
+    /// Whether the signed-in user holds a specific capability on a case.
+    pub fn case_can(&self, case: &Case, cap: CaseCapability) -> bool {
+        self.capabilities_on(case).contains(&cap)
     }
 
-    pub fn toggle_case_volunteer(&self, case_id: &str, volunteer_id: &str) {
-        let volunteer_name = self
-            .volunteers
-            .get_untracked()
-            .into_iter()
-            .find(|v| v.id == volunteer_id)
-            .map(|v| v.name)
-            .unwrap_or_else(|| volunteer_id.to_string());
-        let assign_event = self.new_event(
-            TimelineKind::VolunteerAssigned,
-            format!("Assigned {volunteer_name}"),
-        );
-        let unassign_event = self.new_event(
-            TimelineKind::VolunteerUnassigned,
-            format!("Unassigned {volunteer_name}"),
-        );
-        let mut label = String::new();
-        self.cases.update(|list| {
-            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
-                label = c.title.clone();
-                if let Some(pos) = c
-                    .assigned_volunteer_ids
-                    .iter()
-                    .position(|v| v == volunteer_id)
-                {
-                    c.assigned_volunteer_ids.remove(pos);
-                    c.timeline.push(unassign_event);
-                } else {
-                    c.assigned_volunteer_ids.push(volunteer_id.to_string());
-                    c.timeline.push(assign_event);
-                }
-            }
-        });
-        self.record(AuditAction::AssignVolunteer, label);
-    }
-
-    /// Toggle a two-way cross-link between two of a client's cases so their
-    /// interconnected needs can be navigated together.
-    pub fn toggle_related_case(&self, case_id: &str, other_id: &str) {
-        if case_id == other_id {
-            return;
-        }
-        self.cases.update(|list| {
-            let currently_linked = list
-                .iter()
-                .find(|c| c.id == case_id)
-                .map(|c| c.related_case_ids.iter().any(|r| r == other_id))
-                .unwrap_or(false);
-            for c in list.iter_mut() {
-                if c.id == case_id {
-                    toggle_link(&mut c.related_case_ids, other_id, currently_linked);
-                } else if c.id == other_id {
-                    toggle_link(&mut c.related_case_ids, case_id, currently_linked);
-                }
-            }
-        });
-    }
-
-    /// Toggle a legal hold on a case (records-retention administration).
-    pub fn set_legal_hold(&self, case_id: &str, hold: bool) {
-        let mut label = String::new();
-        self.cases.update(|list| {
-            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
-                c.legal_hold = hold;
-                label = c.title.clone();
-            }
-        });
-        self.record(
-            AuditAction::LegalHoldChange,
-            format!("{label} → {}", if hold { "on hold" } else { "released" }),
-        );
-    }
-
-    /// Whether a case is eligible for disposal: closed, not permanently
-    /// retained, and not under legal hold.
-    pub fn is_disposal_eligible(&self, case: &Case) -> bool {
-        case.status == CaseStatus::Closed
-            && case.retention != crate::types::RetentionClass::Permanent
-            && !case.legal_hold
-    }
-
-    /// Dispose (delete) a case if retention policy permits it.
-    pub fn dispose_case(&self, case_id: &str) -> Result<(), String> {
-        let case = self.case(case_id).ok_or("Case not found.")?;
-        if !self.is_disposal_eligible(&case) {
-            return Err("Record is not eligible for disposal.".into());
-        }
-        self.cases.update(|list| list.retain(|c| c.id != case_id));
-        self.record(AuditAction::DisposeRecord, case.title);
-        Ok(())
-    }
-
-    pub fn add_case_document(
+    /// Create a new case owned by the signed-in user, with an initial status,
+    /// key properties, and an optional first note. Returns the new case id.
+    pub fn add_case_full(
         &self,
-        case_id: &str,
         name: &str,
-        classification: DocumentClassification,
-    ) {
+        status: CaseStatus,
+        properties: Vec<(String, String)>,
+        first_note: Option<String>,
+    ) -> Result<String, String> {
         let name = name.trim().to_string();
         if name.is_empty() {
-            return;
+            return Err("Case name is required.".into());
         }
-        let seq = self.next_seq();
-        let event = self.new_event(TimelineKind::DocumentAdded, format!("Added \"{name}\""));
-        self.cases.update(|list| {
-            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
-                c.documents.push(CaseDocument {
-                    id: format!("d-{seq}"),
-                    name: name.clone(),
-                    uploaded_at: "just now".into(),
-                    classification,
-                });
-                c.timeline.push(event);
-            }
-        });
-        self.record(
-            AuditAction::UploadDocument,
-            format!("{name} ({})", classification.label()),
-        );
-    }
-
-    /// Whether the current user may open a document of the given
-    /// classification. Sensitive documents require `ViewConfidentialDocs`.
-    pub fn can_view_document(&self, classification: DocumentClassification) -> bool {
-        if classification.is_sensitive() {
-            self.can(Permission::ViewConfidentialDocs)
-        } else {
-            self.is_authenticated()
-        }
-    }
-
-    /// Attempt to open a document, recording the access (or denial) in the
-    /// audit trail. Returns whether access was granted.
-    pub fn access_document(&self, doc: &CaseDocument) -> bool {
-        let granted = self.can_view_document(doc.classification);
-        let target = format!("{} ({})", doc.name, doc.classification.label());
-        if granted {
-            self.record(AuditAction::AccessDocument, target);
-        } else {
-            self.record(AuditAction::DeniedAccess, target);
-        }
-        granted
-    }
-
-    pub fn add_case_evidence(&self, case_id: &str, draft: EvidenceDraft) {
-        let name = draft.name.trim().to_string();
-        if name.is_empty() {
-            return;
-        }
-        let tags: Vec<String> = draft
-            .tags
-            .into_iter()
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .collect();
-        let seq = self.next_seq();
-        let event =
-            self.new_event(TimelineKind::DocumentAdded, format!("Added evidence \"{name}\""));
-        self.cases.update(|list| {
-            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
-                c.evidence.push(EvidenceItem {
-                    id: format!("e-{seq}"),
-                    name,
-                    evidence_type: draft.evidence_type,
-                    description: draft.description.trim().to_string(),
-                    source: draft.source.trim().to_string(),
-                    party: draft.party.trim().to_string(),
-                    occurred_on: draft.occurred_on.trim().to_string(),
-                    tags,
-                    review_status: ReviewStatus::Unreviewed,
-                    uploaded_at: "just now".into(),
-                });
-                c.timeline.push(event);
-            }
-        });
-    }
-
-    pub fn set_evidence_review_status(
-        &self,
-        case_id: &str,
-        evidence_id: &str,
-        status: ReviewStatus,
-    ) {
-        self.cases.update(|list| {
-            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
-                if let Some(e) = c.evidence.iter_mut().find(|e| e.id == evidence_id) {
-                    e.review_status = status;
-                }
-            }
-        });
-    }
-
-    pub fn remove_evidence(&self, case_id: &str, evidence_id: &str) {
-        self.cases.update(|list| {
-            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
-                c.evidence.retain(|e| e.id != evidence_id);
-            }
-        });
-    }
-
-    /// Every evidence item across all cases, paired with its owning case, for
-    /// the cross-case Evidence Repository.
-    pub fn all_evidence(&self) -> Vec<EvidenceRow> {
-        self.cases
-            .get()
-            .into_iter()
-            .flat_map(|c| {
-                let case_id = c.id.clone();
-                let case_title = c.title.clone();
-                let client_name = self.client_name(&c.client_id);
-                c.evidence.into_iter().map(move |item| EvidenceRow {
-                    case_id: case_id.clone(),
-                    case_title: case_title.clone(),
-                    client_name: client_name.clone(),
-                    item,
-                })
-            })
-            .collect()
-    }
-
-    pub fn add_case_note(&self, case_id: &str, body: &str) {
-        let body = body.trim().to_string();
-        if body.is_empty() {
-            return;
-        }
-        let author = self.actor_name();
-        let seq = self.next_seq();
-        let event = self.new_event(TimelineKind::NoteAdded, "Note added".into());
-        self.cases.update(|list| {
-            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
-                c.notes.push(CaseNote {
-                    id: format!("n-{seq}"),
-                    author,
-                    body,
-                    created_at: "just now".into(),
-                });
-                c.timeline.push(event);
-            }
-        });
-    }
-
-    pub fn add_case(
-        &self,
-        client_id: &str,
-        title: &str,
-        category: NeedCategory,
-        service_types: Vec<ServiceType>,
-        summary: &str,
-        matter_type: crate::types::MatterType,
-    ) -> Result<(), String> {
-        let title = title.trim().to_string();
-        if title.is_empty() {
-            return Err("A case title is required.".into());
-        }
-        if !self
-            .clients
-            .get_untracked()
-            .iter()
-            .any(|c| c.id == client_id)
-        {
-            return Err("Please choose a client for this case.".into());
-        }
-        let creator = self
+        let owner = self
             .current_user
             .get_untracked()
-            .map(|u| u.name)
-            .unwrap_or_else(|| "system".into());
+            .ok_or("You must be signed in.")?;
         let seq = self.next_seq();
-        let opened = self.new_event(TimelineKind::Opened, "Case opened".into());
-        let case = Case {
-            id: format!("c-{seq}"),
-            title: title.clone(),
-            client_id: client_id.to_string(),
-            category,
-            service_types,
-            summary: summary.trim().to_string(),
-            status: CaseStatus::Open,
-            priority: crate::types::CasePriority::Medium,
-            assigned_volunteer_ids: Vec::new(),
-            related_case_ids: Vec::new(),
-            notes: Vec::new(),
-            documents: Vec::new(),
-            evidence: Vec::new(),
-            timeline: vec![opened],
-            opened_at: "just now".into(),
-            matter_type,
-            outcome: crate::types::CaseOutcome::Ongoing,
-            intake_date: "just now".into(),
-            resolved_date: None,
-            referrals: Vec::new(),
-            services: Vec::new(),
-            follow_ups: Vec::new(),
-            created_by: creator.clone(),
-            // New cases are owned by the organization; the creator stewards them
-            // until reassigned.
-            steward: creator,
-            retention: crate::types::RetentionClass::Standard,
-            legal_hold: false,
-        };
-        self.cases.update(|list| list.push(case));
-        self.record(AuditAction::CreateCase, title);
-        Ok(())
-    }
+        let id = format!("c-{seq}");
 
-    pub fn add_client(
-        &self,
-        display_name: &str,
-        email: &str,
-        phone: &str,
-        summary: &str,
-    ) -> Result<String, String> {
-        let display_name = display_name.trim().to_string();
-        if display_name.is_empty() {
-            return Err("A client name or reference is required.".into());
+        let properties: Vec<CaseProperty> = properties
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let key = k.trim().to_string();
+                let value = v.trim().to_string();
+                if key.is_empty() || value.is_empty() {
+                    None
+                } else {
+                    Some(CaseProperty { key, value })
+                }
+            })
+            .collect();
+
+        let mut notes = Vec::new();
+        if let Some(body) = first_note {
+            let body = body.trim().to_string();
+            if !body.is_empty() {
+                let nseq = self.next_seq();
+                notes.push(CaseNote {
+                    id: format!("n-{nseq}"),
+                    author: owner.full_name(),
+                    body,
+                    created_at: now_stamp(),
+                });
+            }
         }
-        let seq = self.next_seq();
-        let id = format!("cl-{seq}");
-        let client = Client {
+
+        let case = Case {
             id: id.clone(),
-            display_name,
-            phone: phone.trim().to_string(),
-            email: email.trim().to_string(),
-            intake_date: "just now".into(),
-            summary: summary.trim().to_string(),
+            name,
+            status,
+            owner_id: owner.id.clone(),
+            notes,
+            evidence: Vec::new(),
+            properties,
+            audit_log: Vec::new(),
         };
-        self.clients.update(|list| list.push(client));
+        self.cases.update(|c| c.push(case));
+        // Give the owner an explicit full-control assignment too.
+        self.assign_user_to_case(&owner.id, &id, CaseCapability::ALL.to_vec());
         Ok(id)
     }
 
-    /// Look up a single client by id.
-    pub fn client(&self, id: &str) -> Option<Client> {
-        self.clients.get().into_iter().find(|c| c.id == id)
-    }
-
-    /// Display name for a client id, falling back to the raw id.
-    pub fn client_name(&self, id: &str) -> String {
-        self.client(id)
-            .map(|c| c.display_name)
-            .unwrap_or_else(|| id.to_string())
-    }
-
-    /// Display name for the client that owns a case (falls back gracefully).
-    pub fn client_name_for(&self, case: &Case) -> String {
-        self.client(&case.client_id)
-            .map(|c| c.display_name)
-            .unwrap_or_else(|| "Unknown client".into())
-    }
-
-    /// All cases belonging to a given client.
-    pub fn cases_for_client(&self, client_id: &str) -> Vec<Case> {
-        self.cases
-            .get()
-            .into_iter()
-            .filter(|c| c.client_id == client_id)
-            .collect()
-    }
-
-    /// Cases assigned to a given volunteer id.
-    pub fn cases_for_volunteer(&self, volunteer_id: &str) -> Vec<Case> {
-        self.cases
-            .get()
-            .into_iter()
-            .filter(|c| c.assigned_volunteer_ids.iter().any(|v| v == volunteer_id))
-            .collect()
-    }
-
-    /// Add or remove a taxonomy service type tag on a case.
-    pub fn toggle_case_service_type(&self, case_id: &str, service: ServiceType) {
-        self.cases.update(|list| {
-            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
-                if let Some(pos) = c.service_types.iter().position(|s| *s == service) {
-                    c.service_types.remove(pos);
-                } else {
-                    c.service_types.push(service);
-                }
+    fn with_case<F: FnOnce(&mut Case)>(&self, case_id: &str, f: F) {
+        self.cases.update(|cases| {
+            if let Some(case) = cases.iter_mut().find(|c| c.id == case_id) {
+                f(case);
             }
         });
     }
 
-    // --- analytics (service pathways & gaps) --------------------------------
-
-    /// Number of (open) cases touching each service type, in taxonomy order.
-    /// When `open_only` is true, closed cases are excluded.
-    pub fn service_type_counts(&self, open_only: bool) -> Vec<(ServiceType, usize)> {
-        let cases = self.cases.get();
-        ServiceType::ALL
-            .into_iter()
-            .map(|st| {
-                let count = cases
-                    .iter()
-                    .filter(|c| !open_only || c.status != crate::types::CaseStatus::Closed)
-                    .filter(|c| c.service_types.contains(&st))
-                    .count();
-                (st, count)
-            })
-            .collect()
-    }
-
-    /// Number of cases touching each service category, in taxonomy order.
-    pub fn category_counts(&self) -> Vec<(ServiceCategory, usize)> {
-        let cases = self.cases.get();
-        ServiceCategory::ALL
-            .into_iter()
-            .map(|cat| {
-                let count = cases
-                    .iter()
-                    .filter(|c| c.service_types.iter().any(|s| s.category() == cat))
-                    .count();
-                (cat, count)
-            })
-            .collect()
-    }
-
-    /// The set of service categories a client currently has needs in.
-    pub fn categories_for_client(&self, client_id: &str) -> Vec<ServiceCategory> {
-        let mut cats: Vec<ServiceCategory> = Vec::new();
-        for case in self.cases_for_client(client_id) {
-            for st in case.service_types {
-                let cat = st.category();
-                if !cats.contains(&cat) {
-                    cats.push(cat);
+    pub fn set_case_status(&self, case_id: &str, status: CaseStatus) {
+        let entry = {
+            let case = self
+                .cases
+                .get_untracked()
+                .into_iter()
+                .find(|c| c.id == case_id);
+            match case {
+                Some(c) if c.status != status => {
+                    Some(self.change_entry("status", c.status.slug(), status.slug()))
                 }
+                _ => None,
             }
-        }
-        ServiceCategory::ALL
-            .into_iter()
-            .filter(|c| cats.contains(c))
-            .collect()
-    }
-
-    /// Referral pathways inferred from co-occurrence: how many clients have
-    /// needs in both categories of each pair, most common first.
-    pub fn category_cooccurrence(&self) -> Vec<(ServiceCategory, ServiceCategory, usize)> {
-        let clients = self.clients.get();
-        let mut pairs: Vec<(ServiceCategory, ServiceCategory, usize)> = Vec::new();
-        let cats = ServiceCategory::ALL;
-        for i in 0..cats.len() {
-            for j in (i + 1)..cats.len() {
-                let count = clients
-                    .iter()
-                    .filter(|cl| {
-                        let client_cats = self.categories_for_client(&cl.id);
-                        client_cats.contains(&cats[i]) && client_cats.contains(&cats[j])
-                    })
-                    .count();
-                if count > 0 {
-                    pairs.push((cats[i], cats[j], count));
-                }
-            }
-        }
-        pairs.sort_by_key(|p| std::cmp::Reverse(p.2));
-        pairs
-    }
-
-    /// Service gaps: per category, the count of open needs that are unassigned
-    /// or on hold — a rough signal of where capacity is missing.
-    pub fn service_gaps(&self) -> Vec<(ServiceCategory, usize)> {
-        use crate::types::CaseStatus;
-        let cases = self.cases.get();
-        ServiceCategory::ALL
-            .into_iter()
-            .map(|cat| {
-                let count = cases
-                    .iter()
-                    .filter(|c| c.service_types.iter().any(|s| s.category() == cat))
-                    .filter(|c| {
-                        c.assigned_volunteer_ids.is_empty() || c.status == CaseStatus::OnHold
-                    })
-                    .filter(|c| c.status != CaseStatus::Closed)
-                    .count();
-                (cat, count)
-            })
-            .filter(|(_, count)| *count > 0)
-            .collect()
-    }
-
-    // --- institutional knowledge -------------------------------------------
-
-    /// Add an institutional-knowledge entry, owned by the organization.
-    pub fn add_knowledge(
-        &self,
-        title: &str,
-        category: crate::types::KnowledgeCategory,
-        summary: &str,
-    ) -> Result<(), String> {
-        let title = title.trim().to_string();
-        if title.is_empty() {
-            return Err("A title is required.".into());
-        }
-        let contributor = self
-            .current_user
-            .get_untracked()
-            .map(|u| u.name)
-            .unwrap_or_else(|| "system".into());
-        let seq = self.next_seq();
-        let item = KnowledgeItem {
-            id: format!("k-{seq}"),
-            title: title.clone(),
-            category,
-            summary: summary.trim().to_string(),
-            contributed_by: contributor,
-            updated_at: "just now".into(),
         };
-        self.knowledge.update(|list| list.push(item));
-        self.record(AuditAction::EditKnowledge, title);
+        self.with_case(case_id, |c| {
+            c.status = status;
+            if let Some(e) = entry {
+                c.audit_log.insert(0, e);
+            }
+        });
+    }
+
+    pub fn set_case_name(&self, case_id: &str, name: &str) -> Result<(), String> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("Case name is required.".into());
+        }
+        let entry = {
+            let case = self
+                .cases
+                .get_untracked()
+                .into_iter()
+                .find(|c| c.id == case_id);
+            match case {
+                Some(c) if c.name != name => Some(self.change_entry("name", &c.name, &name)),
+                _ => None,
+            }
+        };
+        self.with_case(case_id, |c| {
+            c.name = name;
+            if let Some(e) = entry {
+                c.audit_log.insert(0, e);
+            }
+        });
         Ok(())
     }
-}
 
-/// Add or remove `target` from a case's related-case list based on the current
-/// linked state (kept as a free function so the borrow checker is happy inside
-/// the `update` closure).
-fn toggle_link(list: &mut Vec<String>, target: &str, currently_linked: bool) {
-    if currently_linked {
-        list.retain(|r| r != target);
-    } else if !list.iter().any(|r| r == target) {
-        list.push(target.to_string());
+    /// Display name for a user id (falls back to the id if unknown).
+    pub fn user_name(&self, user_id: &str) -> String {
+        self.users
+            .get_untracked()
+            .into_iter()
+            .find(|u| u.id == user_id)
+            .map(|u| u.full_name())
+            .unwrap_or_else(|| user_id.to_string())
     }
-}
 
-impl Default for AppState {
-    fn default() -> Self {
-        Self::new()
+    /// Change who filed (owns) a case. `owner_id` must map to an existing user.
+    pub fn set_case_owner(&self, case_id: &str, owner_id: &str) -> Result<(), String> {
+        if !self.users.get_untracked().iter().any(|u| u.id == owner_id) {
+            return Err("Unknown owner.".into());
+        }
+        let entry = {
+            let case = self
+                .cases
+                .get_untracked()
+                .into_iter()
+                .find(|c| c.id == case_id);
+            match case {
+                Some(c) if c.owner_id != owner_id => Some(self.change_entry(
+                    "owner",
+                    &self.user_name(&c.owner_id),
+                    &self.user_name(owner_id),
+                )),
+                _ => None,
+            }
+        };
+        self.with_case(case_id, |c| {
+            c.owner_id = owner_id.to_string();
+            if let Some(e) = entry {
+                c.audit_log.insert(0, e);
+            }
+        });
+        Ok(())
+    }
+
+    /// Replace a case's whole property set (empty keys are dropped). Records a
+    /// single audit entry when the set actually changes.
+    pub fn replace_case_properties(&self, case_id: &str, props: Vec<(String, String)>) {
+        let cleaned: Vec<CaseProperty> = props
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let key = k.trim().to_string();
+                if key.is_empty() {
+                    None
+                } else {
+                    Some(CaseProperty {
+                        key,
+                        value: v.trim().to_string(),
+                    })
+                }
+            })
+            .collect();
+        let changed = self
+            .cases
+            .get_untracked()
+            .into_iter()
+            .find(|c| c.id == case_id)
+            .map(|c| c.properties != cleaned)
+            .unwrap_or(false);
+        let entry = if changed {
+            Some(self.change_entry("properties", "", "updated"))
+        } else {
+            None
+        };
+        self.with_case(case_id, |c| {
+            c.properties = cleaned;
+            if let Some(e) = entry {
+                c.audit_log.insert(0, e);
+            }
+        });
+    }
+
+    pub fn add_case_note(&self, case_id: &str, body: &str) -> Result<(), String> {
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            return Err("Note cannot be empty.".into());
+        }
+        let author = self.actor_name();
+        let seq = self.next_seq();
+        let note = CaseNote {
+            id: format!("n-{seq}"),
+            author,
+            body,
+            created_at: now_stamp(),
+        };
+        self.with_case(case_id, |c| c.notes.push(note));
+        Ok(())
+    }
+
+    pub fn add_case_evidence(
+        &self,
+        case_id: &str,
+        name: &str,
+        description: &str,
+    ) -> Result<(), String> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("Evidence name is required.".into());
+        }
+        let uploaded_by = self.actor_name();
+        let seq = self.next_seq();
+        let item = Evidence {
+            id: format!("e-{seq}"),
+            name,
+            case_id: case_id.to_string(),
+            uploaded_by,
+            uploaded_at: now_stamp(),
+            description: description.trim().to_string(),
+        };
+        self.with_case(case_id, |c| c.evidence.push(item));
+        Ok(())
+    }
+
+    pub fn delete_case_evidence(&self, case_id: &str, evidence_id: &str) {
+        self.with_case(case_id, |c| c.evidence.retain(|e| e.id != evidence_id));
+    }
+
+    // --- grants -------------------------------------------------------------
+
+    pub fn add_grant(&self, name: &str) -> Result<(), String> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("Grant name is required.".into());
+        }
+        let seq = self.next_seq();
+        let grant = Grant {
+            id: format!("g-{seq}"),
+            name,
+        };
+        self.grants.update(|g| g.push(grant));
+        Ok(())
+    }
+
+    pub fn rename_grant(&self, grant_id: &str, name: &str) -> Result<(), String> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("Grant name is required.".into());
+        }
+        self.grants.update(|grants| {
+            if let Some(g) = grants.iter_mut().find(|g| g.id == grant_id) {
+                g.name = name;
+            }
+        });
+        Ok(())
+    }
+
+    pub fn delete_grant(&self, grant_id: &str) {
+        self.grants.update(|g| g.retain(|g| g.id != grant_id));
+    }
+
+    // --- messages (per-case chat) ------------------------------------------
+
+    /// All chat messages for a given case, in send order.
+    pub fn messages_for_case(&self, case_id: &str) -> Vec<Message> {
+        self.messages
+            .get()
+            .into_iter()
+            .filter(|m| m.case_id == case_id)
+            .collect()
+    }
+
+    /// Post a message to a case's chat as the signed-in user.
+    pub fn send_case_message(&self, case_id: &str, body: &str) -> Result<(), String> {
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            return Err("Message cannot be empty.".into());
+        }
+        let user = self
+            .current_user
+            .get_untracked()
+            .ok_or("You must be signed in.")?;
+        let seq = self.next_seq();
+        let message = Message {
+            id: format!("m-{seq}"),
+            case_id: case_id.to_string(),
+            author_id: user.id.clone(),
+            author: user.full_name(),
+            body,
+            sent_at: now_stamp(),
+        };
+        self.messages.update(|m| m.push(message));
+        Ok(())
+    }
+
+    // --- users / admin ------------------------------------------------------
+
+    /// Change a user's global account role, recording the change on their log.
+    pub fn set_user_role(&self, user_id: &str, role: AccountRole) {
+        let entry = {
+            let user = self
+                .users
+                .get_untracked()
+                .into_iter()
+                .find(|u| u.id == user_id);
+            match user {
+                Some(u) if u.role != role => {
+                    Some(self.change_entry("role", u.role.slug(), role.slug()))
+                }
+                _ => None,
+            }
+        };
+        self.users.update(|users| {
+            if let Some(u) = users.iter_mut().find(|u| u.id == user_id) {
+                u.role = role;
+                if let Some(e) = entry {
+                    u.audit_log.insert(0, e);
+                }
+            }
+        });
+        self.sync_current_user(user_id);
+    }
+
+    /// Grant (or replace) a user's capability set on a case.
+    pub fn assign_user_to_case(
+        &self,
+        user_id: &str,
+        case_id: &str,
+        capabilities: Vec<CaseCapability>,
+    ) {
+        let summary = capabilities
+            .iter()
+            .map(|c| c.slug())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let entry = self.change_entry(&format!("case:{case_id}"), "", &summary);
+        self.users.update(|users| {
+            if let Some(u) = users.iter_mut().find(|u| u.id == user_id) {
+                if let Some(a) = u.assigned_cases.iter_mut().find(|a| a.case_id == case_id) {
+                    a.capabilities = capabilities;
+                } else {
+                    u.assigned_cases.push(CaseAssignment {
+                        case_id: case_id.to_string(),
+                        capabilities,
+                    });
+                }
+                u.audit_log.insert(0, entry);
+            }
+        });
+        self.sync_current_user(user_id);
+    }
+
+    /// Toggle a single capability for a user on a case (adds an assignment if
+    /// none exists yet).
+    pub fn toggle_case_capability(
+        &self,
+        user_id: &str,
+        case_id: &str,
+        cap: CaseCapability,
+        enabled: bool,
+    ) {
+        let (old, new) = if enabled {
+            ("", cap.slug())
+        } else {
+            (cap.slug(), "")
+        };
+        let entry = self.change_entry(&format!("case:{case_id}:{}", cap.slug()), old, new);
+        self.users.update(|users| {
+            if let Some(u) = users.iter_mut().find(|u| u.id == user_id) {
+                if let Some(a) = u.assigned_cases.iter_mut().find(|a| a.case_id == case_id) {
+                    if enabled {
+                        if !a.capabilities.contains(&cap) {
+                            a.capabilities.push(cap);
+                        }
+                    } else {
+                        a.capabilities.retain(|c| *c != cap);
+                    }
+                } else if enabled {
+                    u.assigned_cases.push(CaseAssignment {
+                        case_id: case_id.to_string(),
+                        capabilities: vec![cap],
+                    });
+                }
+                u.audit_log.insert(0, entry);
+            }
+        });
+        self.sync_current_user(user_id);
+    }
+
+    /// Remove a user's assignment to a case.
+    pub fn unassign_user_from_case(&self, user_id: &str, case_id: &str) {
+        let entry = self.change_entry(&format!("case:{case_id}"), "assigned", "removed");
+        self.users.update(|users| {
+            if let Some(u) = users.iter_mut().find(|u| u.id == user_id) {
+                u.assigned_cases.retain(|a| a.case_id != case_id);
+                u.audit_log.insert(0, entry);
+            }
+        });
+        self.sync_current_user(user_id);
+    }
+
+    /// Keep `current_user` in sync when the signed-in user's record changes.
+    fn sync_current_user(&self, changed_id: &str) {
+        if let Some(cu) = self.current_user.get_untracked() {
+            if cu.id == changed_id {
+                if let Some(updated) = self
+                    .users
+                    .get_untracked()
+                    .into_iter()
+                    .find(|u| u.id == changed_id)
+                {
+                    self.current_user.set(Some(updated));
+                }
+            }
+        }
     }
 }

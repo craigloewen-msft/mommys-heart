@@ -1,36 +1,21 @@
 pub mod api_client;
 pub mod app;
-pub mod analytics;
 pub mod mockdata;
 pub mod state;
-pub mod taxonomy;
 pub mod types;
 
 pub mod components {
-    pub mod case_card;
-    pub mod charts;
-    pub mod communications;
     pub mod guard;
     pub mod layout;
 }
 
 pub mod pages {
     pub mod admin;
-    pub mod analytics;
-    pub mod audit_log;
-    pub mod chat;
-    pub mod clients;
-    pub mod contact_detail;
-    pub mod contacts;
-    pub mod dashboard;
-    pub mod evidence;
+    pub mod cases;
+    pub mod grants;
     pub mod inbox;
-    pub mod insights;
-    pub mod governance;
-    pub mod knowledge;
     pub mod login;
     pub mod register;
-    pub mod volunteer;
 }
 
 #[cfg(feature = "ssr")]

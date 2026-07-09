@@ -25,6 +25,7 @@ gloo-net = { version = "0.6", optional = true }
 send_wrapper = { version = "0.6", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen = { version = "0.2" }
+js-sys = { version = "0.3", optional = true }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -36,6 +37,7 @@ hydrate = [
     "dep:gloo-net",
     "dep:send_wrapper",
     "dep:console_error_panic_hook",
+    "dep:js-sys",
 ]
 ssr = [
     "dep:axum",

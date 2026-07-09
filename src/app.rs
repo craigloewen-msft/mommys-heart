@@ -4,12 +4,12 @@ use leptos_router::components::{Redirect, Route, Router, Routes};
 use leptos_router::path;
 
 use crate::pages::{
-    admin::AdminDashboardPage, analytics::AnalyticsPage, audit_log::AuditLogPage, chat::ChatPage,
-    clients::ClientDetailPage, clients::ClientsPage, contact_detail::ContactDetailPage,
-    contacts::ContactsPage, dashboard::DashboardPage, evidence::EvidenceRepositoryPage,
-    governance::GovernancePage, inbox::InboxPage, insights::InsightsPage,
-    knowledge::KnowledgeBasePage, login::LoginPage, register::RegisterPage,
-    volunteer::VolunteerDashboardPage,
+    admin::AdminDashboardPage,
+    cases::{CaseHomePage, NewCasePage},
+    grants::GrantHomePage,
+    inbox::InboxPage,
+    login::LoginPage,
+    register::RegisterPage,
 };
 use crate::state::AppState;
 
@@ -36,10 +36,10 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 #[component]
 fn HomeRedirect() -> impl IntoView {
     let state = expect_context::<AppState>();
-    let path = match state.current_user.get_untracked() {
-        Some(u) if u.role.is_staff_level() => "/admin",
-        Some(_) => "/volunteer",
-        None => "/login",
+    let path = if state.current_user.get_untracked().is_some() {
+        "/cases"
+    } else {
+        "/login"
     };
     view! { <Redirect path=path /> }
 }
@@ -60,21 +60,11 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/") view=HomeRedirect />
                 <Route path=path!("/login") view=LoginPage />
                 <Route path=path!("/register") view=RegisterPage />
-                <Route path=path!("/admin") view=AdminDashboardPage />
-                <Route path=path!("/clients") view=ClientsPage />
-                <Route path=path!("/clients/:id") view=ClientDetailPage />
-                <Route path=path!("/insights") view=InsightsPage />
-                <Route path=path!("/evidence") view=EvidenceRepositoryPage />
-                <Route path=path!("/analytics") view=AnalyticsPage />
-                <Route path=path!("/volunteer") view=VolunteerDashboardPage />
-                <Route path=path!("/audit") view=AuditLogPage />
-                <Route path=path!("/governance") view=GovernancePage />
-                <Route path=path!("/knowledge") view=KnowledgeBasePage />
-                <Route path=path!("/dashboard") view=DashboardPage />
-                <Route path=path!("/contacts") view=ContactsPage />
-                <Route path=path!("/contacts/:id") view=ContactDetailPage />
+                <Route path=path!("/cases") view=CaseHomePage />
+                <Route path=path!("/cases/new") view=NewCasePage />
                 <Route path=path!("/inbox") view=InboxPage />
-                <Route path=path!("/chat") view=ChatPage />
+                <Route path=path!("/grants") view=GrantHomePage />
+                <Route path=path!("/admin") view=AdminDashboardPage />
             </Routes>
         </Router>
     }

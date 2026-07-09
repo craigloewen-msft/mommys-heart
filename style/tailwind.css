@@ -3,30 +3,65 @@
 /* Content sources Tailwind should scan for class names (Rust view! macros). */
 @source "../src/**/*.rs";
 
-/* Brand palette — a warm rose "heart" primary, used as bg-primary-500 etc. */
+/*
+  Light theme — one central place controls the whole look. The pages use a fixed
+  set of Tailwind color tokens (slate for surfaces/text, primary for the accent,
+  rose/amber/emerald/sky for status). Instead of editing every page, we remap
+  those tokens here:
+
+    - primary  -> yellow / gold (the main accent)
+    - rose     -> red           (danger / secondary accent)
+    - slate    -> a light surface + dark text ramp (inverted for light mode)
+    - the "-300" status text shades are darkened so badges stay readable on white
+*/
 @theme {
-  --color-primary-50: #fdf2f8;
-  --color-primary-100: #fce7f3;
-  --color-primary-200: #fbcfe8;
-  --color-primary-300: #f9a8d4;
-  --color-primary-400: #f472b6;
-  --color-primary-500: #ec4899;
-  --color-primary-600: #db2777;
-  --color-primary-700: #be185d;
-  --color-primary-800: #9d174d;
-  --color-primary-900: #831843;
+  /* Primary accent: warm yellow / gold. */
+  --color-primary-50: #fffbeb;
+  --color-primary-100: #fef3c7;
+  --color-primary-200: #b45309;
+  --color-primary-300: #b45309;
+  --color-primary-400: #d97706;
+  --color-primary-500: #d97706;
+  --color-primary-600: #b45309;
+  --color-primary-700: #92400e;
+  --color-primary-800: #78350f;
+  --color-primary-900: #451a03;
+
+  /* Secondary accent: red (danger). */
+  --color-rose-300: #b91c1c;
+  --color-rose-400: #dc2626;
+  --color-rose-500: #dc2626;
+
+  /* Darken status text shades so badges read on a light background. */
+  --color-emerald-300: #047857;
+  --color-sky-300: #0369a1;
+  --color-amber-300: #b45309;
+
+  /* Slate ramp, remapped for light mode: low numbers = dark text, high
+     numbers = light surfaces (900 = card white, 950 = page). */
+  --color-slate-50: #020617;
+  --color-slate-100: #0f172a;
+  --color-slate-200: #1e293b;
+  --color-slate-300: #334155;
+  --color-slate-400: #475569;
+  --color-slate-500: #64748b;
+  --color-slate-600: #94a3b8;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-900: #ffffff;
+  --color-slate-950: #f8fafc;
 }
 
-/* Dark theme base: keep the whole viewport dark, even outside components. */
+/* Light theme base: keep the whole viewport light, even outside components. */
 @layer base {
   html {
-    color-scheme: dark;
+    color-scheme: light;
   }
 
   body {
-    background-color: #020617;
-    /* slate-950 */
-    color: #e2e8f0;
-    /* slate-200 */
+    background-color: #f8fafc;
+    /* light page */
+    color: #1e293b;
+    /* dark slate text */
   }
 }

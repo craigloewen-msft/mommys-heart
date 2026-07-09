@@ -29,11 +29,8 @@ async fn chat(Json(req): Json<ChatRequest>) -> Result<Json<ChatResponse>, (Statu
         }
     }
 
-    // Retain the turn in the org-owned store and return the conversation id so
-    // the caller can continue the same thread.
-    Ok(Json(
-        service::record_web_chat_turn(message, req.conversation_id).await,
-    ))
+    // Run the RAG assistant and echo back the conversation id the caller sent.
+    Ok(Json(service::chat(message, req.conversation_id).await))
 }
 
 async fn reingest() -> Result<Json<crate::server::rag::IngestStats>, (StatusCode, String)> {

@@ -1,699 +1,332 @@
-//! Local, in-memory demo data for volunteers, cases, and user accounts.
+//! Local, in-memory demo data for the V1 app.
 //!
-//! Compiled for both the server and the browser so the whole volunteer/case
-//! management experience works without a database. Replaced by a real backend
-//! in a later phase.
+//! Compiled for both the server and the browser so the whole experience works
+//! without a database. Replaced by a real backend in a later phase.
 
-use crate::taxonomy::ServiceType;
 use crate::types::{
-    AuditAction, AuditEvent, Case, CaseDocument, CaseNote, CaseOutcome, CasePriority, CaseStatus,
-    Client, DocumentClassification, EvidenceItem, EvidenceType, FollowUp, KnowledgeCategory,
-    KnowledgeItem, MatterType, NeedCategory, Referral, RetentionClass, ReviewStatus, Role,
-    ServiceRecord, TimelineEvent, TimelineKind, TrainingRecord, User, Volunteer, VolunteerStatus,
+    AccountRole, Case, CaseAssignment, CaseCapability, CaseNote, CasePreset, CaseProperty,
+    CaseStatus, ChangeLogEntry, Evidence, Grant, Message, User,
 };
 
-/// Display name used everywhere data is owned by the organization itself.
-pub const ORG_NAME: &str = "Mommy's Heart (organization)";
+/// Organization display name.
+pub const ORG_NAME: &str = "Mommy's Heart";
 
-/// Convenience constructor for seed evidence, keeping the case fixtures compact.
-#[allow(clippy::too_many_arguments)]
-fn evi(
-    id: &str,
-    name: &str,
-    evidence_type: EvidenceType,
-    party: &str,
-    source: &str,
-    occurred_on: &str,
-    review_status: ReviewStatus,
-    tags: &[&str],
-    description: &str,
-) -> EvidenceItem {
-    EvidenceItem {
-        id: id.into(),
-        name: name.into(),
-        evidence_type,
-        description: description.into(),
-        source: source.into(),
-        party: party.into(),
-        occurred_on: occurred_on.into(),
-        tags: tags.iter().map(|t| t.to_string()).collect(),
-        review_status,
-        uploaded_at: occurred_on.into(),
+/// Build a case assignment from a preset for compact fixtures.
+fn assign(case_id: &str, preset: CasePreset) -> CaseAssignment {
+    CaseAssignment {
+        case_id: case_id.into(),
+        capabilities: preset.capabilities(),
     }
 }
 
-/// Demo login accounts. Passwords are plaintext on purpose — this is fake data.
+fn note(id: &str, author: &str, body: &str, created_at: &str) -> CaseNote {
+    CaseNote {
+        id: id.into(),
+        author: author.into(),
+        body: body.into(),
+        created_at: created_at.into(),
+    }
+}
+
+fn evidence(
+    id: &str,
+    name: &str,
+    case_id: &str,
+    uploaded_by: &str,
+    uploaded_at: &str,
+    description: &str,
+) -> Evidence {
+    Evidence {
+        id: id.into(),
+        name: name.into(),
+        case_id: case_id.into(),
+        uploaded_by: uploaded_by.into(),
+        uploaded_at: uploaded_at.into(),
+        description: description.into(),
+    }
+}
+
+fn prop(key: &str, value: &str) -> CaseProperty {
+    CaseProperty {
+        key: key.into(),
+        value: value.into(),
+    }
+}
+
+fn change(
+    id: &str,
+    actor: &str,
+    field: &str,
+    old_value: &str,
+    new_value: &str,
+    at: &str,
+) -> ChangeLogEntry {
+    ChangeLogEntry {
+        id: id.into(),
+        actor: actor.into(),
+        field: field.into(),
+        old_value: old_value.into(),
+        new_value: new_value.into(),
+        at: at.into(),
+    }
+}
+
+/// Seed user accounts (one per account role, plus extras).
 pub fn users() -> Vec<User> {
     vec![
         User {
             id: "u-admin".into(),
-            name: "Sarah Mitchell".into(),
+            first_name: "Alex".into(),
+            last_name: "Rivera".into(),
             email: "admin@mommysheart.org".into(),
+            phone: "(555) 100-2000".into(),
+            home_address: "12 Chestnut St, Springfield".into(),
             password: "admin123".into(),
-            role: Role::Admin,
-            volunteer_id: None,
+            role: AccountRole::Admin,
+            assigned_cases: vec![assign("c-1001", CasePreset::Manager)],
+            audit_log: vec![
+                change(
+                    "ul-a1",
+                    "Dana Cole",
+                    "phone",
+                    "(555) 100-1999",
+                    "(555) 100-2000",
+                    "2026-07-07 09:12",
+                ),
+                change(
+                    "ul-a2",
+                    "system",
+                    "email",
+                    "arivera@old.org",
+                    "admin@mommysheart.org",
+                    "2026-06-27 15:40",
+                ),
+                change(
+                    "ul-a3",
+                    "system",
+                    "role",
+                    "volunteer",
+                    "admin",
+                    "2026-01-04 10:00",
+                ),
+            ],
         },
         User {
-            id: "u-dana".into(),
-            name: "Dana Whitfield".into(),
+            id: "u-vol".into(),
+            first_name: "Dana".into(),
+            last_name: "Cole".into(),
             email: "dana@mommysheart.org".into(),
-            password: "staff123".into(),
-            role: Role::Staff,
-            volunteer_id: None,
-        },
-        User {
-            id: "u-priya".into(),
-            name: "Priya Nair".into(),
-            email: "priya@mommysheart.org".into(),
+            phone: "(555) 200-3000".into(),
+            home_address: "48 Maple Ave, Springfield".into(),
             password: "volunteer123".into(),
-            role: Role::Volunteer,
-            volunteer_id: Some("v-1".into()),
-        },
-        User {
-            id: "u-maria".into(),
-            name: "Maria Gonzalez".into(),
-            email: "maria@mommysheart.org".into(),
-            password: "volunteer123".into(),
-            role: Role::Volunteer,
-            volunteer_id: Some("v-2".into()),
-        },
-        User {
-            id: "u-glen".into(),
-            name: "Glen Osei (Board)".into(),
-            email: "board@mommysheart.org".into(),
-            password: "readonly123".into(),
-            role: Role::ReadOnly,
-            volunteer_id: None,
-        },
-    ]
-}
-
-pub fn volunteers() -> Vec<Volunteer> {
-    vec![
-        Volunteer {
-            id: "v-1".into(),
-            name: "Priya Nair".into(),
-            email: "priya@mommysheart.org".into(),
-            phone: "+1 (312) 555-0175".into(),
-            specialty: "Case management".into(),
-            status: VolunteerStatus::Active,
-            hours_logged: 142.5,
-            weekly_availability_hours: 16.0,
-            client_contacts: 48,
-            trainings: vec![
-                TrainingRecord {
-                    name: "Trauma-informed care".into(),
-                    completed_on: "2026-02-11".into(),
-                },
-                TrainingRecord {
-                    name: "Safety planning".into(),
-                    completed_on: "2026-04-03".into(),
-                },
+            role: AccountRole::Volunteer,
+            assigned_cases: vec![
+                assign("c-1001", CasePreset::Contributor),
+                assign("c-1002", CasePreset::Manager),
+            ],
+            audit_log: vec![
+                change(
+                    "ul-v1",
+                    "Alex Rivera",
+                    "case:c-1002",
+                    "",
+                    "manager",
+                    "2026-07-05 11:03",
+                ),
+                change(
+                    "ul-v2",
+                    "Alex Rivera",
+                    "home_address",
+                    "40 Maple Ave",
+                    "48 Maple Ave, Springfield",
+                    "2026-06-30 08:20",
+                ),
+                change(
+                    "ul-v3",
+                    "Alex Rivera",
+                    "phone",
+                    "(555) 200-2999",
+                    "(555) 200-3000",
+                    "2026-02-11 14:15",
+                ),
             ],
         },
-        Volunteer {
-            id: "v-2".into(),
-            name: "Maria Gonzalez".into(),
-            email: "maria@mommysheart.org".into(),
-            phone: "+1 (415) 555-0132".into(),
-            specialty: "Legal advocacy".into(),
-            status: VolunteerStatus::Active,
-            hours_logged: 98.0,
-            weekly_availability_hours: 12.0,
-            client_contacts: 31,
-            trainings: vec![
-                TrainingRecord {
-                    name: "Trauma-informed care".into(),
-                    completed_on: "2026-02-11".into(),
-                },
-                TrainingRecord {
-                    name: "Immigration law basics".into(),
-                    completed_on: "2026-05-20".into(),
-                },
+        User {
+            id: "u-client".into(),
+            first_name: "Jamie".into(),
+            last_name: "Nguyen".into(),
+            email: "jamie@example.com".into(),
+            phone: "(555) 300-4000".into(),
+            home_address: "301 Oak Blvd, Springfield".into(),
+            password: "client123".into(),
+            role: AccountRole::Client,
+            // A client who can upload evidence for their own case.
+            assigned_cases: vec![assign("c-1002", CasePreset::Contributor)],
+            audit_log: vec![
+                change(
+                    "ul-c1",
+                    "Alex Rivera",
+                    "case:c-1002",
+                    "",
+                    "contributor",
+                    "2026-07-08 16:45",
+                ),
+                change(
+                    "ul-c2",
+                    "Dana Cole",
+                    "phone",
+                    "(555) 300-3999",
+                    "(555) 300-4000",
+                    "2026-06-14 10:05",
+                ),
             ],
         },
-        Volunteer {
-            id: "v-3".into(),
-            name: "James Okoye".into(),
-            email: "james@mommysheart.org".into(),
-            phone: "+1 (206) 555-0188".into(),
-            specialty: "Housing support".into(),
-            status: VolunteerStatus::OnLeave,
-            hours_logged: 61.5,
-            weekly_availability_hours: 6.0,
-            client_contacts: 19,
-            trainings: vec![TrainingRecord {
-                name: "Trauma-informed care".into(),
-                completed_on: "2026-03-18".into(),
+        User {
+            id: "u-vol2".into(),
+            first_name: "Priya".into(),
+            last_name: "Shah".into(),
+            email: "priya@mommysheart.org".into(),
+            phone: "(555) 400-5000".into(),
+            home_address: "77 Birch Ln, Springfield".into(),
+            password: "volunteer123".into(),
+            role: AccountRole::Volunteer,
+            // A volunteer who can read evidence but not upload or delete it.
+            assigned_cases: vec![CaseAssignment {
+                case_id: "c-1001".into(),
+                capabilities: vec![
+                    CaseCapability::ViewCase,
+                    CaseCapability::ViewEvidence,
+                    CaseCapability::SendMessages,
+                ],
             }],
-        },
-        Volunteer {
-            id: "v-4".into(),
-            name: "Aisha Rahman".into(),
-            email: "aisha@mommysheart.org".into(),
-            phone: "+1 (617) 555-0143".into(),
-            specialty: "Mental health".into(),
-            status: VolunteerStatus::Pending,
-            hours_logged: 12.0,
-            weekly_availability_hours: 8.0,
-            client_contacts: 4,
-            trainings: vec![TrainingRecord {
-                name: "Trauma-informed care".into(),
-                completed_on: String::new(),
-            }],
+            audit_log: vec![
+                change(
+                    "ul-p1",
+                    "Alex Rivera",
+                    "case:c-1001",
+                    "",
+                    "view_case, view_evidence, send_messages",
+                    "2026-07-02 13:30",
+                ),
+                change(
+                    "ul-p2",
+                    "system",
+                    "role",
+                    "client",
+                    "volunteer",
+                    "2026-06-09 09:00",
+                ),
+            ],
         },
     ]
 }
 
-/// People served by the organization. `cl-1` deliberately has several
-/// interconnected cases to demonstrate the service-pathway view.
-pub fn clients() -> Vec<Client> {
+/// Seed grants.
+pub fn grants() -> Vec<Grant> {
     vec![
-        Client {
-            id: "cl-1".into(),
-            display_name: "Client A. (confidential)".into(),
-            phone: "+1 (312) 555-0110".into(),
-            email: String::new(),
-            intake_date: "2026-06-12".into(),
-            summary: "Single mother of two presenting with multiple, interconnected needs: emergency housing, an active custody matter, and unfiled public benefits.".into(),
+        Grant {
+            id: "g-1".into(),
+            name: "Family Stability Fund".into(),
         },
-        Client {
-            id: "cl-2".into(),
-            display_name: "Client B. (confidential)".into(),
-            phone: "+1 (312) 555-0121".into(),
-            email: String::new(),
-            intake_date: "2026-06-28".into(),
-            summary: "Recent arrival seeking immigration support and work authorization guidance.".into(),
+        Grant {
+            id: "g-2".into(),
+            name: "Legal Aid Access Grant".into(),
         },
-        Client {
-            id: "cl-3".into(),
-            display_name: "Client C. (confidential)".into(),
-            phone: "+1 (312) 555-0133".into(),
-            email: String::new(),
-            intake_date: "2026-05-19".into(),
-            summary: "Referred for mental health support after a period of crisis.".into(),
-        },
-        Client {
-            id: "cl-4".into(),
-            display_name: "Client D. (confidential)".into(),
-            phone: "+1 (312) 555-0144".into(),
-            email: String::new(),
-            intake_date: "2026-07-05".into(),
-            summary: "New survivor intake — awaiting risk assessment.".into(),
+        Grant {
+            id: "g-3".into(),
+            name: "Community Housing Initiative".into(),
         },
     ]
 }
 
-/// Build a timeline event for seed data.
-fn ev(id: &str, at: &str, kind: TimelineKind, summary: &str) -> TimelineEvent {
-    TimelineEvent {
-        id: id.into(),
-        at: at.into(),
-        kind,
-        summary: summary.into(),
-    }
-}
-
+/// Seed cases.
 pub fn cases() -> Vec<Case> {
     vec![
-        // --- Client A.: three interconnected, cross-linked cases -------------
         Case {
             id: "c-1001".into(),
-            title: "Emergency housing placement".into(),
-            client_id: "cl-1".into(),
-            category: NeedCategory::Housing,
-            service_types: vec![ServiceType::ShelterPlacement, ServiceType::HousingSubsidies],
-            summary: "Needs emergency shelter and a longer-term housing plan.".into(),
-            status: CaseStatus::InProgress,
-            priority: CasePriority::High,
-            assigned_volunteer_ids: vec!["v-1".into(), "v-3".into()],
-            related_case_ids: vec!["c-1002".into(), "c-1003".into()],
-            notes: vec![CaseNote {
-                id: "n-1".into(),
-                author: "Priya Nair".into(),
-                body: "Placed in short-term shelter; applying for transitional housing this week."
-                    .into(),
-                created_at: "2026-06-15".into(),
-            }],
-            documents: vec![
-                CaseDocument {
-                    id: "d-1".into(),
-                    name: "Intake assessment.pdf".into(),
-                    uploaded_at: "2026-06-14".into(),
-                    classification: DocumentClassification::Confidential,
-                },
-                CaseDocument {
-                    id: "d-2".into(),
-                    name: "Housing application.docx".into(),
-                    uploaded_at: "2026-06-20".into(),
-                    classification: DocumentClassification::Internal,
-                },
-            ],
-            evidence: vec![
-                evi(
-                    "ev-1",
-                    "Intake assessment",
-                    EvidenceType::SupportingDocument,
-                    "Client A.",
-                    "In-person intake",
-                    "2026-06-14",
-                    ReviewStatus::Reviewed,
-                    &["intake", "housing"],
-                    "Initial needs assessment completed at the shelter.",
+            name: "Nguyen custody matter".into(),
+            status: CaseStatus::Open,
+            owner_id: "u-admin".into(),
+            notes: vec![
+                note(
+                    "n-1",
+                    "Alex Rivera",
+                    "Initial intake completed. Client seeking custody support.",
+                    "2026-03-01",
                 ),
-                evi(
-                    "ev-2",
-                    "Threatening texts from ex-partner",
-                    EvidenceType::TextMessage,
-                    "Ex-partner",
-                    "Client's phone (screenshots)",
-                    "2026-06-16",
-                    ReviewStatus::Flagged,
-                    &["threats", "safety"],
-                    "Series of intimidating messages sent overnight; relevant to safety planning.",
-                ),
-                evi(
-                    "ev-3",
-                    "Bruising photograph",
-                    EvidenceType::Photograph,
-                    "Client A.",
-                    "Client's phone",
-                    "2026-06-17",
-                    ReviewStatus::InReview,
-                    &["injury", "safety"],
-                    "Photo documenting injury, dated by phone metadata.",
-                ),
-                evi(
-                    "ev-4",
-                    "Housing application",
-                    EvidenceType::SupportingDocument,
-                    "Client A.",
-                    "Housing authority portal",
-                    "2026-06-20",
-                    ReviewStatus::Reviewed,
-                    &["housing"],
-                    "Submitted emergency housing application confirmation.",
-                ),
-                evi(
-                    "ev-5",
-                    "Voicemail from landlord",
-                    EvidenceType::AudioRecording,
-                    "Landlord",
-                    "Client's voicemail",
-                    "2026-06-22",
-                    ReviewStatus::Unreviewed,
-                    &["housing", "eviction"],
-                    "Landlord voicemail regarding move-out timeline.",
+                note(
+                    "n-2",
+                    "Dana Cole",
+                    "Filed initial paperwork with the county clerk.",
+                    "2026-03-06",
                 ),
             ],
-            timeline: vec![
-                ev("e-1", "2026-06-12", TimelineKind::Opened, "Case opened"),
-                ev(
-                    "e-2",
-                    "2026-06-14",
-                    TimelineKind::VolunteerAssigned,
-                    "Assigned Priya Nair",
-                ),
-                ev("e-3", "2026-06-15", TimelineKind::NoteAdded, "Note added"),
+            evidence: vec![evidence(
+                "e-1",
+                "Text message thread (March)",
+                "c-1001",
+                "Dana Cole",
+                "2026-03-05",
+                "Screenshots of scheduling messages.",
+            )],
+            properties: vec![
+                prop("Opposing attorney", "J. Smith"),
+                prop("Court", "Springfield Family Court"),
+                prop("Docket", "FC-2026-0421"),
             ],
-            opened_at: "2026-06-12".into(),
-            matter_type: MatterType::Housing,
-            outcome: CaseOutcome::Ongoing,
-            intake_date: "2026-06-10".into(),
-            resolved_date: None,
-            referrals: vec![Referral {
-                agency: "City Housing Authority".into(),
-                date: "2026-06-20".into(),
-            }],
-            services: vec![
-                ServiceRecord {
-                    kind: "Legal clinic".into(),
-                    date: "2026-06-14".into(),
-                },
-                ServiceRecord {
-                    kind: "Housing navigation".into(),
-                    date: "2026-06-25".into(),
-                },
-            ],
-            follow_ups: vec![
-                FollowUp {
-                    date: "2026-06-30".into(),
-                    completed: true,
-                },
-                FollowUp {
-                    date: "2026-07-10".into(),
-                    completed: false,
-                },
-            ],
-            created_by: "Sarah Mitchell".into(),
-            steward: "Priya Nair".into(),
-            retention: RetentionClass::Standard,
-            legal_hold: false,
+            audit_log: vec![change(
+                "cl-1",
+                "Alex Rivera",
+                "status",
+                "monitor",
+                "open",
+                "2026-03-01",
+            )],
         },
         Case {
             id: "c-1002".into(),
-            title: "Family court advocacy".into(),
-            client_id: "cl-1".into(),
-            category: NeedCategory::FamilyCourt,
-            service_types: vec![
-                ServiceType::CustodyVisitation,
-                ServiceType::OrdersOfProtection,
-            ],
-            summary: "Support through custody proceedings and safety planning.".into(),
-            status: CaseStatus::Open,
-            priority: CasePriority::High,
-            assigned_volunteer_ids: vec!["v-2".into()],
-            related_case_ids: vec!["c-1001".into(), "c-1003".into()],
-            notes: Vec::new(),
-            documents: vec![CaseDocument {
-                id: "d-3".into(),
-                name: "Court schedule.pdf".into(),
-                uploaded_at: "2026-07-01".into(),
-                classification: DocumentClassification::Restricted,
-            }],
-            evidence: vec![
-                evi(
-                    "ev-6",
-                    "Court hearing schedule",
-                    EvidenceType::CourtFiling,
-                    "Family Court",
-                    "Court portal",
-                    "2026-07-01",
-                    ReviewStatus::Reviewed,
-                    &["court", "custody"],
-                    "Notice of upcoming custody hearing dates.",
-                ),
-                evi(
-                    "ev-7",
-                    "Custody exchange emails",
-                    EvidenceType::Email,
-                    "Ex-partner",
-                    "Client's email",
-                    "2026-07-03",
-                    ReviewStatus::InReview,
-                    &["custody", "communication"],
-                    "Email thread showing repeated missed exchanges.",
-                ),
-                evi(
-                    "ev-8",
-                    "Affidavit of witness",
-                    EvidenceType::Affidavit,
-                    "Neighbor (witness)",
-                    "Signed affidavit",
-                    "2026-07-05",
-                    ReviewStatus::Unreviewed,
-                    &["court", "witness"],
-                    "Neighbor's sworn statement about an incident.",
-                ),
-            ],
-            timeline: vec![ev("e-4", "2026-06-28", TimelineKind::Opened, "Case opened")],
-            opened_at: "2026-06-28".into(),
-            matter_type: MatterType::CustodyVisitation,
-            outcome: CaseOutcome::Ongoing,
-            intake_date: "2026-06-26".into(),
-            resolved_date: None,
-            referrals: vec![Referral {
-                agency: "Family Court Self-Help Center".into(),
-                date: "2026-07-01".into(),
-            }],
-            services: vec![ServiceRecord {
-                kind: "Legal advice".into(),
-                date: "2026-06-30".into(),
-            }],
-            follow_ups: vec![FollowUp {
-                date: "2026-07-08".into(),
-                completed: false,
-            }],
-            created_by: "Dana Whitfield".into(),
-            steward: "Maria Gonzalez".into(),
-            retention: RetentionClass::Extended,
-            legal_hold: true,
-        },
-        Case {
-            id: "c-1003".into(),
-            title: "Public benefits enrollment".into(),
-            client_id: "cl-1".into(),
-            category: NeedCategory::PublicBenefits,
-            service_types: vec![
-                ServiceType::Snap,
-                ServiceType::CashAssistance,
-                ServiceType::ChildCareAssistance,
-            ],
-            summary: "Assist with SNAP, Medicaid, and childcare subsidy applications.".into(),
-            status: CaseStatus::OnHold,
-            priority: CasePriority::Medium,
-            assigned_volunteer_ids: vec!["v-1".into()],
-            related_case_ids: vec!["c-1001".into(), "c-1002".into()],
-            notes: Vec::new(),
-            documents: Vec::new(),
-            evidence: vec![evi(
-                "ev-9",
-                "Denial letter screenshot",
-                EvidenceType::Screenshot,
-                "State agency",
-                "Benefits portal",
-                "2026-05-22",
-                ReviewStatus::Reviewed,
-                &["benefits", "snap"],
-                "Screenshot of initial SNAP denial for appeal reference.",
+            name: "Nguyen housing assistance".into(),
+            status: CaseStatus::Monitor,
+            owner_id: "u-vol".into(),
+            notes: vec![note(
+                "n-3",
+                "Dana Cole",
+                "Connected client with housing initiative resources.",
+                "2026-02-20",
             )],
-            timeline: vec![ev("e-5", "2026-05-19", TimelineKind::Opened, "Case opened")],
-            opened_at: "2026-05-19".into(),
-            matter_type: MatterType::PublicBenefits,
-            outcome: CaseOutcome::Resolved,
-            intake_date: "2026-05-15".into(),
-            resolved_date: Some("2026-06-20".into()),
-            referrals: vec![Referral {
-                agency: "SNAP Benefits Office".into(),
-                date: "2026-05-22".into(),
-            }],
-            services: vec![
-                ServiceRecord {
-                    kind: "Benefits application".into(),
-                    date: "2026-05-18".into(),
-                },
-                ServiceRecord {
-                    kind: "Appeal filing".into(),
-                    date: "2026-06-05".into(),
-                },
-            ],
-            follow_ups: vec![
-                FollowUp {
-                    date: "2026-06-01".into(),
-                    completed: true,
-                },
-                FollowUp {
-                    date: "2026-06-18".into(),
-                    completed: true,
-                },
-            ],
-            created_by: "Sarah Mitchell".into(),
-            steward: "Priya Nair".into(),
-            retention: RetentionClass::Standard,
-            legal_hold: false,
-        },
-        // --- Other clients: single-need cases -------------------------------
-        Case {
-            id: "c-1004".into(),
-            title: "Immigration support".into(),
-            client_id: "cl-2".into(),
-            category: NeedCategory::Immigration,
-            service_types: vec![ServiceType::WorkAuthorization, ServiceType::Vawa],
-            summary: "Guidance on work authorization and document preparation.".into(),
-            status: CaseStatus::Open,
-            priority: CasePriority::Medium,
-            assigned_volunteer_ids: vec!["v-2".into()],
-            related_case_ids: Vec::new(),
-            notes: Vec::new(),
-            documents: Vec::new(),
             evidence: Vec::new(),
-            timeline: vec![ev("e-6", "2026-06-28", TimelineKind::Opened, "Case opened")],
-            opened_at: "2026-06-28".into(),
-            matter_type: MatterType::Immigration,
-            outcome: CaseOutcome::Ongoing,
-            intake_date: "2026-06-26".into(),
-            resolved_date: None,
-            referrals: vec![Referral {
-                agency: "Immigration Legal Aid".into(),
-                date: "2026-07-02".into(),
-            }],
-            services: vec![ServiceRecord {
-                kind: "Consultation".into(),
-                date: "2026-06-30".into(),
-            }],
-            follow_ups: vec![FollowUp {
-                date: "2026-07-05".into(),
-                completed: false,
-            }],
-            created_by: "Dana Whitfield".into(),
-            steward: "Maria Gonzalez".into(),
-            retention: RetentionClass::Standard,
-            legal_hold: false,
-        },
-        Case {
-            id: "c-1005".into(),
-            title: "Mental health referral".into(),
-            client_id: "cl-3".into(),
-            category: NeedCategory::MentalHealth,
-            service_types: vec![
-                ServiceType::TherapyReferrals,
-                ServiceType::SupportGroups,
-            ],
-            summary: "Connect with a partner clinic for ongoing counseling.".into(),
-            status: CaseStatus::InProgress,
-            priority: CasePriority::Medium,
-            assigned_volunteer_ids: vec!["v-4".into()],
-            related_case_ids: Vec::new(),
-            notes: Vec::new(),
-            documents: Vec::new(),
-            evidence: Vec::new(),
-            timeline: vec![ev("e-7", "2026-05-19", TimelineKind::Opened, "Case opened")],
-            opened_at: "2026-05-19".into(),
-            matter_type: MatterType::MentalHealth,
-            outcome: CaseOutcome::Ongoing,
-            intake_date: "2026-05-15".into(),
-            resolved_date: None,
-            referrals: vec![Referral {
-                agency: "Community Counseling Center".into(),
-                date: "2026-05-25".into(),
-            }],
-            services: vec![
-                ServiceRecord {
-                    kind: "Counseling referral".into(),
-                    date: "2026-05-20".into(),
-                },
-                ServiceRecord {
-                    kind: "Wellness check".into(),
-                    date: "2026-06-02".into(),
-                },
-            ],
-            follow_ups: vec![FollowUp {
-                date: "2026-06-10".into(),
-                completed: true,
-            }],
-            created_by: "Sarah Mitchell".into(),
-            steward: "Priya Nair".into(),
-            retention: RetentionClass::Standard,
-            legal_hold: false,
-        },
-        Case {
-            id: "c-1006".into(),
-            title: "Survivor support intake".into(),
-            client_id: "cl-4".into(),
-            category: NeedCategory::Other,
-            service_types: vec![
-                ServiceType::CrisisIntervention,
-                ServiceType::SafetyPlanning,
-            ],
-            summary: "New intake — needs risk assessment and a wellness check-in schedule.".into(),
-            status: CaseStatus::Open,
-            priority: CasePriority::High,
-            assigned_volunteer_ids: Vec::new(),
-            related_case_ids: Vec::new(),
-            notes: Vec::new(),
-            documents: vec![CaseDocument {
-                id: "d-4".into(),
-                name: "Safety plan (draft).docx".into(),
-                uploaded_at: "2026-07-06".into(),
-                classification: DocumentClassification::Restricted,
-            }],
-            evidence: Vec::new(),
-            timeline: vec![ev("e-8", "2026-07-05", TimelineKind::Opened, "Case opened")],
-            opened_at: "2026-07-05".into(),
-            matter_type: MatterType::Other,
-            outcome: CaseOutcome::ReferredOut,
-            intake_date: "2026-07-03".into(),
-            resolved_date: Some("2026-07-04".into()),
-            referrals: vec![Referral {
-                agency: "Partner Advocacy Agency".into(),
-                date: "2026-07-04".into(),
-            }],
-            services: Vec::new(),
-            follow_ups: vec![FollowUp {
-                date: "2026-07-12".into(),
-                completed: false,
-            }],
-            created_by: "Dana Whitfield".into(),
-            steward: ORG_NAME.into(),
-            retention: RetentionClass::Permanent,
-            legal_hold: false,
+            properties: vec![prop("Caseworker", "Dana Cole")],
+            audit_log: Vec::new(),
         },
     ]
 }
 
-/// A starter audit trail so the log is populated on first load.
-pub fn audit_log() -> Vec<AuditEvent> {
+/// Seed case chat messages.
+pub fn messages() -> Vec<Message> {
     vec![
-        AuditEvent {
-            id: "a-1".into(),
-            actor: "Sarah Mitchell".into(),
-            actor_role: Role::Admin,
-            action: AuditAction::Login,
-            target: "admin@mommysheart.org".into(),
-            at: "2026-07-06 09:02".into(),
+        Message {
+            id: "m-1".into(),
+            case_id: "c-1001".into(),
+            author_id: "u-vol".into(),
+            author: "Dana Cole".into(),
+            body: "The county clerk confirmed receipt of the paperwork.".into(),
+            sent_at: "2026-03-06 09:14".into(),
         },
-        AuditEvent {
-            id: "a-2".into(),
-            actor: "Sarah Mitchell".into(),
-            actor_role: Role::Admin,
-            action: AuditAction::CreateCase,
-            target: "Survivor support intake".into(),
-            at: "2026-07-05 16:40".into(),
+        Message {
+            id: "m-2".into(),
+            case_id: "c-1001".into(),
+            author_id: "u-admin".into(),
+            author: "Alex Rivera".into(),
+            body: "Great, thanks for the quick turnaround.".into(),
+            sent_at: "2026-03-06 10:02".into(),
         },
-        AuditEvent {
-            id: "a-3".into(),
-            actor: "Maria Gonzalez".into(),
-            actor_role: Role::Volunteer,
-            action: AuditAction::AccessDocument,
-            target: "Court schedule.pdf (Restricted)".into(),
-            at: "2026-07-02 11:15".into(),
-        },
-        AuditEvent {
-            id: "a-4".into(),
-            actor: "Priya Nair".into(),
-            actor_role: Role::Volunteer,
-            action: AuditAction::DeniedAccess,
-            target: "Safety plan (draft).docx (Restricted)".into(),
-            at: "2026-07-06 13:28".into(),
-        },
-    ]
-}
-
-/// The organization's retained institutional knowledge, independent of any
-/// single volunteer.
-pub fn knowledge() -> Vec<KnowledgeItem> {
-    vec![
-        KnowledgeItem {
-            id: "k-1".into(),
-            title: "Intake assessment template".into(),
-            category: KnowledgeCategory::Template,
-            summary: "Standardized survivor intake form with risk-screening questions.".into(),
-            contributed_by: "Sarah Mitchell".into(),
-            updated_at: "2026-05-02".into(),
-        },
-        KnowledgeItem {
-            id: "k-2".into(),
-            title: "Local emergency shelter directory".into(),
-            category: KnowledgeCategory::Resource,
-            summary: "Vetted shelters and hotlines with capacity and intake contacts.".into(),
-            contributed_by: "Priya Nair".into(),
-            updated_at: "2026-06-11".into(),
-        },
-        KnowledgeItem {
-            id: "k-3".into(),
-            title: "Safety planning best practices".into(),
-            category: KnowledgeCategory::BestPractice,
-            summary: "Guidance for building a survivor safety plan and warm handoffs.".into(),
-            contributed_by: "Dana Whitfield".into(),
-            updated_at: "2026-06-25".into(),
-        },
-        KnowledgeItem {
-            id: "k-4".into(),
-            title: "Family court advocacy — handover notes".into(),
-            category: KnowledgeCategory::CaseContext,
-            summary: "Retained context so custody cases survive volunteer turnover.".into(),
-            contributed_by: "Maria Gonzalez".into(),
-            updated_at: "2026-07-01".into(),
+        Message {
+            id: "m-3".into(),
+            case_id: "c-1002".into(),
+            author_id: "u-vol".into(),
+            author: "Dana Cole".into(),
+            body: "Shared the housing initiative contact with the client.".into(),
+            sent_at: "2026-02-20 14:30".into(),
         },
     ]
 }

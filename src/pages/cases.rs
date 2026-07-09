@@ -1,0 +1,812 @@
+use leptos::prelude::*;
+use leptos_router::components::{Redirect, A};
+use leptos_router::hooks::use_navigate;
+
+use crate::components::layout::Layout;
+use crate::state::AppState;
+use crate::types::{Case, CaseCapability, CaseStatus};
+
+/// One editable property row while a case is in edit mode. Each field is its own
+/// signal so typing never re-creates the row (keeps input focus stable).
+#[derive(Clone, Copy)]
+struct PropRow {
+    id: usize,
+    key: RwSignal<String>,
+    value: RwSignal<String>,
+}
+
+fn badge(classes: &str) -> String {
+    format!("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {classes}")
+}
+
+/// A short label summarizing a user's access to a case from their capabilities.
+fn access_label(caps: &[CaseCapability]) -> Option<(&'static str, &'static str)> {
+    if caps.is_empty() {
+        return None;
+    }
+    if caps.len() == CaseCapability::ALL.len() {
+        Some((
+            "Full access",
+            "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/30",
+        ))
+    } else if caps.contains(&CaseCapability::EditCase) {
+        Some((
+            "Manager",
+            "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/30",
+        ))
+    } else if caps.contains(&CaseCapability::UploadEvidence)
+        || caps.contains(&CaseCapability::AddNotes)
+        || caps.contains(&CaseCapability::SendMessages)
+    {
+        Some((
+            "Contributor",
+            "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
+        ))
+    } else {
+        Some((
+            "Viewer",
+            "bg-slate-500/15 text-slate-300 ring-1 ring-slate-500/30",
+        ))
+    }
+}
+
+/// Case Home: view the cases you own / are assigned to and manage them.
+#[component]
+pub fn CaseHomePage() -> impl IntoView {
+    let state = expect_context::<AppState>();
+
+    if state.current_user.get_untracked().is_none() {
+        return view! { <Redirect path="/login" /> }.into_any();
+    }
+
+    let selected = RwSignal::new(None::<String>);
+
+    // Resolve a user id to a display name.
+    let owner_name = move |owner_id: &str| -> String {
+        state
+            .users
+            .get()
+            .into_iter()
+            .find(|u| u.id == owner_id)
+            .map(|u| u.full_name())
+            .unwrap_or_else(|| "—".into())
+    };
+
+    let cases_list = move || {
+        let cases = state.visible_cases();
+        if cases.is_empty() {
+            return view! {
+                <p class="text-sm text-slate-400">"You have no cases yet."</p>
+            }
+            .into_any();
+        }
+        cases
+            .into_iter()
+            .map(|c| {
+                let case_id = c.id.clone();
+                let is_selected = {
+                    let case_id = case_id.clone();
+                    move || selected.get().as_deref() == Some(case_id.as_str())
+                };
+                let caps = state.capabilities_on(&c);
+                let access_badge = access_label(&caps)
+                    .map(|(label, classes)| {
+                        view! { <span class=badge(classes)>{label}</span> }.into_any()
+                    })
+                    .unwrap_or_else(|| ().into_any());
+                let status = c.status;
+                let name = c.name.clone();
+                let owner = owner_name(&c.owner_id);
+                let select = {
+                    let case_id = case_id.clone();
+                    move |_| selected.set(Some(case_id.clone()))
+                };
+                view! {
+                    <button
+                        on:click=select
+                        class=move || {
+                            let base = "w-full rounded-xl border p-4 text-left transition-colors";
+                            if is_selected() {
+                                format!("{base} border-primary-500/50 bg-slate-800")
+                            } else {
+                                format!("{base} border-slate-800 bg-slate-900 hover:bg-slate-800")
+                            }
+                        }
+                    >
+                        <div class="flex items-center justify-between gap-2">
+                            <span class="font-medium">{name}</span>
+                            <span class=badge(status.badge_classes())>{status.label()}</span>
+                        </div>
+                        <div class="mt-2 flex items-center gap-2 text-xs text-slate-400">
+                            <span>"Owner: " {owner}</span>
+                            {access_badge}
+                        </div>
+                    </button>
+                }
+                .into_any()
+            })
+            .collect_view()
+            .into_any()
+    };
+
+    let detail = move || {
+        match selected.get() {
+        None => view! {
+            <div class="rounded-xl border border-dashed border-slate-700 p-8 text-center text-sm text-slate-500">
+                "Select a case to view and manage it."
+            </div>
+        }
+        .into_any(),
+        Some(id) => {
+            let case = state.cases.get().into_iter().find(|c| c.id == id);
+            match case {
+                Some(c) => view! { <CaseDetail case=c /> }.into_any(),
+                None => view! {
+                    <p class="text-sm text-slate-400">"Case not found."</p>
+                }
+                .into_any(),
+            }
+        }
+    }
+    };
+
+    view! {
+        <Layout title="Cases".to_string()>
+            <div class="grid gap-6 lg:grid-cols-[22rem_1fr]">
+                <div class="space-y-4">
+                    <A
+                        href="/cases/new"
+                        attr:class="flex items-center justify-center rounded-xl border border-primary-500/40 bg-primary-500/10 px-4 py-3 text-sm font-semibold text-primary-200 hover:bg-primary-500/20"
+                    >
+                        "+ New case"
+                    </A>
+                    <div class="space-y-3">{cases_list}</div>
+                </div>
+                <div>{detail}</div>
+            </div>
+        </Layout>
+    }
+    .into_any()
+}
+
+/// New Case: a dedicated form to open a case with its key details.
+#[component]
+pub fn NewCasePage() -> impl IntoView {
+    let state = expect_context::<AppState>();
+
+    if state.current_user.get_untracked().is_none() {
+        return view! { <Redirect path="/login" /> }.into_any();
+    }
+
+    let navigate = use_navigate();
+
+    let name = RwSignal::new(String::new());
+    let status = RwSignal::new(CaseStatus::Open.slug().to_string());
+    let attorney = RwSignal::new(String::new());
+    let opposing = RwSignal::new(String::new());
+    let court = RwSignal::new(String::new());
+    let docket = RwSignal::new(String::new());
+    let first_note = RwSignal::new(String::new());
+    let error = RwSignal::new(String::new());
+
+    let submit = {
+        let navigate = navigate.clone();
+        move |_| {
+            let status = CaseStatus::from_slug(&status.get()).unwrap_or(CaseStatus::Open);
+            let properties = vec![
+                ("Attorney".to_string(), attorney.get()),
+                ("Opposing attorney".to_string(), opposing.get()),
+                ("Court".to_string(), court.get()),
+                ("Docket number".to_string(), docket.get()),
+            ];
+            let note = first_note.get();
+            let note = if note.trim().is_empty() {
+                None
+            } else {
+                Some(note)
+            };
+            match state.add_case_full(&name.get(), status, properties, note) {
+                Ok(_) => navigate("/cases", Default::default()),
+                Err(e) => error.set(e),
+            }
+        }
+    };
+
+    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+    let label_class = "block text-xs font-medium text-slate-400";
+
+    view! {
+        <Layout title="New case".to_string()>
+            <div class="mx-auto max-w-2xl space-y-6">
+                <div class="rounded-xl border border-slate-800 bg-slate-900 p-6 space-y-5">
+                    <div>
+                        <label class=label_class>"Case name"</label>
+                        <input
+                            class=format!("mt-1 {input_class}")
+                            placeholder="e.g. Rivera custody support"
+                            prop:value=move || name.get()
+                            on:input=move |ev| name.set(event_target_value(&ev))
+                        />
+                    </div>
+                    <div>
+                        <label class=label_class>"Status"</label>
+                        <select
+                            class=format!("mt-1 {input_class}")
+                            on:change=move |ev| status.set(event_target_value(&ev))
+                        >
+                            {CaseStatus::ALL
+                                .into_iter()
+                                .map(|s| {
+                                    view! {
+                                        <option value=s.slug() selected=s == CaseStatus::Open>
+                                            {s.label()}
+                                        </option>
+                                    }
+                                })
+                                .collect_view()}
+                        </select>
+                    </div>
+                    <div class="grid gap-4 sm:grid-cols-2">
+                        <div>
+                            <label class=label_class>"Attorney"</label>
+                            <input
+                                class=format!("mt-1 {input_class}")
+                                placeholder="Lead attorney"
+                                prop:value=move || attorney.get()
+                                on:input=move |ev| attorney.set(event_target_value(&ev))
+                            />
+                        </div>
+                        <div>
+                            <label class=label_class>"Opposing attorney"</label>
+                            <input
+                                class=format!("mt-1 {input_class}")
+                                placeholder="Opposing counsel"
+                                prop:value=move || opposing.get()
+                                on:input=move |ev| opposing.set(event_target_value(&ev))
+                            />
+                        </div>
+                        <div>
+                            <label class=label_class>"Court"</label>
+                            <input
+                                class=format!("mt-1 {input_class}")
+                                placeholder="Court / jurisdiction"
+                                prop:value=move || court.get()
+                                on:input=move |ev| court.set(event_target_value(&ev))
+                            />
+                        </div>
+                        <div>
+                            <label class=label_class>"Docket number"</label>
+                            <input
+                                class=format!("mt-1 {input_class}")
+                                placeholder="Docket #"
+                                prop:value=move || docket.get()
+                                on:input=move |ev| docket.set(event_target_value(&ev))
+                            />
+                        </div>
+                    </div>
+                    <div>
+                        <label class=label_class>"Initial note (optional)"</label>
+                        <textarea
+                            class=format!("mt-1 {input_class}")
+                            rows="3"
+                            placeholder="Intake summary, next steps, etc."
+                            prop:value=move || first_note.get()
+                            on:input=move |ev| first_note.set(event_target_value(&ev))
+                        ></textarea>
+                    </div>
+                    <Show when=move || !error.get().is_empty()>
+                        <p class="text-sm text-rose-300">{move || error.get()}</p>
+                    </Show>
+                    <div class="flex gap-3">
+                        <button
+                            on:click=submit
+                            class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600"
+                        >
+                            "Create case"
+                        </button>
+                        <A
+                            href="/cases"
+                            attr:class="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800"
+                        >
+                            "Cancel"
+                        </A>
+                    </div>
+                </div>
+            </div>
+        </Layout>
+    }
+    .into_any()
+}
+
+/// The management panel for a single case.
+#[component]
+fn CaseDetail(case: Case) -> impl IntoView {
+    let state = expect_context::<AppState>();
+    let case_id = case.id.clone();
+
+    // Capability gates for this case.
+    let can_edit = state.case_can(&case, CaseCapability::EditCase);
+    let can_note = state.case_can(&case, CaseCapability::AddNotes);
+    let can_view_evidence = state.case_can(&case, CaseCapability::ViewEvidence);
+    let can_upload_evidence = state.case_can(&case, CaseCapability::UploadEvidence);
+    let can_delete_evidence = state.case_can(&case, CaseCapability::DeleteEvidence);
+
+    // Reactively re-read the case so edits show immediately.
+    let case_sv = StoredValue::new(case_id.clone());
+    let live_case = move || {
+        state
+            .cases
+            .get()
+            .into_iter()
+            .find(|c| c.id == case_sv.get_value())
+    };
+
+    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+
+    // --- edit mode (name, status, owner, properties) ---
+    let editing = RwSignal::new(false);
+    let edit_name = RwSignal::new(String::new());
+    let edit_status = RwSignal::new(String::new());
+    let edit_owner = RwSignal::new(String::new());
+    let edit_props: RwSignal<Vec<PropRow>> = RwSignal::new(Vec::new());
+    let edit_error = RwSignal::new(String::new());
+    let row_seq = RwSignal::new(0usize);
+
+    let make_row = move |key: String, value: String| -> PropRow {
+        let id = row_seq.get_untracked();
+        row_seq.set(id + 1);
+        PropRow {
+            id,
+            key: RwSignal::new(key),
+            value: RwSignal::new(value),
+        }
+    };
+
+    let begin_edit = move |_| {
+        if let Some(c) = live_case() {
+            edit_name.set(c.name.clone());
+            edit_status.set(c.status.slug().to_string());
+            edit_owner.set(c.owner_id.clone());
+            let rows = c
+                .properties
+                .iter()
+                .map(|p| make_row(p.key.clone(), p.value.clone()))
+                .collect::<Vec<_>>();
+            edit_props.set(rows);
+            edit_error.set(String::new());
+            editing.set(true);
+        }
+    };
+
+    let cancel_edit = move |_| {
+        edit_error.set(String::new());
+        editing.set(false);
+    };
+
+    let add_prop_row = move |_| {
+        let row = make_row(String::new(), String::new());
+        edit_props.update(|rows| rows.push(row));
+    };
+
+    let save_edit = move |_| {
+        let case_id = case_sv.get_value();
+        if let Err(e) = state.set_case_name(&case_id, &edit_name.get()) {
+            edit_error.set(e);
+            return;
+        }
+        if let Some(s) = CaseStatus::from_slug(&edit_status.get()) {
+            state.set_case_status(&case_id, s);
+        }
+        if let Err(e) = state.set_case_owner(&case_id, &edit_owner.get()) {
+            edit_error.set(e);
+            return;
+        }
+        let props = edit_props
+            .get()
+            .into_iter()
+            .map(|r| (r.key.get(), r.value.get()))
+            .collect::<Vec<_>>();
+        state.replace_case_properties(&case_id, props);
+        edit_error.set(String::new());
+        editing.set(false);
+    };
+
+    // --- note form ---
+    let note_body = RwSignal::new(String::new());
+    let add_note = {
+        let case_id = case_id.clone();
+        move |_| {
+            if state.add_case_note(&case_id, &note_body.get()).is_ok() {
+                note_body.set(String::new());
+            }
+        }
+    };
+
+    // --- evidence form ---
+    let evi_name = RwSignal::new(String::new());
+    let evi_desc = RwSignal::new(String::new());
+    let add_evidence = {
+        let case_id = case_id.clone();
+        move |_| {
+            if state
+                .add_case_evidence(&case_id, &evi_name.get(), &evi_desc.get())
+                .is_ok()
+            {
+                evi_name.set(String::new());
+                evi_desc.set(String::new());
+            }
+        }
+    };
+
+    let notes_view = {
+        move || {
+            let notes = live_case().map(|c| c.notes).unwrap_or_default();
+            if notes.is_empty() {
+                return view! { <p class="text-sm text-slate-500">"No notes yet."</p> }.into_any();
+            }
+            notes
+                .into_iter()
+                .map(|n| {
+                    view! {
+                        <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                            <p class="text-sm text-slate-200">{n.body}</p>
+                            <p class="mt-1 text-xs text-slate-500">
+                                {n.author} " · " {n.created_at}
+                            </p>
+                        </div>
+                    }
+                    .into_any()
+                })
+                .collect_view()
+                .into_any()
+        }
+    };
+
+    let evidence_view = {
+        let case_id = case_id.clone();
+        move || {
+            let evidence = live_case().map(|c| c.evidence).unwrap_or_default();
+            if evidence.is_empty() {
+                return view! { <p class="text-sm text-slate-500">"No evidence yet."</p> }
+                    .into_any();
+            }
+            evidence
+                .into_iter()
+                .map(|e| {
+                    let delete = {
+                        let case_id = case_id.clone();
+                        let evidence_id = e.id.clone();
+                        move |_| state.delete_case_evidence(&case_id, &evidence_id)
+                    };
+                    let delete_btn = if can_delete_evidence {
+                        view! {
+                            <button
+                                on:click=delete
+                                class="shrink-0 rounded-lg border border-rose-500/40 px-2 py-1 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
+                            >
+                                "Delete"
+                            </button>
+                        }
+                        .into_any()
+                    } else {
+                        ().into_any()
+                    };
+                    view! {
+                        <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                            <div class="flex items-start justify-between gap-2">
+                                <p class="text-sm font-medium text-slate-200">{e.name}</p>
+                                {delete_btn}
+                            </div>
+                            <Show when={
+                                let d = e.description.clone();
+                                move || !d.is_empty()
+                            }>
+                                <p class="text-sm text-slate-400">{e.description.clone()}</p>
+                            </Show>
+                            <p class="mt-1 text-xs text-slate-500">
+                                "Uploaded by " {e.uploaded_by} " · " {e.uploaded_at}
+                            </p>
+                        </div>
+                    }
+                    .into_any()
+                })
+                .collect_view()
+                .into_any()
+        }
+    };
+
+    let properties_view = {
+        move || {
+            let props = live_case().map(|c| c.properties).unwrap_or_default();
+            if props.is_empty() {
+                return view! { <p class="text-sm text-slate-500">"No properties yet."</p> }
+                    .into_any();
+            }
+            props
+                .into_iter()
+                .map(|p| {
+                    view! {
+                        <div class="flex justify-between gap-4 border-b border-slate-800 py-1.5 text-sm">
+                            <span class="text-slate-400">{p.key}</span>
+                            <span class="text-slate-200">{p.value}</span>
+                        </div>
+                    }
+                    .into_any()
+                })
+                .collect_view()
+                .into_any()
+        }
+    };
+
+    let audit_view = {
+        move || {
+            let log = live_case().map(|c| c.audit_log).unwrap_or_default();
+            if log.is_empty() {
+                return view! { <p class="text-sm text-slate-500">"No changes recorded."</p> }
+                    .into_any();
+            }
+            log.into_iter()
+                .map(|e| {
+                    view! {
+                        <div class="text-xs text-slate-400">
+                            <span class="text-slate-300">{e.actor}</span>
+                            " changed " <span class="text-slate-300">{e.field}</span>
+                            " from \"" {e.old_value} "\" to \"" {e.new_value} "\" · " {e.at}
+                        </div>
+                    }
+                    .into_any()
+                })
+                .collect_view()
+                .into_any()
+        }
+    };
+
+    let section = "rounded-xl border border-slate-800 bg-slate-900 p-4";
+
+    let details_section = move || {
+        let Some(c) = live_case() else {
+            return ().into_any();
+        };
+        if !editing.get() {
+            let owner_name = state.user_name(&c.owner_id);
+            let status = c.status;
+            let edit_btn = if can_edit {
+                view! {
+                    <button
+                        on:click=begin_edit
+                        class="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                    >
+                        "Edit"
+                    </button>
+                }
+                .into_any()
+            } else {
+                ().into_any()
+            };
+            return view! {
+                <div class=section>
+                    <div class="flex items-start justify-between gap-3">
+                        <div>
+                            <h2 class="text-lg font-semibold">{c.name.clone()}</h2>
+                            <p class="mt-1 text-sm text-slate-400">"Filed by " {owner_name}</p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class=badge(status.badge_classes())>{status.label()}</span>
+                            {edit_btn}
+                        </div>
+                    </div>
+                    <Show when=move || !can_edit && !can_note && !can_upload_evidence>
+                        <p class="mt-2 text-xs text-slate-500">
+                            "You have view-only access to this case."
+                        </p>
+                    </Show>
+                    <div class="mt-4">
+                        <h3 class="text-sm font-semibold text-slate-200">"Properties"</h3>
+                        <div class="mt-2">{properties_view()}</div>
+                    </div>
+                </div>
+            }
+            .into_any();
+        }
+
+        // --- edit mode ---
+        let owner_options = state
+            .users
+            .get()
+            .into_iter()
+            .map(|u| {
+                let selected = u.id == edit_owner.get();
+                view! {
+                    <option value=u.id.clone() selected=selected>
+                        {u.full_name()}
+                    </option>
+                }
+            })
+            .collect_view();
+        view! {
+            <div class=section>
+                <div class="flex items-center justify-between gap-3">
+                    <h2 class="text-lg font-semibold">"Edit case"</h2>
+                    <div class="flex items-center gap-2">
+                        <button
+                            on:click=save_edit
+                            class="shrink-0 rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600"
+                        >
+                            "Save"
+                        </button>
+                        <button
+                            on:click=cancel_edit
+                            class="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800"
+                        >
+                            "Cancel"
+                        </button>
+                    </div>
+                </div>
+                <Show when=move || !edit_error.get().is_empty()>
+                    <p class="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
+                        {move || edit_error.get()}
+                    </p>
+                </Show>
+                <div class="mt-4 space-y-4">
+                    <div>
+                        <label class="text-xs font-medium text-slate-400">"Case name"</label>
+                        <input
+                            class=input_class
+                            prop:value=move || edit_name.get()
+                            on:input=move |ev| edit_name.set(event_target_value(&ev))
+                        />
+                    </div>
+                    <div class="grid gap-4 sm:grid-cols-2">
+                        <div>
+                            <label class="text-xs font-medium text-slate-400">"Status"</label>
+                            <select
+                                class=input_class
+                                on:change=move |ev| edit_status.set(event_target_value(&ev))
+                            >
+                                {CaseStatus::ALL
+                                    .into_iter()
+                                    .map(|s| {
+                                        view! {
+                                            <option
+                                                value=s.slug()
+                                                selected=move || edit_status.get() == s.slug()
+                                            >
+                                                {s.label()}
+                                            </option>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </select>
+                        </div>
+                        <div>
+                            <label class="text-xs font-medium text-slate-400">
+                                "Owner (who filed it)"
+                            </label>
+                            <select
+                                class=input_class
+                                on:change=move |ev| edit_owner.set(event_target_value(&ev))
+                            >
+                                {owner_options}
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="text-xs font-medium text-slate-400">"Properties"</label>
+                        <div class="mt-2 space-y-2">
+                            <For each=move || edit_props.get() key=|r| r.id let:row>
+                                <div class="flex gap-2">
+                                    <input
+                                        class=input_class
+                                        placeholder="Name (e.g. Attorney)"
+                                        prop:value=move || row.key.get()
+                                        on:input=move |ev| row.key.set(event_target_value(&ev))
+                                    />
+                                    <input
+                                        class=input_class
+                                        placeholder="Value"
+                                        prop:value=move || row.value.get()
+                                        on:input=move |ev| row.value.set(event_target_value(&ev))
+                                    />
+                                    <button
+                                        on:click=move |_| {
+                                            edit_props.update(|rows| rows.retain(|x| x.id != row.id))
+                                        }
+                                        class="shrink-0 rounded-lg border border-rose-500/40 px-3 py-2 text-sm font-medium text-rose-300 hover:bg-rose-500/10"
+                                    >
+                                        "Remove"
+                                    </button>
+                                </div>
+                            </For>
+                        </div>
+                        <button
+                            on:click=add_prop_row
+                            class="mt-2 rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                        >
+                            "+ Add property"
+                        </button>
+                    </div>
+                </div>
+            </div>
+        }
+        .into_any()
+    };
+
+    view! {
+        <div class="space-y-6">
+            {details_section}
+
+            // Notes
+            <div class=section>
+                <h3 class="text-sm font-semibold text-slate-200">"Notes"</h3>
+                <div class="mt-3 space-y-2">{notes_view}</div>
+                {if can_note {
+                    view! {
+                        <div class="mt-3 flex gap-2">
+                            <input
+                                class=input_class
+                                placeholder="Add a note"
+                                prop:value=move || note_body.get()
+                                on:input=move |ev| note_body.set(event_target_value(&ev))
+                            />
+                            <button
+                                on:click=add_note
+                                class="shrink-0 rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600"
+                            >
+                                "Add"
+                            </button>
+                        </div>
+                    }
+                        .into_any()
+                } else {
+                    ().into_any()
+                }}
+            </div>
+
+            // Evidence
+            {if can_view_evidence {
+                view! {
+                    <div class=section>
+                        <h3 class="text-sm font-semibold text-slate-200">"Evidence"</h3>
+                        <div class="mt-3 space-y-2">{evidence_view}</div>
+                        {if can_upload_evidence {
+                            view! {
+                                <div class="mt-3 space-y-2">
+                                    <input
+                                        class=input_class
+                                        placeholder="Evidence name"
+                                        prop:value=move || evi_name.get()
+                                        on:input=move |ev| evi_name.set(event_target_value(&ev))
+                                    />
+                                    <input
+                                        class=input_class
+                                        placeholder="Extra information (optional)"
+                                        prop:value=move || evi_desc.get()
+                                        on:input=move |ev| evi_desc.set(event_target_value(&ev))
+                                    />
+                                    <button
+                                        on:click=add_evidence
+                                        class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600"
+                                    >
+                                        "Add evidence"
+                                    </button>
+                                </div>
+                            }
+                                .into_any()
+                        } else {
+                            ().into_any()
+                        }}
+                    </div>
+                }
+                    .into_any()
+            } else {
+                ().into_any()
+            }}
+
+            // Audit log
+            <div class=section>
+                <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
+                <div class="mt-3 space-y-1.5">{audit_view}</div>
+            </div>
+        </div>
+    }
+}

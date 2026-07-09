@@ -1,26 +1,28 @@
-//! Reusable route guard for permission-based access control (RBAC).
+//! Reusable route guards.
 //!
-//! Pages call [`deny_redirect`] at the top of their render. If the signed-in
-//! user lacks the required [`Permission`], it returns a redirect view the page
-//! should return immediately; otherwise it returns `None` and the page renders.
+//! Pages call these at the top of their render. If access is denied, the helper
+//! returns `Some(view)` the page should return immediately; otherwise `None`.
 
 use leptos::prelude::*;
 use leptos_router::components::Redirect;
 
 use crate::state::AppState;
-use crate::types::Permission;
 
-/// Returns `Some(redirect)` when the current user may **not** exercise `perm`,
-/// and `None` when access is granted.
-///
-/// Unauthenticated users are sent to `/login`; authenticated users without the
-/// permission are bounced back to the landing page for their authorization
-/// level so they never see a screen they cannot use.
-pub fn deny_redirect(state: &AppState, perm: Permission) -> Option<AnyView> {
+/// Redirect unauthenticated visitors to `/login`.
+pub fn require_login(state: &AppState) -> Option<AnyView> {
+    if state.current_user.get_untracked().is_none() {
+        Some(view! { <Redirect path="/login" /> }.into_any())
+    } else {
+        None
+    }
+}
+
+/// Redirect visitors who are not admins: signed-out users go to `/login`,
+/// signed-in non-admins go to `/cases`.
+pub fn require_admin(state: &AppState) -> Option<AnyView> {
     match state.current_user.get_untracked() {
         None => Some(view! { <Redirect path="/login" /> }.into_any()),
-        Some(u) if u.role.can(perm) => None,
-        Some(u) if u.role.is_staff_level() => Some(view! { <Redirect path="/admin" /> }.into_any()),
-        Some(_) => Some(view! { <Redirect path="/volunteer" /> }.into_any()),
+        Some(u) if u.role.is_admin() => None,
+        Some(_) => Some(view! { <Redirect path="/cases" /> }.into_any()),
     }
 }

@@ -1,15 +1,13 @@
 //! The dedicated JSON API (SSR only).
 //!
-//! Plain Axum routes under `/api/*` returning JSON. This is the single API
-//! consumed by both the CRM website (via `crate::api_client`) and the embeddable
-//! Squarespace chat widget (cross-origin, hence [`cors_layer`]).
+//! Plain Axum routes under `/api/*` returning JSON. This is the API consumed by
+//! both the CRM website (via `crate::api_client`) and the embeddable Squarespace
+//! chat widget (cross-origin, hence [`cors_layer`]).
 //!
 //! Each feature area lives in its own submodule exposing a `routes()` function;
 //! [`router`] merges them into one router.
 
 pub mod chat;
-pub mod contacts;
-pub mod conversations;
 pub mod cors;
 pub mod docs;
 pub mod health;
@@ -30,7 +28,5 @@ where
         .merge(health::routes())
         .merge(version::routes())
         .merge(chat::routes())
-        .merge(contacts::routes())
-        .merge(conversations::routes())
         .merge(docs::routes())
 }
