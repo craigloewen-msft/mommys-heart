@@ -77,6 +77,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                                         <NavLink href="/insights" label="Insights" />
                                         <NavLink href="/dashboard" label="Overview" />
                                         <NavLink href="/contacts" label="Contacts" />
+                                        <NavLink href="/evidence" label="Evidence" />
                                         <NavLink href="/volunteer" label="Volunteer view" />
                                         <NavLink href="/chat" label="Chat" />
                                     }
@@ -85,6 +86,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                                 Role::Volunteer => {
                                     view! {
                                         <NavLink href="/volunteer" label="My cases" />
+                                        <NavLink href="/evidence" label="Evidence" />
                                         <NavLink href="/chat" label="Chat" />
                                     }
                                         .into_any()

@@ -7,9 +7,31 @@ use leptos::prelude::*;
 use crate::mockdata;
 use crate::taxonomy::{ServiceCategory, ServiceType};
 use crate::types::{
-    Case, CaseDocument, CaseNote, Client, NeedCategory, Role, TimelineEvent, TimelineKind, User,
-    Volunteer, VolunteerStatus,
+    Case, CaseDocument, CaseNote, Client, EvidenceItem, EvidenceType, NeedCategory, ReviewStatus,
+    Role, TimelineEvent, TimelineKind, User, Volunteer, VolunteerStatus,
 };
+
+/// Fields collected when adding a new piece of evidence to a case.
+#[derive(Clone, Debug, Default)]
+pub struct EvidenceDraft {
+    pub name: String,
+    pub evidence_type: EvidenceType,
+    pub description: String,
+    pub source: String,
+    pub party: String,
+    pub occurred_on: String,
+    pub tags: Vec<String>,
+}
+
+/// A flattened evidence item paired with its owning case, for the cross-case
+/// Evidence Repository views.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EvidenceRow {
+    pub case_id: String,
+    pub case_title: String,
+    pub client_name: String,
+    pub item: EvidenceItem,
+}
 
 /// Shared, reactive application state. `RwSignal` is `Copy`, so the whole
 /// struct is cheap to copy and can be pulled from context anywhere.
@@ -258,6 +280,82 @@ impl AppState {
         });
     }
 
+    pub fn add_case_evidence(&self, case_id: &str, draft: EvidenceDraft) {
+        let name = draft.name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let tags: Vec<String> = draft
+            .tags
+            .into_iter()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+        let seq = self.next_seq();
+        let event =
+            self.new_event(TimelineKind::DocumentAdded, format!("Added evidence \"{name}\""));
+        self.cases.update(|list| {
+            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
+                c.evidence.push(EvidenceItem {
+                    id: format!("e-{seq}"),
+                    name,
+                    evidence_type: draft.evidence_type,
+                    description: draft.description.trim().to_string(),
+                    source: draft.source.trim().to_string(),
+                    party: draft.party.trim().to_string(),
+                    occurred_on: draft.occurred_on.trim().to_string(),
+                    tags,
+                    review_status: ReviewStatus::Unreviewed,
+                    uploaded_at: "just now".into(),
+                });
+                c.timeline.push(event);
+            }
+        });
+    }
+
+    pub fn set_evidence_review_status(
+        &self,
+        case_id: &str,
+        evidence_id: &str,
+        status: ReviewStatus,
+    ) {
+        self.cases.update(|list| {
+            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
+                if let Some(e) = c.evidence.iter_mut().find(|e| e.id == evidence_id) {
+                    e.review_status = status;
+                }
+            }
+        });
+    }
+
+    pub fn remove_evidence(&self, case_id: &str, evidence_id: &str) {
+        self.cases.update(|list| {
+            if let Some(c) = list.iter_mut().find(|c| c.id == case_id) {
+                c.evidence.retain(|e| e.id != evidence_id);
+            }
+        });
+    }
+
+    /// Every evidence item across all cases, paired with its owning case, for
+    /// the cross-case Evidence Repository.
+    pub fn all_evidence(&self) -> Vec<EvidenceRow> {
+        self.cases
+            .get()
+            .into_iter()
+            .flat_map(|c| {
+                let case_id = c.id.clone();
+                let case_title = c.title.clone();
+                let client_name = self.client_name(&c.client_id);
+                c.evidence.into_iter().map(move |item| EvidenceRow {
+                    case_id: case_id.clone(),
+                    case_title: case_title.clone(),
+                    client_name: client_name.clone(),
+                    item,
+                })
+            })
+            .collect()
+    }
+
     pub fn add_case_note(&self, case_id: &str, body: &str) {
         let body = body.trim().to_string();
         if body.is_empty() {
@@ -314,6 +412,7 @@ impl AppState {
             related_case_ids: Vec::new(),
             notes: Vec::new(),
             documents: Vec::new(),
+            evidence: Vec::new(),
             timeline: vec![opened],
             opened_at: "just now".into(),
         };

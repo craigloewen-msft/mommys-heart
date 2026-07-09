@@ -17,6 +17,7 @@ pub mod pages {
     pub mod contact_detail;
     pub mod contacts;
     pub mod dashboard;
+    pub mod evidence;
     pub mod insights;
     pub mod login;
     pub mod register;

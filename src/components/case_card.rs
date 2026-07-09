@@ -5,9 +5,9 @@
 
 use leptos::prelude::*;
 
-use crate::state::AppState;
+use crate::state::{AppState, EvidenceDraft};
 use crate::taxonomy::ServiceCategory;
-use crate::types::CaseStatus;
+use crate::types::{CaseStatus, EvidenceType, ReviewStatus};
 
 const SELECT_CLASS: &str = "rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 focus:border-primary-500 focus:outline-none";
 const INPUT_CLASS: &str = "flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none";
@@ -79,6 +79,7 @@ pub fn CaseCard(id: String, #[prop(default = true)] editable: bool) -> impl Into
             <RelatedCases id=id.clone() editable=editable case=case />
             <CaseNotes id=id.clone() case=case />
             <CaseDocuments id=id.clone() case=case />
+            <CaseEvidence id=id.clone() case=case />
             <CaseTimeline case=case />
         </div>
     }
@@ -420,6 +421,171 @@ fn CaseDocuments(id: String, case: Memo<Option<crate::types::Case>>) -> impl Int
                     class="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800"
                 >
                     "Add document"
+                </button>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn CaseEvidence(id: String, case: Memo<Option<crate::types::Case>>) -> impl IntoView {
+    let state = expect_context::<AppState>();
+
+    let ev_name = RwSignal::new(String::new());
+    let ev_type = RwSignal::new(EvidenceType::TextMessage.slug().to_string());
+    let ev_date = RwSignal::new(String::new());
+    let ev_party = RwSignal::new(String::new());
+    let ev_source = RwSignal::new(String::new());
+    let ev_tags = RwSignal::new(String::new());
+    let ev_desc = RwSignal::new(String::new());
+    let add_ev_id = id.clone();
+    let add_evidence = move |_| {
+        let draft = EvidenceDraft {
+            name: ev_name.get(),
+            evidence_type: EvidenceType::from_slug(&ev_type.get()).unwrap_or_default(),
+            description: ev_desc.get(),
+            source: ev_source.get(),
+            party: ev_party.get(),
+            occurred_on: ev_date.get(),
+            tags: ev_tags.get().split(',').map(|t| t.to_string()).collect(),
+        };
+        state.add_case_evidence(&add_ev_id, draft);
+        ev_name.set(String::new());
+        ev_date.set(String::new());
+        ev_party.set(String::new());
+        ev_source.set(String::new());
+        ev_tags.set(String::new());
+        ev_desc.set(String::new());
+    };
+
+    let list_id = id.clone();
+    let items = move || match case.get() {
+        Some(c) if !c.evidence.is_empty() => c
+            .evidence
+            .into_iter()
+            .map(|d| {
+                let type_badge = format!(
+                    "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {}",
+                    d.evidence_type.badge_classes(),
+                );
+                let review_badge = format!(
+                    "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {}",
+                    d.review_status.badge_classes(),
+                );
+                let case_id = list_id.clone();
+                let ev_id = d.id.clone();
+                view! {
+                    <li class="rounded-lg bg-slate-950/70 px-3 py-2 text-xs">
+                        <div class="flex items-start justify-between gap-2">
+                            <div class="min-w-0">
+                                <p class="truncate font-medium text-slate-100">{d.name}</p>
+                                <p class="mt-0.5 text-[11px] text-slate-500">
+                                    {format!("{} \u{2022} {}", d.party, d.occurred_on)}
+                                </p>
+                            </div>
+                            <div class="flex shrink-0 flex-col items-end gap-1">
+                                <span class=type_badge>{d.evidence_type.label()}</span>
+                                <span class=review_badge>{d.review_status.label()}</span>
+                            </div>
+                        </div>
+                        <div class="mt-2 flex items-center gap-2">
+                            <span class="text-[10px] uppercase tracking-wide text-slate-500">
+                                "Review"
+                            </span>
+                            <select
+                                class="rounded-md border border-slate-700 bg-slate-950 px-1.5 py-1 text-[11px] text-slate-100 focus:border-primary-500 focus:outline-none"
+                                prop:value=d.review_status.slug()
+                                on:change=move |ev| {
+                                    if let Some(s) = ReviewStatus::from_slug(
+                                        &event_target_value(&ev),
+                                    ) {
+                                        state.set_evidence_review_status(&case_id, &ev_id, s);
+                                    }
+                                }
+                            >
+                                {ReviewStatus::ALL
+                                    .into_iter()
+                                    .map(|s| view! { <option value=s.slug()>{s.label()}</option> })
+                                    .collect_view()}
+                            </select>
+                        </div>
+                    </li>
+                }
+            })
+            .collect_view()
+            .into_any(),
+        _ => view! {
+            <li class="rounded-lg bg-slate-950/70 px-3 py-1.5 text-xs text-slate-500">
+                "No evidence yet."
+            </li>
+        }
+        .into_any(),
+    };
+
+    view! {
+        <div class="mt-4">
+            <p class="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                "Evidence"
+            </p>
+            <ul class="space-y-1.5">{items}</ul>
+            <div class="mt-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                <p class="mb-2 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                    "Add evidence"
+                </p>
+                <div class="grid gap-2 sm:grid-cols-2">
+                    <input
+                        class=INPUT_CLASS
+                        placeholder="Title / description\u{2026}"
+                        prop:value=move || ev_name.get()
+                        on:input=move |ev| ev_name.set(event_target_value(&ev))
+                    />
+                    <select
+                        class=SELECT_CLASS
+                        prop:value=move || ev_type.get()
+                        on:change=move |ev| ev_type.set(event_target_value(&ev))
+                    >
+                        {EvidenceType::ALL
+                            .into_iter()
+                            .map(|t| view! { <option value=t.slug()>{t.label()}</option> })
+                            .collect_view()}
+                    </select>
+                    <input
+                        r#type="date"
+                        class=INPUT_CLASS
+                        prop:value=move || ev_date.get()
+                        on:input=move |ev| ev_date.set(event_target_value(&ev))
+                    />
+                    <input
+                        class=INPUT_CLASS
+                        placeholder="Party (who it's from/about)"
+                        prop:value=move || ev_party.get()
+                        on:input=move |ev| ev_party.set(event_target_value(&ev))
+                    />
+                    <input
+                        class=INPUT_CLASS
+                        placeholder="Source (device / platform)"
+                        prop:value=move || ev_source.get()
+                        on:input=move |ev| ev_source.set(event_target_value(&ev))
+                    />
+                    <input
+                        class=INPUT_CLASS
+                        placeholder="Tags (comma separated)"
+                        prop:value=move || ev_tags.get()
+                        on:input=move |ev| ev_tags.set(event_target_value(&ev))
+                    />
+                </div>
+                <textarea
+                    class=format!("{INPUT_CLASS} mt-2")
+                    rows="2"
+                    placeholder="Notes / context\u{2026}"
+                    prop:value=move || ev_desc.get()
+                    on:input=move |ev| ev_desc.set(event_target_value(&ev))
+                ></textarea>
+                <button
+                    on:click=add_evidence
+                    class="mt-2 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                >
+                    "Add evidence"
                 </button>
             </div>
         </div>

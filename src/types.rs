@@ -432,6 +432,165 @@ pub struct CaseDocument {
     pub uploaded_at: String,
 }
 
+/// The kind of evidence an [`EvidenceItem`] represents. Mirrors the categories
+/// clients typically collect across family court, DV, custody, and related
+/// matters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceType {
+    TextMessage,
+    Email,
+    Screenshot,
+    CourtFiling,
+    Photograph,
+    AudioRecording,
+    Affidavit,
+    SupportingDocument,
+    #[default]
+    Other,
+}
+
+impl EvidenceType {
+    pub const ALL: [EvidenceType; 9] = [
+        EvidenceType::TextMessage,
+        EvidenceType::Email,
+        EvidenceType::Screenshot,
+        EvidenceType::CourtFiling,
+        EvidenceType::Photograph,
+        EvidenceType::AudioRecording,
+        EvidenceType::Affidavit,
+        EvidenceType::SupportingDocument,
+        EvidenceType::Other,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            EvidenceType::TextMessage => "Text message",
+            EvidenceType::Email => "Email",
+            EvidenceType::Screenshot => "Screenshot",
+            EvidenceType::CourtFiling => "Court filing",
+            EvidenceType::Photograph => "Photograph",
+            EvidenceType::AudioRecording => "Audio recording",
+            EvidenceType::Affidavit => "Affidavit",
+            EvidenceType::SupportingDocument => "Supporting document",
+            EvidenceType::Other => "Other",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            EvidenceType::TextMessage => "text_message",
+            EvidenceType::Email => "email",
+            EvidenceType::Screenshot => "screenshot",
+            EvidenceType::CourtFiling => "court_filing",
+            EvidenceType::Photograph => "photograph",
+            EvidenceType::AudioRecording => "audio_recording",
+            EvidenceType::Affidavit => "affidavit",
+            EvidenceType::SupportingDocument => "supporting_document",
+            EvidenceType::Other => "other",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.slug() == s)
+    }
+
+    pub fn badge_classes(self) -> &'static str {
+        match self {
+            EvidenceType::TextMessage => "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
+            EvidenceType::Email => "bg-indigo-500/15 text-indigo-300 ring-1 ring-indigo-500/30",
+            EvidenceType::Screenshot => "bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-500/30",
+            EvidenceType::CourtFiling => "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",
+            EvidenceType::Photograph => {
+                "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+            }
+            EvidenceType::AudioRecording => {
+                "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"
+            }
+            EvidenceType::Affidavit => "bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30",
+            EvidenceType::SupportingDocument => {
+                "bg-teal-500/15 text-teal-300 ring-1 ring-teal-500/30"
+            }
+            EvidenceType::Other => "bg-slate-500/15 text-slate-300 ring-1 ring-slate-500/30",
+        }
+    }
+}
+
+/// Review workflow state of an [`EvidenceItem`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    Unreviewed,
+    InReview,
+    Reviewed,
+    Flagged,
+}
+
+impl ReviewStatus {
+    pub const ALL: [ReviewStatus; 4] = [
+        ReviewStatus::Unreviewed,
+        ReviewStatus::InReview,
+        ReviewStatus::Reviewed,
+        ReviewStatus::Flagged,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ReviewStatus::Unreviewed => "Unreviewed",
+            ReviewStatus::InReview => "In review",
+            ReviewStatus::Reviewed => "Reviewed",
+            ReviewStatus::Flagged => "Flagged",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            ReviewStatus::Unreviewed => "unreviewed",
+            ReviewStatus::InReview => "in_review",
+            ReviewStatus::Reviewed => "reviewed",
+            ReviewStatus::Flagged => "flagged",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.slug() == s)
+    }
+
+    pub fn badge_classes(self) -> &'static str {
+        match self {
+            ReviewStatus::Unreviewed => "bg-slate-500/15 text-slate-400 ring-1 ring-slate-500/30",
+            ReviewStatus::InReview => "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
+            ReviewStatus::Reviewed => {
+                "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+            }
+            ReviewStatus::Flagged => "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",
+        }
+    }
+}
+
+/// A single piece of evidence attached to a case. Metadata-only in the current
+/// proof-of-concept (no binary file is stored); a `file_ref` can be added later
+/// without reworking the UI.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EvidenceItem {
+    pub id: String,
+    /// Short title / description of the item.
+    pub name: String,
+    pub evidence_type: EvidenceType,
+    /// Free-text notes and context.
+    pub description: String,
+    /// Where it came from — platform, device, or person.
+    pub source: String,
+    /// Who it relates to / is from — drives pattern grouping.
+    pub party: String,
+    /// The date the underlying event occurred (`YYYY-MM-DD`). Drives timelines.
+    pub occurred_on: String,
+    pub tags: Vec<String>,
+    pub review_status: ReviewStatus,
+    /// When the item was added to the system.
+    pub uploaded_at: String,
+}
+
 /// A support case tracked by the organization. Each case addresses one need
 /// area for one client; related cases for the same client are cross-linked via
 /// `related_case_ids` to capture interconnected service pathways.
@@ -451,6 +610,7 @@ pub struct Case {
     pub related_case_ids: Vec<String>,
     pub notes: Vec<CaseNote>,
     pub documents: Vec<CaseDocument>,
+    pub evidence: Vec<EvidenceItem>,
     pub timeline: Vec<TimelineEvent>,
     pub opened_at: String,
 }
