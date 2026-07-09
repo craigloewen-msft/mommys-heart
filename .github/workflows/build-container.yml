@@ -22,6 +22,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./Containerfile
           push: true
           tags: |
             ${{ secrets.ACR_LOGIN_SERVER }}/mommys-heart:latest
