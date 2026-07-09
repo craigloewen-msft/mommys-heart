@@ -3,6 +3,7 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
 use crate::api_client::get_contact;
+use crate::components::communications::{CommScope, CommunicationsTimeline};
 use crate::components::layout::Layout;
 
 #[component]
@@ -29,6 +30,7 @@ pub fn ContactDetailPage() -> impl IntoView {
                                 c.status.badge_classes(),
                             );
                             let created = c.created_at.split('T').next().unwrap_or("").to_string();
+                            let contact_id = c.id.clone();
                             view! {
                                 <div class="rounded-xl border border-slate-800 bg-slate-900 p-6 max-w-2xl">
                                     <div class="flex items-center justify-between mb-4">
@@ -56,6 +58,7 @@ pub fn ContactDetailPage() -> impl IntoView {
                                             <dd class="text-slate-200">{created}</dd>
                                         </div>
                                     </dl>
+                                    <CommunicationsTimeline scope=CommScope::Contact(contact_id) />
                                 </div>
                             }
                                 .into_any()

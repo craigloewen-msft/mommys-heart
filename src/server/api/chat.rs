@@ -3,7 +3,7 @@
 
 use axum::{http::StatusCode, routing::post, Json, Router};
 
-use crate::server::{captcha, rag, service};
+use crate::server::{captcha, service};
 use crate::types::{ChatRequest, ChatResponse};
 
 pub fn routes<S>() -> Router<S>
@@ -29,11 +29,15 @@ async fn chat(Json(req): Json<ChatRequest>) -> Result<Json<ChatResponse>, (Statu
         }
     }
 
-    Ok(Json(rag::answer(message).await))
+    // Retain the turn in the org-owned store and return the conversation id so
+    // the caller can continue the same thread.
+    Ok(Json(
+        service::record_web_chat_turn(message, req.conversation_id).await,
+    ))
 }
 
-async fn reingest() -> Result<Json<rag::IngestStats>, (StatusCode, String)> {
-    rag::reingest()
+async fn reingest() -> Result<Json<crate::server::rag::IngestStats>, (StatusCode, String)> {
+    crate::server::rag::reingest()
         .await
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))

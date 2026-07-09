@@ -7,7 +7,7 @@ use crate::pages::{
     admin::AdminDashboardPage, analytics::AnalyticsPage, chat::ChatPage,
     clients::ClientDetailPage, clients::ClientsPage, contact_detail::ContactDetailPage,
     contacts::ContactsPage, dashboard::DashboardPage, evidence::EvidenceRepositoryPage,
-    insights::InsightsPage, login::LoginPage, register::RegisterPage,
+    inbox::InboxPage, insights::InsightsPage, login::LoginPage, register::RegisterPage,
     volunteer::VolunteerDashboardPage,
 };
 use crate::state::AppState;
@@ -70,6 +70,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/dashboard") view=DashboardPage />
                 <Route path=path!("/contacts") view=ContactsPage />
                 <Route path=path!("/contacts/:id") view=ContactDetailPage />
+                <Route path=path!("/inbox") view=InboxPage />
                 <Route path=path!("/chat") view=ChatPage />
             </Routes>
         </Router>

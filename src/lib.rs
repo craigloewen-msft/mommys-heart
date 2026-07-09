@@ -9,6 +9,7 @@ pub mod types;
 pub mod components {
     pub mod case_card;
     pub mod charts;
+    pub mod communications;
     pub mod layout;
 }
 
@@ -21,6 +22,7 @@ pub mod pages {
     pub mod contacts;
     pub mod dashboard;
     pub mod evidence;
+    pub mod inbox;
     pub mod insights;
     pub mod login;
     pub mod register;

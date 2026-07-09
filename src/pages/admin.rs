@@ -1,6 +1,8 @@
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use leptos_router::components::Redirect;
 
+use crate::api_client::offboard_volunteer;
 use crate::components::case_card::CaseCard;
 use crate::components::layout::Layout;
 use crate::state::AppState;
@@ -71,6 +73,9 @@ pub fn AdminDashboardPage() -> impl IntoView {
     let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
     let select_class = "rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 focus:border-primary-500 focus:outline-none";
 
+    // Feedback shown after offboarding a volunteer.
+    let offboard_msg = RwSignal::new(String::new());
+
     // Stats.
     let stat_cards = move || {
         let volunteers = state.volunteers.get();
@@ -114,6 +119,8 @@ pub fn AdminDashboardPage() -> impl IntoView {
             .into_iter()
             .map(|v| {
                 let id = v.id.clone();
+                let offboard_id = v.id.clone();
+                let offboard_name = v.name.clone();
                 let badge = format!(
                     "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {}",
                     v.status.badge_classes(),
@@ -129,24 +136,45 @@ pub fn AdminDashboardPage() -> impl IntoView {
                             <span class=badge>{v.status.label()}</span>
                         </td>
                         <td class="px-4 py-3">
-                            <select
-                                class=select_class
-                                prop:value=v.status.slug()
-                                on:change=move |ev| {
-                                    if let Some(s) = VolunteerStatus::from_slug(
-                                        &event_target_value(&ev),
-                                    ) {
-                                        state.set_volunteer_status(&id, s);
+                            <div class="flex items-center gap-2">
+                                <select
+                                    class=select_class
+                                    prop:value=v.status.slug()
+                                    on:change=move |ev| {
+                                        if let Some(s) = VolunteerStatus::from_slug(
+                                            &event_target_value(&ev),
+                                        ) {
+                                            state.set_volunteer_status(&id, s);
+                                        }
                                     }
-                                }
-                            >
-                                {VolunteerStatus::ALL
-                                    .into_iter()
-                                    .map(|s| {
-                                        view! { <option value=s.slug()>{s.label()}</option> }
-                                    })
-                                    .collect_view()}
-                            </select>
+                                >
+                                    {VolunteerStatus::ALL
+                                        .into_iter()
+                                        .map(|s| {
+                                            view! { <option value=s.slug()>{s.label()}</option> }
+                                        })
+                                        .collect_view()}
+                                </select>
+                                <button
+                                    class="shrink-0 rounded-lg border border-slate-700 px-2 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+                                    title="Deactivate and release their conversations to the org (history preserved)"
+                                    on:click=move |_| {
+                                        let vid = offboard_id.clone();
+                                        let vname = offboard_name.clone();
+                                        state.set_volunteer_status(&vid, VolunteerStatus::Inactive);
+                                        spawn_local(async move {
+                                            match offboard_volunteer(vid).await {
+                                                Ok(n) => offboard_msg.set(format!(
+                                                    "Offboarded {vname}: {n} conversation(s) released to the org (history preserved).",
+                                                )),
+                                                Err(e) => offboard_msg.set(format!("Offboard failed: {e}")),
+                                            }
+                                        });
+                                    }
+                                >
+                                    "Offboard"
+                                </button>
+                            </div>
                         </td>
                     </tr>
                 }
@@ -172,6 +200,11 @@ pub fn AdminDashboardPage() -> impl IntoView {
             <section class="mt-8">
                 <div class="mb-3 flex items-center justify-between">
                     <h2 class="text-lg font-semibold">"Volunteers"</h2>
+                    <Show when=move || !offboard_msg.get().is_empty()>
+                        <span class="rounded-lg bg-primary-500/15 px-3 py-1 text-xs font-medium text-primary-300 ring-1 ring-primary-500/30">
+                            {move || offboard_msg.get()}
+                        </span>
+                    </Show>
                 </div>
                 <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
                     <table class="w-full text-sm">

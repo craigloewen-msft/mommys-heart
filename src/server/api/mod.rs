@@ -9,6 +9,7 @@
 
 pub mod chat;
 pub mod contacts;
+pub mod conversations;
 pub mod cors;
 pub mod docs;
 pub mod health;
@@ -30,5 +31,6 @@ where
         .merge(version::routes())
         .merge(chat::routes())
         .merge(contacts::routes())
+        .merge(conversations::routes())
         .merge(docs::routes())
 }

@@ -17,6 +17,9 @@ pub fn ChatPage() -> impl IntoView {
     let messages = RwSignal::new(Vec::<Message>::new());
     let input = RwSignal::new(String::new());
     let pending = RwSignal::new(false);
+    // Retained server-side conversation id, echoed back so the whole thread
+    // stays together (and a human can pick it up from the inbox).
+    let conversation_id = RwSignal::new(None::<String>);
 
     let send = move || {
         let text = input.get().trim().to_string();
@@ -37,14 +40,20 @@ pub fn ChatPage() -> impl IntoView {
             let reply = match send_chat(ChatRequest {
                 message: text,
                 captcha_token: None,
+                conversation_id: conversation_id.get_untracked(),
             })
             .await
             {
-                Ok(r) => Message {
-                    role: "assistant",
-                    text: r.answer,
-                    sources: r.sources,
-                },
+                Ok(r) => {
+                    if r.conversation_id.is_some() {
+                        conversation_id.set(r.conversation_id.clone());
+                    }
+                    Message {
+                        role: "assistant",
+                        text: r.answer,
+                        sources: r.sources,
+                    }
+                }
                 Err(_) => Message {
                     role: "assistant",
                     text: "Sorry \u{2014} something went wrong talking to the chat API.".into(),

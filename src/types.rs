@@ -31,6 +31,11 @@ pub struct ChatRequest {
     pub message: String,
     #[serde(default)]
     pub captcha_token: Option<String>,
+    /// Existing conversation to continue. Omitted on the first message; the
+    /// server returns a fresh id the widget/UI should echo back on later turns
+    /// so the whole thread is retained together.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
 }
 
 /// `POST /api/chat` response body.
@@ -39,6 +44,10 @@ pub struct ChatResponse {
     pub answer: String,
     pub sources: Vec<SourceInfo>,
     pub source_type: SourceType,
+    /// The conversation this turn was retained under. Echo it back on the next
+    /// request to keep the thread continuous.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
 }
 
 /// `GET /api/version` response body.
@@ -825,4 +834,234 @@ fn default_matter_type() -> MatterType {
 
 fn default_case_outcome() -> CaseOutcome {
     CaseOutcome::Ongoing
+}
+
+// ---------------------------------------------------------------------------
+// Communications management — org-owned, multi-channel conversation records.
+//
+// These model communications so they are retained by the organization rather
+// than by an individual volunteer, and so text / chat / email / phone all share
+// one record shape. The POC populates the `WebChat` channel end-to-end; the
+// other channels reuse the same types once an external provider is wired in.
+// ---------------------------------------------------------------------------
+
+/// The medium a communication came in / went out on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Channel {
+    WebChat,
+    Sms,
+    Email,
+    Phone,
+}
+
+impl Channel {
+    pub const ALL: [Channel; 4] = [
+        Channel::WebChat,
+        Channel::Sms,
+        Channel::Email,
+        Channel::Phone,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Channel::WebChat => "Web chat",
+            Channel::Sms => "SMS",
+            Channel::Email => "Email",
+            Channel::Phone => "Phone",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            Channel::WebChat => "web_chat",
+            Channel::Sms => "sms",
+            Channel::Email => "email",
+            Channel::Phone => "phone",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.slug() == s)
+    }
+
+    pub fn badge_classes(self) -> &'static str {
+        match self {
+            Channel::WebChat => "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/30",
+            Channel::Sms => "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30",
+            Channel::Email => "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
+            Channel::Phone => "bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30",
+        }
+    }
+}
+
+/// Whether a message came into the organization or went out from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageDirection {
+    Inbound,
+    Outbound,
+}
+
+/// Who authored a message within a conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorKind {
+    /// The outside person (client/lead) contacting the organization.
+    Visitor,
+    /// The automated RAG assistant.
+    Bot,
+    /// A human volunteer or staff member acting on behalf of the org.
+    Staff,
+}
+
+impl AuthorKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            AuthorKind::Visitor => "Visitor",
+            AuthorKind::Bot => "Assistant",
+            AuthorKind::Staff => "Staff",
+        }
+    }
+}
+
+/// Lifecycle of an org-owned conversation as staff work it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationStatus {
+    /// Incoming, not yet claimed by a human.
+    New,
+    /// Claimed by a volunteer/staff member.
+    Assigned,
+    /// Waiting on the visitor to reply.
+    AwaitingReply,
+    /// Resolved / archived.
+    Closed,
+}
+
+impl ConversationStatus {
+    pub const ALL: [ConversationStatus; 4] = [
+        ConversationStatus::New,
+        ConversationStatus::Assigned,
+        ConversationStatus::AwaitingReply,
+        ConversationStatus::Closed,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ConversationStatus::New => "New",
+            ConversationStatus::Assigned => "Assigned",
+            ConversationStatus::AwaitingReply => "Awaiting reply",
+            ConversationStatus::Closed => "Closed",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            ConversationStatus::New => "new",
+            ConversationStatus::Assigned => "assigned",
+            ConversationStatus::AwaitingReply => "awaiting_reply",
+            ConversationStatus::Closed => "closed",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.slug() == s)
+    }
+
+    pub fn badge_classes(self) -> &'static str {
+        match self {
+            ConversationStatus::New => "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",
+            ConversationStatus::Assigned => {
+                "bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30"
+            }
+            ConversationStatus::AwaitingReply => {
+                "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"
+            }
+            ConversationStatus::Closed => "bg-slate-500/15 text-slate-400 ring-1 ring-slate-500/30",
+        }
+    }
+}
+
+/// A single message retained within a conversation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Message {
+    pub id: String,
+    pub conversation_id: String,
+    pub channel: Channel,
+    pub direction: MessageDirection,
+    pub author_kind: AuthorKind,
+    /// Volunteer/user id when authored by staff; `None` for visitor/bot.
+    #[serde(default)]
+    pub author_id: Option<String>,
+    pub author_label: String,
+    pub body: String,
+    /// RAG citations when the assistant authored this message.
+    #[serde(default)]
+    pub sources: Vec<SourceInfo>,
+    pub created_at: String,
+}
+
+/// An org-owned thread of communication with a client/lead across one channel.
+///
+/// Ownership lives here, not with the assigned volunteer: `assigned_volunteer_id`
+/// can be reassigned or cleared (e.g. when a volunteer leaves) without ever
+/// losing the retained history, and `case_id` / `contact_id` fold the activity
+/// into the client's case record automatically.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Conversation {
+    pub id: String,
+    pub channel: Channel,
+    pub subject: String,
+    pub status: ConversationStatus,
+    #[serde(default)]
+    pub contact_id: Option<String>,
+    #[serde(default)]
+    pub case_id: Option<String>,
+    #[serde(default)]
+    pub assigned_volunteer_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_message_preview: String,
+    pub message_count: usize,
+}
+
+/// A conversation together with its full retained message history.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConversationThread {
+    pub conversation: Conversation,
+    pub messages: Vec<Message>,
+}
+
+/// `POST /api/conversations/{id}/messages` — a staff/volunteer reply.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReplyRequest {
+    pub body: String,
+    #[serde(default)]
+    pub author_id: Option<String>,
+    #[serde(default)]
+    pub author_label: Option<String>,
+}
+
+/// `POST /api/conversations/{id}/assign` — (re)assign or unassign an owner.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AssignRequest {
+    /// `None` unassigns (e.g. when the previous owner leaves the org).
+    #[serde(default)]
+    pub volunteer_id: Option<String>,
+}
+
+/// `POST /api/conversations/{id}/link-case` — fold activity into a case record.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LinkCaseRequest {
+    #[serde(default)]
+    pub case_id: Option<String>,
+    #[serde(default)]
+    pub contact_id: Option<String>,
+}
+
+/// `POST /api/conversations/{id}/status` — move the conversation lifecycle.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StatusRequest {
+    pub status: ConversationStatus,
 }

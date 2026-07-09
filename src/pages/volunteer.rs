@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 
 use crate::components::case_card::CaseCard;
+use crate::components::communications::{CommScope, CommunicationsTimeline};
 use crate::components::layout::Layout;
 use crate::state::AppState;
 use crate::types::{Case, Role};
@@ -46,7 +47,14 @@ pub fn VolunteerDashboardPage() -> impl IntoView {
         }
         cases
             .into_iter()
-            .map(|c| view! { <CaseCard id=c.id.clone() editable=false /> })
+            .map(|c| {
+                view! {
+                    <div class="space-y-3">
+                        <CaseCard id=c.id.clone() editable=false />
+                        <CommunicationsTimeline scope=CommScope::Case(c.id.clone()) />
+                    </div>
+                }
+            })
             .collect_view()
             .into_any()
     };

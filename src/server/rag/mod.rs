@@ -295,6 +295,7 @@ fn build_response(raw: &str, contexts: &[store::Retrieved]) -> ChatResponse {
         answer,
         sources,
         source_type: parse_source_type(&source_type),
+        conversation_id: None,
     }
 }
 
@@ -324,6 +325,7 @@ fn fallback(message: &str) -> ChatResponse {
         answer: message.to_string(),
         sources: Vec::new(),
         source_type: SourceType::GeneralKnowledge,
+        conversation_id: None,
     }
 }
 
@@ -399,4 +401,3 @@ mod tests {
         assert_eq!(resp.source_type, SourceType::GeneralKnowledge);
     }
 }
-

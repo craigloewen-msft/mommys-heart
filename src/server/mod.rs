@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod captcha;
+pub mod comm_store;
 pub mod config;
 pub mod data;
 pub mod docs;
