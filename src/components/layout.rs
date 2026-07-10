@@ -59,6 +59,11 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
         navigate("/login", Default::default());
     };
 
+    let menu_open = RwSignal::new(false);
+    let toggle_menu = move |_| menu_open.update(|open| *open = !*open);
+    let close_menu = move |_| menu_open.set(false);
+    let is_admin = role.is_admin();
+
     view! {
         <div class="min-h-screen bg-slate-950 text-slate-100">
             <header class="sticky top-0 z-20 border-b border-slate-800 bg-slate-900/80 backdrop-blur">
@@ -74,12 +79,12 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                         <nav class="hidden md:flex items-center gap-1">
                             <NavLink href="/cases" label="Cases" />
                             <NavLink href="/inbox" label="Case Chat" />
-                            {if role.is_admin() {
+                            {if is_admin {
                                 view! { <NavLink href="/grants" label="Grants" /> }.into_any()
                             } else {
                                 ().into_any()
                             }}
-                            {if role.is_admin() {
+                            {if is_admin {
                                 view! { <NavLink href="/admin" label="Admin" /> }.into_any()
                             } else {
                                 ().into_any()
@@ -97,8 +102,35 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                             >
                                 "Log out"
                             </button>
+                            <button
+                                on:click=toggle_menu
+                                aria-label="Toggle navigation menu"
+                                class="md:hidden grid h-9 w-9 place-items-center rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
+                            >
+                                {move || if menu_open.get() { "\u{2715}" } else { "\u{2630}" }}
+                            </button>
                         </div>
                     </div>
+
+                    <nav
+                        class="md:hidden overflow-hidden flex flex-col gap-1 transition-all"
+                        class:hidden=move || !menu_open.get()
+                        style="padding-bottom: 0.75rem"
+                        on:click=close_menu
+                    >
+                        <NavLink href="/cases" label="Cases" />
+                        <NavLink href="/inbox" label="Case Chat" />
+                        {if is_admin {
+                            view! { <NavLink href="/grants" label="Grants" /> }.into_any()
+                        } else {
+                            ().into_any()
+                        }}
+                        {if is_admin {
+                            view! { <NavLink href="/admin" label="Admin" /> }.into_any()
+                        } else {
+                            ().into_any()
+                        }}
+                    </nav>
                 </div>
             </header>
 
