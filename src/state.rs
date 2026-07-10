@@ -399,6 +399,33 @@ impl AppState {
         self.refresh_keeping_session(user_id).await
     }
 
+    /// Persist a batch of per-case permission changes for a user in one go, then
+    /// refresh the caches a single time. Each change is either a new capability
+    /// set for a case (`Some`) or a removal of the assignment (`None`). Backs the
+    /// admin "Edit → Save" flow so many edits apply atomically from the UI's
+    /// perspective rather than one server round-trip per checkbox.
+    pub async fn save_case_permissions(
+        self,
+        user_id: &str,
+        changes: Vec<(String, Option<Vec<CaseCapability>>)>,
+    ) -> Result<(), String> {
+        for (case_id, caps) in changes {
+            match caps {
+                Some(caps) => {
+                    users::assign_case(user_id.to_string(), case_id, caps)
+                        .await
+                        .map_err(err_msg)?;
+                }
+                None => {
+                    users::unassign_case(user_id.to_string(), case_id)
+                        .await
+                        .map_err(err_msg)?;
+                }
+            }
+        }
+        self.refresh_keeping_session(user_id).await
+    }
+
     /// Refresh caches, and if the changed user is the signed-in user, keep
     /// `current_user` in sync from the reloaded list.
     async fn refresh_keeping_session(self, changed_id: &str) -> Result<(), String> {

@@ -15,6 +15,23 @@ const MAX_RANGE_DAYS: i64 = 366;
 /// the visible window by this much).
 const PAGE_SIZE: i64 = 10;
 
+/// A single case assignment being edited in the admin permissions "Edit" flow.
+/// Holds the working capability set and a "marked for removal" flag; nothing is
+/// persisted until the admin clicks "Save", at which point the whole draft is
+/// diffed against the originals and applied in one batch.
+#[derive(Clone)]
+struct DraftAssignment {
+    case_id: String,
+    name: String,
+    caps: RwSignal<Vec<CaseCapability>>,
+    removed: RwSignal<bool>,
+}
+
+/// Order-insensitive equality of two capability sets.
+fn same_caps(a: &[CaseCapability], b: &[CaseCapability]) -> bool {
+    a.len() == b.len() && a.iter().all(|c| b.contains(c))
+}
+
 /// Flatten a [`ServerFnError`] to the plain message we wrote server-side.
 fn err_text(e: ServerFnError) -> String {
     match e {
@@ -228,8 +245,8 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
     let case_results = RwSignal::new(Vec::<Case>::new());
     let picker_open = RwSignal::new(false);
 
-    // Debounced-ish search: refetch whenever the query changes (and the picker is
-    // open). Empty query returns the first handful of cases as a starting point.
+    // Refetch whenever the query changes (and the picker is open). Empty query
+    // returns the first handful of cases as a starting point.
     Effect::new(move |_| {
         if !picker_open.get() {
             return;
@@ -242,30 +259,25 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
         });
     });
 
-    let assign = {
-        let user_id = user_id.clone();
-        move |_| {
-            let case_id = new_case.get_untracked();
-            if case_id.is_empty() {
-                return;
-            }
-            let preset =
-                CasePreset::from_slug(&new_preset.get_untracked()).unwrap_or(CasePreset::Viewer);
-            let user_id = user_id.clone();
-            spawn_local(async move {
-                if state
-                    .assign_user_to_case(&user_id, &case_id, preset.capabilities())
-                    .await
-                    .is_ok()
-                {
-                    new_case.set(String::new());
-                    new_case_label.set(String::new());
-                    case_query.set(String::new());
-                    picker_open.set(false);
-                    reload.update(|n| *n += 1);
-                }
-            });
-        }
+    // Stable, Copy handle to the user id so the edit-mode handlers below can be
+    // `Copy` (and thus reused inside the reactive permissions section).
+    let user_sv = StoredValue::new(user_id.clone());
+
+    // Component owner: draft rows create per-row `RwSignal`s inside the "Edit"
+    // click handler, whose transient reactive scope is disposed as soon as it
+    // returns. Creating them under the component owner instead keeps them alive
+    // for the lifetime of the card, so the reactive permissions section can read
+    // them without hitting a "reactive value has been disposed" panic.
+    let owner = StoredValue::new(Owner::current().expect("component owner"));
+    let make_draft = move |case_id: String, name: String, caps: Vec<CaseCapability>| {
+        owner.with_value(|o| {
+            o.with(|| DraftAssignment {
+                case_id,
+                name,
+                caps: RwSignal::new(caps),
+                removed: RwSignal::new(false),
+            })
+        })
     };
 
     // The admin's case cache is now scoped to their own cases, so a user's
@@ -309,93 +321,111 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
     let current_role = user.role;
     let full_name = user.full_name();
     let email = user.email.clone();
-    let assigns_data = user.assigned_cases.clone();
     let audit_data = user.audit_log.clone();
 
-    let assignments_view = {
-        let user_id = user_id.clone();
-        move || {
-            let assigns = assigns_data.clone();
-            if assigns.is_empty() {
-                return view! { <p class="text-sm text-slate-500">"No case assignments."</p> }
-                    .into_any();
-            }
-            assigns
-                .into_iter()
-                .map(|a| {
-                    let case_id = a.case_id.clone();
-                    let name = case_name(&case_id);
-                    let remove = {
-                        let user_id = user_id.clone();
-                        let case_id = case_id.clone();
-                        move |_| {
-                            let user_id = user_id.clone();
-                            let case_id = case_id.clone();
-                            spawn_local(async move {
-                                if state.unassign_user_from_case(&user_id, &case_id).await.is_ok() {
-                                    reload.update(|n| *n += 1);
-                                }
-                            });
-                        }
-                    };
-                    let caps = a.capabilities.clone();
-                    let checkboxes = CaseCapability::ALL
-                        .into_iter()
-                        .map(|cap| {
-                            let checked = caps.contains(&cap);
-                            let toggle = {
-                                let user_id = user_id.clone();
-                                let case_id = case_id.clone();
-                                move |ev| {
-                                    let user_id = user_id.clone();
-                                    let case_id = case_id.clone();
-                                    let enabled = event_target_checked(&ev);
-                                    spawn_local(async move {
-                                        if state
-                                            .toggle_case_capability(
-                                                &user_id, &case_id, cap, enabled,
-                                            )
-                                            .await
-                                            .is_ok()
-                                        {
-                                            reload.update(|n| *n += 1);
-                                        }
-                                    });
-                                }
-                            };
-                            view! {
-                                <label class="inline-flex items-center gap-1.5 text-xs text-slate-300">
-                                    <input
-                                        type="checkbox"
-                                        class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-950"
-                                        prop:checked=checked
-                                        on:change=toggle
-                                    />
-                                    {cap.label()}
-                                </label>
-                            }
-                            .into_any()
-                        })
-                        .collect_view();
-                    view! {
-                        <div class="border-b border-slate-800 py-3">
-                            <div class="flex items-center justify-between gap-2">
-                                <span class="text-sm font-medium text-slate-200">{name}</span>
-                                <button
-                                    on:click=remove
-                                    class="rounded-lg border border-rose-500/40 px-2 py-1 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
-                                >
-                                    "Remove"
-                                </button>
-                            </div>
-                            <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1.5">{checkboxes}</div>
-                        </div>
-                    }
-                    .into_any()
-                })
-                .collect_view()
-                .into_any()
+    // --- per-case permissions: an "Edit → Save/Cancel" flow ---
+    // `draft` is the working copy edited in place; `originals` is the snapshot we
+    // diff against on save so only genuine changes hit the server. Every change
+    // (capability toggles, removals, and newly added cases) is batched into a
+    // single save instead of one server round-trip per checkbox.
+    let originals = StoredValue::new(user.assigned_cases.clone());
+    let editing = RwSignal::new(false);
+    let draft: RwSignal<Vec<DraftAssignment>> = RwSignal::new(Vec::new());
+    let save_error = RwSignal::new(String::new());
+    let saving = RwSignal::new(false);
+
+    let begin_edit = move |_| {
+        let rows = originals
+            .get_value()
+            .into_iter()
+            .map(|a| make_draft(a.case_id.clone(), case_name(&a.case_id), a.capabilities))
+            .collect::<Vec<_>>();
+        draft.set(rows);
+        save_error.set(String::new());
+        picker_open.set(false);
+        new_case.set(String::new());
+        new_case_label.set(String::new());
+        case_query.set(String::new());
+        editing.set(true);
+    };
+
+    let cancel_edit = move |_| {
+        editing.set(false);
+        save_error.set(String::new());
+        picker_open.set(false);
+        new_case.set(String::new());
+        new_case_label.set(String::new());
+        case_query.set(String::new());
+    };
+
+    // Stage the picked case into the draft (or un-remove it if it was marked for
+    // removal). Persisted only on save.
+    let add_to_draft = move |_| {
+        let case_id = new_case.get_untracked();
+        if case_id.is_empty() {
+            return;
         }
+        if let Some(d) = draft.get_untracked().into_iter().find(|d| d.case_id == case_id) {
+            d.removed.set(false);
+        } else {
+            let preset =
+                CasePreset::from_slug(&new_preset.get_untracked()).unwrap_or(CasePreset::Viewer);
+            let label = new_case_label.get_untracked();
+            let name = if label.is_empty() { case_name(&case_id) } else { label };
+            let row = make_draft(case_id.clone(), name, preset.capabilities());
+            draft.update(|rows| rows.push(row));
+        }
+        new_case.set(String::new());
+        new_case_label.set(String::new());
+        case_query.set(String::new());
+        picker_open.set(false);
+    };
+
+    let save_edit = move |_| {
+        let user_id = user_sv.get_value();
+        let originals = originals.get_value();
+        let rows = draft.get_untracked();
+
+        // Diff the draft against the originals: a removed (or fully-unchecked)
+        // existing assignment is dropped; a changed set is replaced; a new case
+        // with at least one capability is added. Unchanged rows are skipped.
+        let mut changes: Vec<(String, Option<Vec<CaseCapability>>)> = Vec::new();
+        for row in &rows {
+            let caps = row.caps.get_untracked();
+            let removed = row.removed.get_untracked();
+            match originals.iter().find(|a| a.case_id == row.case_id) {
+                Some(a) => {
+                    if removed || caps.is_empty() {
+                        changes.push((row.case_id.clone(), None));
+                    } else if !same_caps(&a.capabilities, &caps) {
+                        changes.push((row.case_id.clone(), Some(caps)));
+                    }
+                }
+                None => {
+                    if !removed && !caps.is_empty() {
+                        changes.push((row.case_id.clone(), Some(caps)));
+                    }
+                }
+            }
+        }
+
+        if changes.is_empty() {
+            editing.set(false);
+            save_error.set(String::new());
+            return;
+        }
+        saving.set(true);
+        spawn_local(async move {
+            match state.save_case_permissions(&user_id, changes).await {
+                Ok(()) => {
+                    save_error.set(String::new());
+                    editing.set(false);
+                    reload.update(|n| *n += 1);
+                }
+                Err(e) => save_error.set(e),
+            }
+            saving.set(false);
+        });
     };
 
     // The dropdown of search results; clicking one selects it (fills `new_case`).
@@ -441,6 +471,221 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
         view! {
             <div class="mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950">
                 {rows}
+            </div>
+        }
+        .into_any()
+    };
+
+    let input_class =
+        "rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100";
+
+    // The whole "Case permissions" block, rendered reactively so a single `Copy`
+    // closure can flip between read-only and edit modes. In view mode it lists
+    // each assigned case with its granted capabilities as badges; in edit mode it
+    // exposes per-case capability checkboxes, per-row removal, and a case picker
+    // to add assignments — all applied at once via `save_edit`.
+    let permissions_section = move || {
+        let header_buttons = if editing.get() {
+            view! {
+                <button
+                    on:click=save_edit
+                    prop:disabled=move || saving.get()
+                    class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                >
+                    {move || if saving.get() { "Saving\u{2026}" } else { "Save" }}
+                </button>
+                <button
+                    on:click=cancel_edit
+                    class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800"
+                >
+                    "Cancel"
+                </button>
+            }
+            .into_any()
+        } else {
+            view! {
+                <button
+                    on:click=begin_edit
+                    class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                >
+                    "Edit"
+                </button>
+            }
+            .into_any()
+        };
+
+        let body = if editing.get() {
+            let add_control = view! {
+                <div class="mt-3 flex flex-wrap items-end gap-2">
+                    <div class="relative min-w-[16rem] flex-1">
+                        <input
+                            class=input_class
+                            class:w-full=true
+                            placeholder="Search cases by name or id\u{2026}"
+                            prop:value=move || {
+                                let label = new_case_label.get();
+                                if label.is_empty() { case_query.get() } else { label }
+                            }
+                            on:focus=move |_| {
+                                picker_open.set(true);
+                                new_case.set(String::new());
+                                new_case_label.set(String::new());
+                            }
+                            on:input=move |ev| {
+                                new_case.set(String::new());
+                                new_case_label.set(String::new());
+                                picker_open.set(true);
+                                case_query.set(event_target_value(&ev));
+                            }
+                        />
+                        {case_result_list}
+                    </div>
+                    <select
+                        class=input_class
+                        prop:value=move || new_preset.get()
+                        on:change=move |ev| new_preset.set(event_target_value(&ev))
+                    >
+                        {CasePreset::ALL
+                            .into_iter()
+                            .map(|p| view! { <option value=p.slug()>{p.label()}</option> })
+                            .collect_view()}
+                    </select>
+                    <button
+                        on:click=add_to_draft
+                        prop:disabled=move || new_case.get().is_empty()
+                        class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                    >
+                        "Add"
+                    </button>
+                </div>
+            };
+
+            view! {
+                <Show
+                    when=move || !draft.get().is_empty()
+                    fallback=|| view! {
+                        <p class="text-sm text-slate-500">"No case assignments."</p>
+                    }
+                >
+                    <div>
+                        <For each=move || draft.get() key=|d| d.case_id.clone() let:row>
+                            {
+                                let row_caps = row.caps;
+                                let row_removed = row.removed;
+                                let name = row.name.clone();
+                                let checkboxes = CaseCapability::ALL
+                                    .into_iter()
+                                    .map(|cap| {
+                                        view! {
+                                            <label class="inline-flex items-center gap-1.5 text-xs text-slate-300">
+                                                <input
+                                                    type="checkbox"
+                                                    class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-950"
+                                                    prop:checked=move || row_caps.get().contains(&cap)
+                                                    prop:disabled=move || row_removed.get()
+                                                    on:change=move |ev| {
+                                                        let enabled = event_target_checked(&ev);
+                                                        row_caps.update(|c| {
+                                                            if enabled {
+                                                                if !c.contains(&cap) {
+                                                                    c.push(cap);
+                                                                }
+                                                            } else {
+                                                                c.retain(|x| *x != cap);
+                                                            }
+                                                        });
+                                                    }
+                                                />
+                                                {cap.label()}
+                                            </label>
+                                        }
+                                    })
+                                    .collect_view();
+                                view! {
+                                    <div class=move || {
+                                        let base = "border-b border-slate-800 py-3";
+                                        if row_removed.get() {
+                                            format!("{base} opacity-50")
+                                        } else {
+                                            base.to_string()
+                                        }
+                                    }>
+                                        <div class="flex items-center justify-between gap-2">
+                                            <span class="text-sm font-medium text-slate-200">
+                                                {name}
+                                            </span>
+                                            <button
+                                                on:click=move |_| row_removed.update(|r| *r = !*r)
+                                                class="rounded-lg border border-rose-500/40 px-2 py-1 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
+                                            >
+                                                {move || if row_removed.get() { "Undo" } else { "Remove" }}
+                                            </button>
+                                        </div>
+                                        <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1.5">
+                                            {checkboxes}
+                                        </div>
+                                    </div>
+                                }
+                            }
+                        </For>
+                    </div>
+                </Show>
+                {add_control}
+            }
+            .into_any()
+        } else {
+            let assigns = originals.get_value();
+            if assigns.is_empty() {
+                view! { <p class="text-sm text-slate-500">"No case assignments."</p> }.into_any()
+            } else {
+                assigns
+                    .into_iter()
+                    .map(|a| {
+                        let name = case_name(&a.case_id);
+                        let caps = a.capabilities.clone();
+                        let badges = if caps.is_empty() {
+                            view! {
+                                <span class="text-xs text-slate-500">"No permissions"</span>
+                            }
+                            .into_any()
+                        } else {
+                            caps.into_iter()
+                                .map(|c| {
+                                    view! {
+                                        <span class="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-300">
+                                            {c.label()}
+                                        </span>
+                                    }
+                                    .into_any()
+                                })
+                                .collect_view()
+                                .into_any()
+                        };
+                        view! {
+                            <div class="border-b border-slate-800 py-3">
+                                <span class="text-sm font-medium text-slate-200">{name}</span>
+                                <div class="mt-2 flex flex-wrap gap-1.5">{badges}</div>
+                            </div>
+                        }
+                        .into_any()
+                    })
+                    .collect_view()
+                    .into_any()
+            }
+        };
+
+        view! {
+            <div>
+                <div class="flex items-center justify-between">
+                    <h3 class="text-sm font-semibold text-slate-200">"Case permissions"</h3>
+                    <div class="flex items-center gap-2">{header_buttons}</div>
+                </div>
+                <Show when=move || !save_error.get().is_empty()>
+                    <p class="mt-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+                        {move || save_error.get()}
+                    </p>
+                </Show>
+                <div class="mt-2">{body}</div>
             </div>
         }
         .into_any()
@@ -596,9 +841,6 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
         }
     };
 
-    let input_class =
-        "rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100";
-
     view! {
         <div class="rounded-xl border border-slate-800 bg-slate-900 p-5">
             <div class="flex flex-wrap items-center justify-between gap-3">
@@ -627,50 +869,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
             </div>
 
             <div class="mt-4">
-                <h3 class="text-sm font-semibold text-slate-200">"Case permissions"</h3>
-                <div class="mt-2">{assignments_view}</div>
-                <div class="mt-3 flex flex-wrap items-end gap-2">
-                    <div class="relative min-w-[16rem] flex-1">
-                        <input
-                            class=input_class
-                            class:w-full=true
-                            placeholder="Search cases by name or id…"
-                            prop:value=move || {
-                                let label = new_case_label.get();
-                                if label.is_empty() { case_query.get() } else { label }
-                            }
-                            on:focus=move |_| {
-                                picker_open.set(true);
-                                new_case.set(String::new());
-                                new_case_label.set(String::new());
-                            }
-                            on:input=move |ev| {
-                                new_case.set(String::new());
-                                new_case_label.set(String::new());
-                                picker_open.set(true);
-                                case_query.set(event_target_value(&ev));
-                            }
-                        />
-                        {case_result_list}
-                    </div>
-                    <select
-                        class=input_class
-                        prop:value=move || new_preset.get()
-                        on:change=move |ev| new_preset.set(event_target_value(&ev))
-                    >
-                        {CasePreset::ALL
-                            .into_iter()
-                            .map(|p| view! { <option value=p.slug()>{p.label()}</option> })
-                            .collect_view()}
-                    </select>
-                    <button
-                        on:click=assign
-                        prop:disabled=move || new_case.get().is_empty()
-                        class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
-                    >
-                        "Assign"
-                    </button>
-                </div>
+                {permissions_section}
             </div>
 
             <div class="mt-4">
