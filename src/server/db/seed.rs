@@ -143,7 +143,35 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
     }
 
+    // 6. Advance the shared id sequence past every seeded id. Seed ids are
+    //    `prefix-<n>` numbered per prefix from 1 (e.g. `m-1`..`m-13000`), and
+    //    those counts can exceed the sequence's START value. Since `ids::next`
+    //    hands out `<prefix>-<nextval>` from this one global sequence, leaving it
+    //    below the largest seeded suffix makes the first newly-created record
+    //    collide with seed data (e.g. `m-5001`) and violate the primary key.
+    //    Bump it above the max suffix across every table that receives new ids.
+    advance_id_sequence().await?;
+
     tracing::info!("database seeded from mock fixtures");
+    Ok(())
+}
+
+/// Set `app_id_seq` above the largest numeric suffix of any seeded id so that
+/// `ids::next` never reissues an id that already exists.
+async fn advance_id_sequence() -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "SELECT setval('app_id_seq', GREATEST(
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM users),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM grants),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM cases),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM case_notes),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM evidence),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM messages),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM audit_log)
+         ) + 1, false)",
+    )
+    .execute(pool())
+    .await?;
     Ok(())
 }
 

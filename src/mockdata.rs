@@ -18,9 +18,9 @@ use crate::types::{
 pub const ORG_NAME: &str = "Mommy's Heart";
 
 /// How much demo data to generate. Tune these to change the volume.
-const VOLUNTEERS: usize = 50;
-const CLIENTS: usize = 50;
-const CASES: usize = 500;
+const VOLUNTEERS: usize = 20;
+const CLIENTS: usize = 20;
+const CASES: usize = 40;
 /// Total users: one admin, then the volunteers, then the clients.
 const USERS: usize = 1 + VOLUNTEERS + CLIENTS;
 

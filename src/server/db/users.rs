@@ -69,7 +69,8 @@ async fn hydrate(row: UserRow) -> Result<User, sqlx::Error> {
 /// This replaces the old "load every user" behaviour: it fetches — and runs the
 /// per-user hydration queries for — only the requested window, so it stays cheap
 /// no matter how large the table grows. `search`, when non-blank, matches a
-/// user's id, first/last name, or email case-insensitively. `limit` is clamped
+/// user's id, first/last name, full name ("first last"), or email
+/// case-insensitively. `limit` is clamped
 /// to a sane range so a caller can never request an unbounded scan.
 pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, sqlx::Error> {
     let limit = limit.clamp(1, 100);
@@ -93,6 +94,7 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
            OR id ILIKE $1
            OR first_name ILIKE $1
            OR last_name ILIKE $1
+           OR (first_name || ' ' || last_name) ILIKE $1
            OR email ILIKE $1";
 
     let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM users {FILTER}"))
