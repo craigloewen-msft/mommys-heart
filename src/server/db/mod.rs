@@ -42,7 +42,6 @@ pub async fn init() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     POOL.set(pool)
         .map_err(|_| "database pool already initialized")?;
 
-    seed::seed_if_empty().await?;
     Ok(())
 }
 

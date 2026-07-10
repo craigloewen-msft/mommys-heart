@@ -1,8 +1,14 @@
 //! The unified append-only audit log shared by users and cases.
 
-use crate::server::db::{ids, now_stamp};
+use crate::server::db::{ids, now_stamp, pool};
 use crate::types::ChangeLogEntry;
 use sqlx::PgExecutor;
+
+/// How long audit entries are retained before the background task prunes them.
+const RETENTION_MONTHS: i64 = 12;
+
+/// How often the background retention task runs.
+const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// Which kind of entity an audit entry is attached to.
 #[derive(Clone, Copy, Debug)]
@@ -92,4 +98,32 @@ pub async fn record(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Delete audit entries older than the retention window ([`RETENTION_MONTHS`]),
+/// returning the number of rows removed. Retention is computed against the
+/// machine-readable `created_at` timestamp (not the display-only `at` text).
+pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM audit_log WHERE created_at < now() - make_interval(months => $1)",
+    )
+    .bind(RETENTION_MONTHS as i32)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Spawn a background task that prunes expired audit entries at startup and then
+/// once every [`RETENTION_INTERVAL`]. Mirrors [`crate::server::rag::start_background_ingest`]:
+/// failures are logged and never crash the server.
+pub fn start_retention_task() {
+    tokio::spawn(async {
+        loop {
+            match purge_expired(pool()).await {
+                Ok(n) => tracing::info!("audit retention: deleted {n} expired entries"),
+                Err(e) => tracing::warn!("audit retention failed: {e}"),
+            }
+            tokio::time::sleep(RETENTION_INTERVAL).await;
+        }
+    });
 }

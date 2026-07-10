@@ -38,6 +38,10 @@ async fn main() {
     // serving immediately; the RAG store fills in once embeddings complete.
     rag::start_background_ingest();
 
+    // Prune audit-log entries older than the retention window, on startup and
+    // then daily.
+    mommys_heart_crm::server::db::audit::start_retention_task();
+
     let conf = get_configuration(None).unwrap();
     let leptos_options = conf.leptos_options;
     let addr = leptos_options.site_addr;
