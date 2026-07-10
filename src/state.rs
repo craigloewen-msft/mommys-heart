@@ -189,12 +189,12 @@ impl AppState {
         self.cases.get()
     }
 
-    /// The signed-in user's capabilities on a case. Admins and the case owner
-    /// implicitly hold every capability; everyone else holds exactly the set
-    /// granted by their assignment.
+    /// The signed-in user's capabilities on a case. The case owner implicitly
+    /// holds every capability; everyone else (including admins) holds exactly the
+    /// set granted by their assignment.
     pub fn capabilities_on(&self, case: &Case) -> Vec<CaseCapability> {
         match self.current_user.get() {
-            Some(u) if u.role.is_admin() || case.owner_id == u.id => CaseCapability::ALL.to_vec(),
+            Some(u) if case.owner_id == u.id => CaseCapability::ALL.to_vec(),
             Some(u) => u.capabilities_for(&case.id),
             None => Vec::new(),
         }
@@ -346,6 +346,13 @@ impl AppState {
             .await
             .map_err(err_msg)?;
         self.messages.update(|all| all.push(msg));
+        // Keep the lightweight directory count (shown as the inbox badge) in sync
+        // without reloading every message body.
+        self.cases.update(|cases| {
+            if let Some(c) = cases.iter_mut().find(|c| c.id == case_id) {
+                c.message_count += 1;
+            }
+        });
         Ok(())
     }
 

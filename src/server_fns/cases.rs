@@ -4,7 +4,59 @@
 
 use leptos::prelude::*;
 
-use crate::types::{CaseStatus, Message};
+use crate::types::{Case, CaseStatus, Message, Page};
+
+/// One page of fully-hydrated cases for the case screen, ordered by id, with an
+/// optional case-insensitive search over id/name. Scoped to the cases the caller
+/// owns or is assigned to (admins are not special here).
+///
+/// Backs the case screen's server-side pagination ("Load more") so the UI never
+/// has to pull every case into the browser.
+#[server(prefix = "/api")]
+pub async fn list_cases_page(
+    offset: i64,
+    limit: i64,
+    search: String,
+) -> Result<Page<Case>, ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::require_user;
+
+    let user = require_user().await?;
+    cases::page(offset, limit, &search, &user.id)
+        .await
+        .map_err(ServerFnError::new)
+}
+
+/// Admin-only lightweight case search for the permission tool: find any case
+/// (across the whole system) by id or name so an admin can assign a user to it.
+/// This is a management action, not a case view — it never hydrates or exposes
+/// case contents.
+#[server(prefix = "/api")]
+pub async fn admin_search_cases(query: String) -> Result<Vec<Case>, ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::{require_admin, require_user};
+
+    let user = require_user().await?;
+    require_admin(&user)?;
+    cases::search_lite(&query, 10)
+        .await
+        .map_err(ServerFnError::new)
+}
+
+/// Admin-only lightweight resolution of specific case ids to names, so the
+/// permission tool can show which cases a user is already assigned to without
+/// loading every case.
+#[server(prefix = "/api")]
+pub async fn admin_cases_by_ids(ids: Vec<String>) -> Result<Vec<Case>, ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::{require_admin, require_user};
+
+    let user = require_user().await?;
+    require_admin(&user)?;
+    cases::by_ids_lite(&ids)
+        .await
+        .map_err(ServerFnError::new)
+}
 
 /// Create a case owned by the caller. Any signed-in user may create one.
 #[server(prefix = "/api")]

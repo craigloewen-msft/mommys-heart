@@ -27,6 +27,7 @@ impl From<MessageRow> for Message {
 }
 
 /// All messages for a case, in send order.
+/// TODO: Make this paginate in the messages
 pub async fn for_case(case_id: &str) -> Result<Vec<Message>, sqlx::Error> {
     let rows = sqlx::query_as::<_, MessageRow>(
         "SELECT id, case_id, author_id, author, body, sent_at

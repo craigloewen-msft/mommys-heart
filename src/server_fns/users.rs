@@ -3,7 +3,28 @@
 
 use leptos::prelude::*;
 
-use crate::types::{AccountRole, CaseCapability};
+use crate::types::{AccountRole, CaseCapability, Page, User};
+
+/// One page of users for the admin management screen, ordered by id, with an
+/// optional case-insensitive search over id/name/email. Admin only.
+///
+/// Backs the admin dashboard's server-side pagination ("Load more") so the UI
+/// never has to pull every user into the browser.
+#[server(prefix = "/api")]
+pub async fn list_users_page(
+    offset: i64,
+    limit: i64,
+    search: String,
+) -> Result<Page<User>, ServerFnError> {
+    use crate::server::db::users;
+    use crate::server::permissions::{require_admin, require_user};
+
+    let actor = require_user().await?;
+    require_admin(&actor)?;
+    users::page(offset, limit, &search)
+        .await
+        .map_err(ServerFnError::new)
+}
 
 /// Change a user's account role.
 #[server(prefix = "/api")]

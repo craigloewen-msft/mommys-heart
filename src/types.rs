@@ -426,6 +426,13 @@ pub struct Case {
     /// Append-only log of changes to this case.
     #[serde(default)]
     pub audit_log: Vec<ChangeLogEntry>,
+    /// Number of chat messages on this case. Populated for lightweight
+    /// directory/list views (see [`crate::server_fns::session::bootstrap`]) so
+    /// the inbox can show a count without shipping every message body; the full
+    /// chat is loaded on demand when a case is opened. Defaults to `0` for the
+    /// fully-hydrated case screen, which doesn't display it.
+    #[serde(default)]
+    pub message_count: usize,
 }
 
 /// A named key/value property on a case (e.g. attorney names, court, docket).
@@ -458,6 +465,20 @@ pub struct Message {
 // ===========================================================================
 // CRM bootstrap payload (shared by the `bootstrap` server function + client)
 // ===========================================================================
+
+/// One page of a larger result set: the rows for this page plus the total
+/// number of rows matching the query (so a UI can show "showing N of M" and
+/// decide whether to offer "Load more").
+///
+/// Deliberately generic and minimal so it is reused by every paginated list
+/// (users today; cases, grants, messages, … as they grow) instead of each
+/// endpoint inventing its own shape.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    /// Total rows matching the query across every page (not just this one).
+    pub total: i64,
+}
 
 /// Everything the CRM UI needs to populate its caches after sign-in. All other
 /// request/response shapes are expressed directly as server-function arguments

@@ -16,7 +16,7 @@ use leptos::prelude::ServerFnError;
 
 use crate::server::auth::AuthUser;
 use crate::server::db::cases;
-use crate::types::{Case, CaseCapability, User};
+use crate::types::{CaseCapability, User};
 
 /// Resolve the signed-in user from the request's session cookie, or an error if
 /// there is no valid session. Uses the same [`AuthUser`] extractor the rest of
@@ -35,9 +35,9 @@ pub fn require_admin(user: &User) -> Result<(), ServerFnError> {
     }
 }
 
-/// The caller's capabilities on a case: admins and the case owner implicitly
-/// hold every capability; everyone else holds exactly their assignment. Errors
-/// if the case does not exist.
+/// The caller's capabilities on a case: the case owner implicitly holds every
+/// capability; everyone else (including admins) holds exactly their assignment.
+/// Errors if the case does not exist.
 pub async fn capabilities_on(
     user: &User,
     case_id: &str,
@@ -46,7 +46,7 @@ pub async fn capabilities_on(
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("Case not found."))?;
-    if user.role.is_admin() || owner == user.id {
+    if owner == user.id {
         Ok(CaseCapability::ALL.to_vec())
     } else {
         Ok(user.capabilities_for(case_id))
@@ -67,15 +67,4 @@ pub async fn require_cap(
             cap.label().to_lowercase()
         )))
     }
-}
-
-/// Cases visible to the caller: admins see all; everyone else sees only the
-/// cases they own or are assigned to.
-pub fn visible(user: &User, all: Vec<Case>) -> Vec<Case> {
-    if user.role.is_admin() {
-        return all;
-    }
-    all.into_iter()
-        .filter(|c| c.owner_id == user.id || user.is_assigned_to(&c.id))
-        .collect()
 }

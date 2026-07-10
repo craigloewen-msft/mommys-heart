@@ -1,48 +1,73 @@
-//! Local, in-memory demo data for the V1 app.
+//! Local, deterministic demo data used to seed the database (see
+//! [`crate::server::db::seed`]).
 //!
-//! Compiled for both the server and the browser so the whole experience works
-//! without a database. Replaced by a real backend in a later phase.
+//! Everything here is generated in simple loops so there is realistic *volume*
+//! to exercise pagination, search, and "Load more": ~100 users (an admin plus
+//! 50 volunteers and 50 clients), 500 cases, and a few thousand chat messages
+//! (unevenly spread, so some cases have long, paginated threads).
+//!
+//! Fixtures use their own small, fixed ids (`u-1`, `c-1`, `m-1`, …). Records the
+//! running app creates get their ids from the database sequence, which starts
+//! well above these, so the two never collide.
 
 use crate::types::{
-    AccountRole, Case, CaseAssignment, CaseCapability, CaseNote, CasePreset, CaseProperty,
-    CaseStatus, ChangeLogEntry, Evidence, Grant, Message, User,
+    AccountRole, Case, CaseAssignment, CasePreset, CaseProperty, CaseStatus, Grant, Message, User,
 };
 
 /// Organization display name.
 pub const ORG_NAME: &str = "Mommy's Heart";
 
-/// Build a case assignment from a preset for compact fixtures.
-fn assign(case_id: &str, preset: CasePreset) -> CaseAssignment {
+/// How much demo data to generate. Tune these to change the volume.
+const VOLUNTEERS: usize = 50;
+const CLIENTS: usize = 50;
+const CASES: usize = 500;
+/// Total users: one admin, then the volunteers, then the clients.
+const USERS: usize = 1 + VOLUNTEERS + CLIENTS;
+
+const FIRST_NAMES: [&str; 20] = [
+    "Maria", "James", "Aisha", "Liam", "Sofia", "Noah", "Emma", "Lucas", "Olivia", "Ethan", "Ava",
+    "Mason", "Isabella", "Logan", "Mia", "Elijah", "Amara", "Daniel", "Chloe", "Kai",
+];
+const LAST_NAMES: [&str; 20] = [
+    "Johnson", "Garcia", "Patel", "Nguyen", "Kim", "Okafor", "Rossi", "Silva", "Haddad", "Ali",
+    "Brown", "Martinez", "Cohen", "Wang", "Diallo", "Santos", "Ivanov", "Reyes", "Novak", "Khan",
+];
+const MATTERS: [&str; 6] = [
+    "custody matter",
+    "housing assistance",
+    "benefits appeal",
+    "guardianship petition",
+    "support modification",
+    "protective order",
+];
+const MSG_BODIES: [&str; 5] = [
+    "Following up on the latest filing.",
+    "Client confirmed the appointment for next week.",
+    "Uploaded the requested documents to the case.",
+    "Court date has been scheduled — details to follow.",
+    "Thanks, I'll update the case notes accordingly.",
+];
+
+/// Deterministic (first, last) name for slot `i`, spread across the pools.
+fn name(i: usize) -> (&'static str, &'static str) {
+    (
+        FIRST_NAMES[(i * 3) % FIRST_NAMES.len()],
+        LAST_NAMES[(i * 7 + 3) % LAST_NAMES.len()],
+    )
+}
+
+fn user_id(i: usize) -> String {
+    format!("u-{}", i + 1)
+}
+
+fn case_id(i: usize) -> String {
+    format!("c-{}", i + 1)
+}
+
+fn assign(case: usize, preset: CasePreset) -> CaseAssignment {
     CaseAssignment {
-        case_id: case_id.into(),
+        case_id: case_id(case),
         capabilities: preset.capabilities(),
-    }
-}
-
-fn note(id: &str, author: &str, body: &str, created_at: &str) -> CaseNote {
-    CaseNote {
-        id: id.into(),
-        author: author.into(),
-        body: body.into(),
-        created_at: created_at.into(),
-    }
-}
-
-fn evidence(
-    id: &str,
-    name: &str,
-    case_id: &str,
-    uploaded_by: &str,
-    uploaded_at: &str,
-    description: &str,
-) -> Evidence {
-    Evidence {
-        id: id.into(),
-        name: name.into(),
-        case_id: case_id.into(),
-        uploaded_by: uploaded_by.into(),
-        uploaded_at: uploaded_at.into(),
-        description: description.into(),
     }
 }
 
@@ -53,280 +78,161 @@ fn prop(key: &str, value: &str) -> CaseProperty {
     }
 }
 
-fn change(
-    id: &str,
-    actor: &str,
-    field: &str,
-    old_value: &str,
-    new_value: &str,
-    at: &str,
-) -> ChangeLogEntry {
-    ChangeLogEntry {
-        id: id.into(),
-        actor: actor.into(),
-        field: field.into(),
-        old_value: old_value.into(),
-        new_value: new_value.into(),
-        at: at.into(),
+/// The users: user 0 is the admin, the next `VOLUNTEERS` are volunteers, the
+/// rest are clients. The first user of each role keeps a fixed, memorable
+/// email/password so the login page's "Demo autofill" buttons work.
+pub fn users() -> Vec<User> {
+    (0..USERS)
+        .map(|i| {
+            let (role, demo) = if i == 0 {
+                (
+                    AccountRole::Admin,
+                    Some(("admin@mommysheart.org", "admin123")),
+                )
+            } else if i <= VOLUNTEERS {
+                let demo = (i == 1).then_some(("dana@mommysheart.org", "volunteer123"));
+                (AccountRole::Volunteer, demo)
+            } else {
+                let demo = (i == VOLUNTEERS + 1).then_some(("jamie@example.com", "client123"));
+                (AccountRole::Client, demo)
+            };
+
+            let (first, last) = name(i);
+            let (email, password) = match demo {
+                Some((email, password)) => (email.to_string(), password.to_string()),
+                None => (
+                    format!(
+                        "{}.{}{}@example.com",
+                        first.to_lowercase(),
+                        last.to_lowercase(),
+                        i + 1
+                    ),
+                    if role == AccountRole::Volunteer {
+                        "volunteer123".into()
+                    } else {
+                        "client123".into()
+                    },
+                ),
+            };
+
+            User {
+                id: user_id(i),
+                first_name: first.into(),
+                last_name: last.into(),
+                email,
+                phone: format!("(555) {:03}-{:04}", (i * 13) % 1000, (i * 97) % 10000),
+                home_address: format!("{} {} Street, Springfield", 100 + i, last),
+                password,
+                role,
+                // Assign each user to a couple of cases (cycling presets) so
+                // assignments and case visibility have data too.
+                assigned_cases: vec![
+                    assign(i % CASES, CasePreset::ALL[i % 3]),
+                    assign((i + CASES / 2) % CASES, CasePreset::ALL[(i + 1) % 3]),
+                ],
+                audit_log: Vec::new(),
+            }
+        })
+        .collect()
+}
+
+/// A handful of funding grants (an admin-only feature).
+pub fn grants() -> Vec<Grant> {
+    [
+        "Family Stability Fund",
+        "Legal Aid Access Grant",
+        "Community Housing Initiative",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, name)| Grant {
+        id: format!("g-{}", i + 1),
+        name: (*name).into(),
+    })
+    .collect()
+}
+
+/// The cases, each owned by one of the users.
+pub fn cases() -> Vec<Case> {
+    (0..CASES)
+        .map(|i| {
+            let owner = i % USERS;
+            let (owner_first, owner_last) = name(owner);
+            Case {
+                id: case_id(i),
+                name: format!(
+                    "{}-{} {}",
+                    owner_first,
+                    owner_last,
+                    MATTERS[i % MATTERS.len()]
+                ),
+                status: CaseStatus::ALL[i % CaseStatus::ALL.len()],
+                owner_id: user_id(owner),
+                notes: Vec::new(),
+                evidence: Vec::new(),
+                properties: vec![
+                    prop("Court", "Springfield Family Court"),
+                    prop("Docket", &format!("FC-2026-{:04}", i + 1)),
+                ],
+                audit_log: Vec::new(),
+                message_count: 0,
+            }
+        })
+        .collect()
+}
+
+/// A tiny deterministic hash (the SplitMix64 finalizer) so the demo data looks
+/// random but stays identical across runs.
+fn hash64(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// How many chat messages a given case gets. Most cases have only a handful, but
+/// a random ~1-in-25 are "busy" with 50–100 messages so there is plenty to page
+/// through when testing message pagination.
+fn message_count(case: usize) -> usize {
+    let h = hash64(case as u64);
+    if h.is_multiple_of(3) {
+        50 + (hash64(h) % 51) as usize // 50..=100
+    } else {
+        (h % 5) as usize // 0..=4
     }
 }
 
-/// Seed user accounts (one per account role, plus extras).
-pub fn users() -> Vec<User> {
-    vec![
-        User {
-            id: "u-admin".into(),
-            first_name: "Alex".into(),
-            last_name: "Rivera".into(),
-            email: "admin@mommysheart.org".into(),
-            phone: "(555) 100-2000".into(),
-            home_address: "12 Chestnut St, Springfield".into(),
-            password: "admin123".into(),
-            role: AccountRole::Admin,
-            assigned_cases: vec![assign("c-1001", CasePreset::Manager)],
-            audit_log: vec![
-                change(
-                    "ul-a1",
-                    "Dana Cole",
-                    "phone",
-                    "(555) 100-1999",
-                    "(555) 100-2000",
-                    "2026-07-07 09:12",
-                ),
-                change(
-                    "ul-a2",
-                    "system",
-                    "email",
-                    "arivera@old.org",
-                    "admin@mommysheart.org",
-                    "2026-06-27 15:40",
-                ),
-                change(
-                    "ul-a3",
-                    "system",
-                    "role",
-                    "volunteer",
-                    "admin",
-                    "2026-01-04 10:00",
-                ),
-            ],
-        },
-        User {
-            id: "u-vol".into(),
-            first_name: "Dana".into(),
-            last_name: "Cole".into(),
-            email: "dana@mommysheart.org".into(),
-            phone: "(555) 200-3000".into(),
-            home_address: "48 Maple Ave, Springfield".into(),
-            password: "volunteer123".into(),
-            role: AccountRole::Volunteer,
-            assigned_cases: vec![
-                assign("c-1001", CasePreset::Contributor),
-                assign("c-1002", CasePreset::Manager),
-            ],
-            audit_log: vec![
-                change(
-                    "ul-v1",
-                    "Alex Rivera",
-                    "case:c-1002",
-                    "",
-                    "manager",
-                    "2026-07-05 11:03",
-                ),
-                change(
-                    "ul-v2",
-                    "Alex Rivera",
-                    "home_address",
-                    "40 Maple Ave",
-                    "48 Maple Ave, Springfield",
-                    "2026-06-30 08:20",
-                ),
-                change(
-                    "ul-v3",
-                    "Alex Rivera",
-                    "phone",
-                    "(555) 200-2999",
-                    "(555) 200-3000",
-                    "2026-02-11 14:15",
-                ),
-            ],
-        },
-        User {
-            id: "u-client".into(),
-            first_name: "Jamie".into(),
-            last_name: "Nguyen".into(),
-            email: "jamie@example.com".into(),
-            phone: "(555) 300-4000".into(),
-            home_address: "301 Oak Blvd, Springfield".into(),
-            password: "client123".into(),
-            role: AccountRole::Client,
-            // A client who can upload evidence for their own case.
-            assigned_cases: vec![assign("c-1002", CasePreset::Contributor)],
-            audit_log: vec![
-                change(
-                    "ul-c1",
-                    "Alex Rivera",
-                    "case:c-1002",
-                    "",
-                    "contributor",
-                    "2026-07-08 16:45",
-                ),
-                change(
-                    "ul-c2",
-                    "Dana Cole",
-                    "phone",
-                    "(555) 300-3999",
-                    "(555) 300-4000",
-                    "2026-06-14 10:05",
-                ),
-            ],
-        },
-        User {
-            id: "u-vol2".into(),
-            first_name: "Priya".into(),
-            last_name: "Shah".into(),
-            email: "priya@mommysheart.org".into(),
-            phone: "(555) 400-5000".into(),
-            home_address: "77 Birch Ln, Springfield".into(),
-            password: "volunteer123".into(),
-            role: AccountRole::Volunteer,
-            // A volunteer who can read evidence but not upload or delete it.
-            assigned_cases: vec![CaseAssignment {
-                case_id: "c-1001".into(),
-                capabilities: vec![
-                    CaseCapability::ViewCase,
-                    CaseCapability::ViewEvidence,
-                    CaseCapability::SendMessages,
-                ],
-            }],
-            audit_log: vec![
-                change(
-                    "ul-p1",
-                    "Alex Rivera",
-                    "case:c-1001",
-                    "",
-                    "view_case, view_evidence, send_messages",
-                    "2026-07-02 13:30",
-                ),
-                change(
-                    "ul-p2",
-                    "system",
-                    "role",
-                    "client",
-                    "volunteer",
-                    "2026-06-09 09:00",
-                ),
-            ],
-        },
-    ]
-}
-
-/// Seed grants.
-pub fn grants() -> Vec<Grant> {
-    vec![
-        Grant {
-            id: "g-1".into(),
-            name: "Family Stability Fund".into(),
-        },
-        Grant {
-            id: "g-2".into(),
-            name: "Legal Aid Access Grant".into(),
-        },
-        Grant {
-            id: "g-3".into(),
-            name: "Community Housing Initiative".into(),
-        },
-    ]
-}
-
-/// Seed cases.
-pub fn cases() -> Vec<Case> {
-    vec![
-        Case {
-            id: "c-1001".into(),
-            name: "Nguyen custody matter".into(),
-            status: CaseStatus::Open,
-            owner_id: "u-admin".into(),
-            notes: vec![
-                note(
-                    "n-1",
-                    "Alex Rivera",
-                    "Initial intake completed. Client seeking custody support.",
-                    "2026-03-01",
-                ),
-                note(
-                    "n-2",
-                    "Dana Cole",
-                    "Filed initial paperwork with the county clerk.",
-                    "2026-03-06",
-                ),
-            ],
-            evidence: vec![evidence(
-                "e-1",
-                "Text message thread (March)",
-                "c-1001",
-                "Dana Cole",
-                "2026-03-05",
-                "Screenshots of scheduling messages.",
-            )],
-            properties: vec![
-                prop("Opposing attorney", "J. Smith"),
-                prop("Court", "Springfield Family Court"),
-                prop("Docket", "FC-2026-0421"),
-            ],
-            audit_log: vec![change(
-                "cl-1",
-                "Alex Rivera",
-                "status",
-                "monitor",
-                "open",
-                "2026-03-01",
-            )],
-        },
-        Case {
-            id: "c-1002".into(),
-            name: "Nguyen housing assistance".into(),
-            status: CaseStatus::Monitor,
-            owner_id: "u-vol".into(),
-            notes: vec![note(
-                "n-3",
-                "Dana Cole",
-                "Connected client with housing initiative resources.",
-                "2026-02-20",
-            )],
-            evidence: Vec::new(),
-            properties: vec![prop("Caseworker", "Dana Cole")],
-            audit_log: Vec::new(),
-        },
-    ]
-}
-
-/// Seed case chat messages.
+/// The chat messages, authored by each case's owner. The per-case volume is
+/// deliberately uneven (see [`message_count`]) so some threads are long enough
+/// to exercise pagination. Messages are emitted in send order per case (the DB
+/// preserves insertion order via its `seq` column).
 pub fn messages() -> Vec<Message> {
-    vec![
-        Message {
-            id: "m-1".into(),
-            case_id: "c-1001".into(),
-            author_id: "u-vol".into(),
-            author: "Dana Cole".into(),
-            body: "The county clerk confirmed receipt of the paperwork.".into(),
-            sent_at: "2026-03-06 09:14".into(),
-        },
-        Message {
-            id: "m-2".into(),
-            case_id: "c-1001".into(),
-            author_id: "u-admin".into(),
-            author: "Alex Rivera".into(),
-            body: "Great, thanks for the quick turnaround.".into(),
-            sent_at: "2026-03-06 10:02".into(),
-        },
-        Message {
-            id: "m-3".into(),
-            case_id: "c-1002".into(),
-            author_id: "u-vol".into(),
-            author: "Dana Cole".into(),
-            body: "Shared the housing initiative contact with the client.".into(),
-            sent_at: "2026-02-20 14:30".into(),
-        },
-    ]
+    let mut out = Vec::new();
+    let mut n = 0usize;
+    for ci in 0..CASES {
+        let owner = ci % USERS;
+        let (first, last) = name(owner);
+        let author = format!("{first} {last}");
+        let author_id = user_id(owner);
+        let cid = case_id(ci);
+        for k in 0..message_count(ci) {
+            let seed = hash64(((ci as u64) << 20) ^ k as u64);
+            out.push(Message {
+                id: format!("m-{}", n + 1),
+                case_id: cid.clone(),
+                author_id: author_id.clone(),
+                author: author.clone(),
+                body: MSG_BODIES[(seed as usize) % MSG_BODIES.len()].into(),
+                sent_at: format!(
+                    "2026-{:02}-{:02} {:02}:{:02}",
+                    1 + (k % 12),
+                    1 + (k % 27),
+                    seed % 24,
+                    hash64(seed) % 60
+                ),
+            });
+            n += 1;
+        }
+    }
+    out
 }

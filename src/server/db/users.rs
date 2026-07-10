@@ -1,7 +1,7 @@
 //! Users, their per-case capability assignments, and admin mutations.
 
 use crate::server::db::{audit, ids, pool};
-use crate::types::{AccountRole, CaseAssignment, CaseCapability, User};
+use crate::types::{AccountRole, CaseAssignment, CaseCapability, Page, User};
 use std::collections::BTreeMap;
 
 #[derive(sqlx::FromRow)]
@@ -63,18 +63,58 @@ async fn hydrate(row: UserRow) -> Result<User, sqlx::Error> {
     Ok(row.into_user(assignments, audit_log))
 }
 
-/// Every user, ordered by id, fully hydrated with assignments and audit log.
-pub async fn list() -> Result<Vec<User>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, UserRow>(
-        "SELECT id, first_name, last_name, email, phone, home_address, role FROM users ORDER BY id",
-    )
+/// One page of users (ordered by id), each fully hydrated with assignments and
+/// audit log, plus the total number of users matching the search.
+///
+/// This replaces the old "load every user" behaviour: it fetches — and runs the
+/// per-user hydration queries for — only the requested window, so it stays cheap
+/// no matter how large the table grows. `search`, when non-blank, matches a
+/// user's id, first/last name, or email case-insensitively. `limit` is clamped
+/// to a sane range so a caller can never request an unbounded scan.
+pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, sqlx::Error> {
+    let limit = limit.clamp(1, 100);
+    let offset = offset.max(0);
+
+    // Build an escaped `%term%` pattern, or `None` for "no filter". Escaping the
+    // LIKE metacharacters means user input is matched literally.
+    let term = search.trim();
+    let pattern = if term.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        ))
+    };
+
+    // The same predicate drives the count and the page fetch. A NULL pattern
+    // (no search term) matches every row.
+    const FILTER: &str = "WHERE $1::text IS NULL
+           OR id ILIKE $1
+           OR first_name ILIKE $1
+           OR last_name ILIKE $1
+           OR email ILIKE $1";
+
+    let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM users {FILTER}"))
+        .bind(&pattern)
+        .fetch_one(pool())
+        .await?;
+
+    let rows = sqlx::query_as::<_, UserRow>(&format!(
+        "SELECT id, first_name, last_name, email, phone, home_address, role
+         FROM users {FILTER} ORDER BY id LIMIT $2 OFFSET $3"
+    ))
+    .bind(&pattern)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(pool())
     .await?;
-    let mut users = Vec::with_capacity(rows.len());
+
+    let mut items = Vec::with_capacity(rows.len());
     for row in rows {
-        users.push(hydrate(row).await?);
+        items.push(hydrate(row).await?);
     }
-    Ok(users)
+    Ok(Page { items, total })
 }
 
 /// A single user by id.
@@ -91,10 +131,27 @@ pub async fn get(id: &str) -> Result<Option<User>, sqlx::Error> {
     }
 }
 
+/// Build a lightweight directory [`User`] (names + role only, no PII/assignments
+/// /audit) from a `(id, first_name, last_name, role)` row.
+fn directory_user((id, first_name, last_name, role): (String, String, String, String)) -> User {
+    User {
+        id,
+        first_name,
+        last_name,
+        email: String::new(),
+        phone: String::new(),
+        home_address: String::new(),
+        password: String::new(),
+        role: AccountRole::from_slug(&role).unwrap_or(AccountRole::Client),
+        assigned_cases: Vec::new(),
+        audit_log: Vec::new(),
+    }
+}
+
 /// Name-resolution directory entries for the given user ids: id, names, and role
 /// only. Deliberately omits contact details, assignments, and audit history (so
 /// no PII leaves the database), and skips the per-user hydration queries that
-/// [`list`] runs. Used to build the non-admin bootstrap directory efficiently.
+/// [`page`] runs. Used to build the non-admin bootstrap directory efficiently.
 pub async fn directory(ids: &[String]) -> Result<Vec<User>, sqlx::Error> {
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -105,21 +162,20 @@ pub async fn directory(ids: &[String]) -> Result<Vec<User>, sqlx::Error> {
     .bind(ids)
     .fetch_all(pool())
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(id, first_name, last_name, role)| User {
-            id,
-            first_name,
-            last_name,
-            email: String::new(),
-            phone: String::new(),
-            home_address: String::new(),
-            password: String::new(),
-            role: AccountRole::from_slug(&role).unwrap_or(AccountRole::Client),
-            assigned_cases: Vec::new(),
-            audit_log: Vec::new(),
-        })
-        .collect())
+    Ok(rows.into_iter().map(directory_user).collect())
+}
+
+/// Lightweight directory of *every* user (id, names, and role only — same shape
+/// as [`directory`]). One flat query with no per-user hydration, so it stays
+/// cheap even with thousands of rows. This is what the admin bootstrap needs for
+/// name resolution and owner pickers; the admin management screen loads full
+/// user detail a page at a time via [`page`].
+pub async fn directory_all() -> Result<Vec<User>, sqlx::Error> {
+    let rows: Vec<(String, String, String, String)> =
+        sqlx::query_as("SELECT id, first_name, last_name, role FROM users ORDER BY id")
+            .fetch_all(pool())
+            .await?;
+    Ok(rows.into_iter().map(directory_user).collect())
 }
 
 /// Distinct ids of users assigned (via `case_assignments`) to any of the given

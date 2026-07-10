@@ -5,8 +5,12 @@ use leptos_router::hooks::use_navigate;
 
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
-use crate::state::AppState;
+use crate::state::{AppState, AuthPhase};
 use crate::types::{Case, CaseCapability, CaseStatus};
+
+/// How many cases the list loads per "page" (each "Load more" click grows the
+/// visible window by this much).
+const PAGE_SIZE: i64 = 10;
 
 /// One editable property row while a case is in edit mode. Each field is its own
 /// signal so typing never re-creates the row (keeps input focus stable).
@@ -15,6 +19,14 @@ struct PropRow {
     id: usize,
     key: RwSignal<String>,
     value: RwSignal<String>,
+}
+
+/// Flatten a [`ServerFnError`] to the plain message we wrote server-side.
+fn err_text(e: ServerFnError) -> String {
+    match e {
+        ServerFnError::ServerError(m) => m,
+        other => other.to_string(),
+    }
 }
 
 fn badge(classes: &str) -> String {
@@ -52,11 +64,48 @@ fn access_label(caps: &[CaseCapability]) -> Option<(&'static str, &'static str)>
     }
 }
 
-/// Case Home: view the cases you own / are assigned to and manage them.
+/// Case Home: view the cases you own / are assigned to and manage them. The list
+/// is server-side paginated + searchable ("Load more"), so the browser never
+/// pulls every case at once.
 #[component]
 pub fn CaseHomePage() -> impl IntoView {
     let state = expect_context::<AppState>();
     let selected = RwSignal::new(None::<String>);
+    // Search text, the fetched window of cases, and the total match count.
+    let query = RwSignal::new(String::new());
+    let results = RwSignal::new(Vec::<Case>::new());
+    let total = RwSignal::new(0i64);
+    // How many rows the current window requests; grows on "Load more".
+    let window = RwSignal::new(PAGE_SIZE);
+    let loading = RwSignal::new(false);
+    let load_error = RwSignal::new(None::<String>);
+    // Bumped after a mutation to force the current window to reload.
+    let reload = RwSignal::new(0u32);
+
+    // (Re)load the window whenever the query, window size, or reload tick
+    // changes — but only once a session is confirmed (server functions run in
+    // the browser after hydration). We always fetch `[0, window)` so search
+    // changes and post-mutation refreshes share one code path.
+    Effect::new(move |_| {
+        let count = window.get();
+        let q = query.get();
+        reload.track();
+        if !matches!(state.auth.get(), AuthPhase::SignedIn) {
+            return;
+        }
+        loading.set(true);
+        spawn_local(async move {
+            match crate::server_fns::cases::list_cases_page(0, count, q).await {
+                Ok(page) => {
+                    results.set(page.items);
+                    total.set(page.total);
+                    load_error.set(None);
+                }
+                Err(e) => load_error.set(Some(err_text(e))),
+            }
+            loading.set(false);
+        });
+    });
 
     require_login(state, move || {
     // Resolve a user id to a display name.
@@ -71,12 +120,22 @@ pub fn CaseHomePage() -> impl IntoView {
     };
 
     let cases_list = move || {
-        let cases = state.visible_cases();
-        if cases.is_empty() {
+        if let Some(msg) = load_error.get() {
             return view! {
-                <p class="text-sm text-slate-400">"You have no cases yet."</p>
+                <p class="text-sm text-rose-300">"Could not load cases: " {msg}</p>
             }
             .into_any();
+        }
+        let cases = results.get();
+        if cases.is_empty() {
+            let text = if loading.get() {
+                "Loading\u{2026}"
+            } else if query.get().trim().is_empty() {
+                "You have no cases yet."
+            } else {
+                "No cases match your search."
+            };
+            return view! { <p class="text-sm text-slate-400">{text}</p> }.into_any();
         }
         cases
             .into_iter()
@@ -127,6 +186,30 @@ pub fn CaseHomePage() -> impl IntoView {
             .into_any()
     };
 
+    let footer = move || {
+        let shown = results.get().len() as i64;
+        let tot = total.get();
+        if tot == 0 {
+            return ().into_any();
+        }
+        let more = shown < tot;
+        view! {
+            <div class="mt-3 flex items-center justify-between">
+                <p class="text-xs text-slate-500">"Showing " {shown} " of " {tot}</p>
+                <Show when=move || more>
+                    <button
+                        on:click=move |_| window.update(|w| *w += PAGE_SIZE)
+                        prop:disabled=move || loading.get()
+                        class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                    >
+                        {move || if loading.get() { "Loading\u{2026}" } else { "Load more" }}
+                    </button>
+                </Show>
+            </div>
+        }
+        .into_any()
+    };
+
     let detail = move || {
         match selected.get() {
         None => view! {
@@ -136,9 +219,9 @@ pub fn CaseHomePage() -> impl IntoView {
         }
         .into_any(),
         Some(id) => {
-            let case = state.cases.get().into_iter().find(|c| c.id == id);
+            let case = results.get().into_iter().find(|c| c.id == id);
             match case {
-                Some(c) => view! { <CaseDetail case=c /> }.into_any(),
+                Some(c) => view! { <CaseDetail case=c source=results reload=reload /> }.into_any(),
                 None => view! {
                     <p class="text-sm text-slate-400">"Case not found."</p>
                 }
@@ -147,6 +230,8 @@ pub fn CaseHomePage() -> impl IntoView {
         }
     }
     };
+
+    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
 
     view! {
         <Layout title="Cases".to_string()>
@@ -158,7 +243,17 @@ pub fn CaseHomePage() -> impl IntoView {
                     >
                         "+ New case"
                     </A>
+                    <input
+                        class=input_class
+                        placeholder="Search cases by name"
+                        prop:value=move || query.get()
+                        on:input=move |ev| {
+                            query.set(event_target_value(&ev));
+                            window.set(PAGE_SIZE);
+                        }
+                    />
                     <div class="space-y-3">{cases_list}</div>
+                    {footer}
                 </div>
                 <div>{detail}</div>
             </div>
@@ -322,9 +417,12 @@ pub fn NewCasePage() -> impl IntoView {
     })
 }
 
-/// The management panel for a single case.
+/// The management panel for a single case. `source` is the parent's fetched
+/// window of cases (the paginated list); we re-read the live case from it so
+/// edits show as soon as the window reloads. `reload` is bumped after any
+/// mutation to trigger that reload.
 #[component]
-fn CaseDetail(case: Case) -> impl IntoView {
+fn CaseDetail(case: Case, source: RwSignal<Vec<Case>>, reload: RwSignal<u32>) -> impl IntoView {
     let state = expect_context::<AppState>();
     let case_id = case.id.clone();
 
@@ -337,11 +435,11 @@ fn CaseDetail(case: Case) -> impl IntoView {
     let can_upload_evidence = state.case_can(&case, CaseCapability::UploadEvidence);
     let can_delete_evidence = state.case_can(&case, CaseCapability::DeleteEvidence);
 
-    // Reactively re-read the case so edits show immediately.
+    // Reactively re-read the case from the parent's fetched window so edits show
+    // as soon as it reloads.
     let case_sv = StoredValue::new(case_id.clone());
     let live_case = move || {
-        state
-            .cases
+        source
             .get()
             .into_iter()
             .find(|c| c.id == case_sv.get_value())
@@ -427,6 +525,7 @@ fn CaseDetail(case: Case) -> impl IntoView {
             }
             edit_error.set(String::new());
             editing.set(false);
+            reload.update(|n| *n += 1);
         });
     };
 
@@ -440,6 +539,7 @@ fn CaseDetail(case: Case) -> impl IntoView {
             spawn_local(async move {
                 if state.add_case_note(&case_id, &body).await.is_ok() {
                     note_body.set(String::new());
+                    reload.update(|n| *n += 1);
                 }
             });
         }
@@ -462,6 +562,7 @@ fn CaseDetail(case: Case) -> impl IntoView {
                 {
                     evi_name.set(String::new());
                     evi_desc.set(String::new());
+                    reload.update(|n| *n += 1);
                 }
             });
         }
@@ -509,9 +610,13 @@ fn CaseDetail(case: Case) -> impl IntoView {
                             let case_id = case_id.clone();
                             let evidence_id = evidence_id.clone();
                             spawn_local(async move {
-                                let _ = state
+                                if state
                                     .delete_case_evidence(&case_id, &evidence_id)
-                                    .await;
+                                    .await
+                                    .is_ok()
+                                {
+                                    reload.update(|n| *n += 1);
+                                }
                             });
                         }
                     };

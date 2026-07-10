@@ -64,7 +64,7 @@ pub fn InboxPage() -> impl IntoView {
                         let case_id = case_id.clone();
                         move || selected.get().as_deref() == Some(case_id.as_str())
                     };
-                    let count = state.messages_for_case(&c.id).len();
+                    let count = c.message_count;
                     let name = title_for(&c);
                     let select = {
                         let case_id = case_id.clone();

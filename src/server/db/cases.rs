@@ -2,7 +2,7 @@
 
 use crate::server::db::{audit, ids, now_stamp, pool, users};
 use crate::types::{
-    Case, CaseCapability, CaseNote, CaseProperty, CaseStatus, Evidence,
+    Case, CaseCapability, CaseNote, CaseProperty, CaseStatus, Evidence, Page,
 };
 
 #[derive(sqlx::FromRow)]
@@ -97,21 +97,173 @@ async fn hydrate(row: CaseRow) -> Result<Case, sqlx::Error> {
         evidence,
         properties,
         audit_log,
+        message_count: 0,
     })
 }
 
-/// Every case, fully hydrated. Callers filter by visibility.
-pub async fn list_all() -> Result<Vec<Case>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, CaseRow>(
-        "SELECT id, name, status, owner_id FROM cases ORDER BY id",
+/// A lightweight [`Case`] (id, name, status, owner only — no notes, evidence,
+/// properties, or audit) from a `CaseRow`. Used for list/directory views that
+/// never render the sub-resources.
+fn summary(row: CaseRow) -> Case {
+    Case {
+        id: row.id,
+        name: row.name,
+        status: CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open),
+        owner_id: row.owner_id,
+        notes: Vec::new(),
+        evidence: Vec::new(),
+        properties: Vec::new(),
+        audit_log: Vec::new(),
+        message_count: 0,
+    }
+}
+
+/// Cases visible to `viewer` (those they hold capabilities on) in lightweight
+/// form (see [`summary`]). Bounded by the user's own assignments, so it stays
+/// cheap no matter how many cases exist system-wide. This is what bootstrap
+/// ships for name resolution and the case/chat pickers; the case screen loads
+/// full, paginated detail on demand via [`page`].
+pub async fn directory_for(viewer: &str) -> Result<Vec<Case>, sqlx::Error> {
+    #[derive(sqlx::FromRow)]
+    struct DirRow {
+        id: String,
+        name: String,
+        status: String,
+        owner_id: String,
+        message_count: i64,
+    }
+
+    let rows = sqlx::query_as::<_, DirRow>(
+        "SELECT c.id, c.name, c.status, c.owner_id,
+                (SELECT COUNT(*) FROM messages m WHERE m.case_id = c.id) AS message_count
+         FROM cases c
+         WHERE EXISTS (SELECT 1 FROM case_assignments a
+                       WHERE a.case_id = c.id AND a.user_id = $1)
+         ORDER BY c.id",
     )
+    .bind(viewer)
     .fetch_all(pool())
     .await?;
-    let mut cases = Vec::with_capacity(rows.len());
-    for row in rows {
-        cases.push(hydrate(row).await?);
+    Ok(rows
+        .into_iter()
+        .map(|r| Case {
+            id: r.id,
+            name: r.name,
+            status: CaseStatus::from_slug(&r.status).unwrap_or(CaseStatus::Open),
+            owner_id: r.owner_id,
+            notes: Vec::new(),
+            evidence: Vec::new(),
+            properties: Vec::new(),
+            audit_log: Vec::new(),
+            message_count: r.message_count.max(0) as usize,
+        })
+        .collect())
+}
+
+/// Up to `limit` lightweight cases whose id or name matches `search`
+/// (case-insensitive, metacharacters escaped), ordered by id. Unscoped — used by
+/// the admin permission tool to find any case to grant access to. Empty search
+/// returns the first `limit` cases.
+pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<Case>, sqlx::Error> {
+    let limit = limit.clamp(1, 50);
+    let term = search.trim();
+    let pattern = if term.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        ))
+    };
+    let rows = sqlx::query_as::<_, CaseRow>(
+        "SELECT id, name, status, owner_id FROM cases
+         WHERE $1::text IS NULL OR id ILIKE $1 OR name ILIKE $1
+         ORDER BY id LIMIT $2",
+    )
+    .bind(&pattern)
+    .bind(limit)
+    .fetch_all(pool())
+    .await?;
+    Ok(rows.into_iter().map(summary).collect())
+}
+
+/// Lightweight cases for a specific set of ids (see [`summary`]). Used to resolve
+/// case names for display without loading every case.
+pub async fn by_ids_lite(ids: &[String]) -> Result<Vec<Case>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(cases)
+    let rows = sqlx::query_as::<_, CaseRow>(
+        "SELECT id, name, status, owner_id FROM cases WHERE id = ANY($1) ORDER BY id",
+    )
+    .bind(ids)
+    .fetch_all(pool())
+    .await?;
+    Ok(rows.into_iter().map(summary).collect())
+}
+
+/// One page of fully-hydrated cases, ordered by id, with an optional
+/// case-insensitive search over id/name, scoped to the cases `viewer` holds
+/// capabilities on.
+///
+/// Backs the case screen's server-side pagination ("Load more") so the UI never
+/// has to pull every case into the browser.
+pub async fn page(
+    offset: i64,
+    limit: i64,
+    search: &str,
+    viewer: &str,
+) -> Result<Page<Case>, sqlx::Error> {
+    let limit = limit.clamp(1, 100);
+    let offset = offset.max(0);
+
+    // Escaped `%term%` pattern (or `None` for "no filter"), so user input is
+    // matched literally rather than as LIKE metacharacters.
+    let term = search.trim();
+    let pattern = if term.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        ))
+    };
+
+    // `$1` is the (nullable) search pattern; the viewer id scopes the results to
+    // cases they hold capabilities on. Its bind position differs between the
+    // COUNT query (`$2`) and the page query (`$4`, after LIMIT/OFFSET).
+    const SEARCH: &str = "($1::text IS NULL OR id ILIKE $1 OR name ILIKE $1)";
+    const SCOPE: &str = "EXISTS \
+        (SELECT 1 FROM case_assignments a WHERE a.case_id = cases.id AND a.user_id = $VIEWER)";
+
+    let count_sql = format!(
+        "SELECT count(*) FROM cases WHERE {SEARCH} AND {}",
+        SCOPE.replace("$VIEWER", "$2")
+    );
+    let total = sqlx::query_scalar::<_, i64>(&count_sql)
+        .bind(&pattern)
+        .bind(viewer)
+        .fetch_one(pool())
+        .await?;
+
+    let page_sql = format!(
+        "SELECT id, name, status, owner_id FROM cases WHERE {SEARCH} AND {} \
+         ORDER BY id LIMIT $2 OFFSET $3",
+        SCOPE.replace("$VIEWER", "$4")
+    );
+    let rows = sqlx::query_as::<_, CaseRow>(&page_sql)
+        .bind(&pattern)
+        .bind(limit)
+        .bind(offset)
+        .bind(viewer)
+        .fetch_all(pool())
+        .await?;
+
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        items.push(hydrate(row).await?);
+    }
+    Ok(Page { items, total })
 }
 
 /// A single case by id, fully hydrated.

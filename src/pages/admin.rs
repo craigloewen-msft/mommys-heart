@@ -3,14 +3,25 @@ use leptos::task::spawn_local;
 
 use crate::components::guard::require_admin;
 use crate::components::layout::Layout;
-use crate::state::{today, AppState};
-use crate::types::{AccountRole, CaseCapability, CasePreset, ChangeLogEntry, User};
+use crate::state::{today, AppState, AuthPhase};
+use crate::types::{AccountRole, Case, CaseCapability, CasePreset, ChangeLogEntry, User};
 
 /// Cap on how many change-log rows are rendered at once (guards against huge
 /// result sets).
 const MAX_LOG_ROWS: usize = 100;
 /// Widest date range the change-log filter will accept, in days.
 const MAX_RANGE_DAYS: i64 = 366;
+/// How many users the admin list loads per "page" (each "Load more" click grows
+/// the visible window by this much).
+const PAGE_SIZE: i64 = 10;
+
+/// Flatten a [`ServerFnError`] to the plain message we wrote server-side.
+fn err_text(e: ServerFnError) -> String {
+    match e {
+        ServerFnError::ServerError(m) => m,
+        other => other.to_string(),
+    }
+}
 
 fn badge(classes: &str) -> String {
     format!("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {classes}")
@@ -61,43 +72,93 @@ fn shift_days(date: &str, delta: i64) -> String {
     }
 }
 
-/// Admin dashboard: view all users and manage their permissions.
+/// Admin dashboard: browse users (server-side paginated + searchable) and manage
+/// their permissions.
 #[component]
 pub fn AdminDashboardPage() -> impl IntoView {
     let state = expect_context::<AppState>();
+    // Search text, the fetched window of users, and the total match count.
     let query = RwSignal::new(String::new());
+    let results = RwSignal::new(Vec::<User>::new());
+    let total = RwSignal::new(0i64);
+    // How many rows the current window requests; grows on "Load more".
+    let window = RwSignal::new(PAGE_SIZE);
+    let loading = RwSignal::new(false);
+    let load_error = RwSignal::new(None::<String>);
+    // Bumped after a mutation to force the current window to reload.
+    let reload = RwSignal::new(0u32);
+
+    // (Re)load the window whenever the query, window size, or reload tick
+    // changes — but only once a session is confirmed (server functions run in
+    // the browser after hydration). We always fetch `[0, window)` so both search
+    // changes and post-mutation refreshes are handled by one code path.
+    Effect::new(move |_| {
+        let count = window.get();
+        let q = query.get();
+        reload.track();
+        if !matches!(state.auth.get(), AuthPhase::SignedIn) {
+            return;
+        }
+        loading.set(true);
+        spawn_local(async move {
+            match crate::server_fns::users::list_users_page(0, count, q).await {
+                Ok(page) => {
+                    results.set(page.items);
+                    total.set(page.total);
+                    load_error.set(None);
+                }
+                Err(e) => load_error.set(Some(err_text(e))),
+            }
+            loading.set(false);
+        });
+    });
 
     require_admin(state, move || {
-    let users = move || {
-        let q = query.get().trim().to_lowercase();
-        let matches: Vec<_> = state
-            .users
-            .get()
-            .into_iter()
-            .filter(|u| {
-                if q.is_empty() {
-                    return true;
-                }
-                let haystack = format!(
-                    "{} {} {}",
-                    u.full_name().to_lowercase(),
-                    u.email.to_lowercase(),
-                    u.phone.to_lowercase()
-                );
-                haystack.contains(&q)
-            })
-            .collect();
-        if matches.is_empty() {
+    let list = move || {
+        if let Some(msg) = load_error.get() {
             return view! {
-                <p class="text-sm text-slate-500">"No users match your search."</p>
+                <p class="text-sm text-rose-300">"Could not load users: " {msg}</p>
             }
             .into_any();
         }
-        matches
+        let items = results.get();
+        if items.is_empty() {
+            let text = if loading.get() {
+                "Loading\u{2026}"
+            } else {
+                "No users match your search."
+            };
+            return view! { <p class="text-sm text-slate-500">{text}</p> }.into_any();
+        }
+        items
             .into_iter()
-            .map(|u| view! { <UserCard user=u /> }.into_any())
+            .map(|u| view! { <UserCard user=u reload=reload /> }.into_any())
             .collect_view()
             .into_any()
+    };
+
+    let footer = move || {
+        let shown = results.get().len() as i64;
+        let tot = total.get();
+        if tot == 0 {
+            return ().into_any();
+        }
+        let more = shown < tot;
+        view! {
+            <div class="mt-4 flex items-center justify-between">
+                <p class="text-xs text-slate-500">"Showing " {shown} " of " {tot}</p>
+                <Show when=move || more>
+                    <button
+                        on:click=move |_| window.update(|w| *w += PAGE_SIZE)
+                        prop:disabled=move || loading.get()
+                        class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                    >
+                        {move || if loading.get() { "Loading\u{2026}" } else { "Load more" }}
+                    </button>
+                </Show>
+            </div>
+        }
+        .into_any()
     };
 
     view! {
@@ -107,27 +168,28 @@ pub fn AdminDashboardPage() -> impl IntoView {
             </p>
             <input
                 class="mb-4 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40"
-                placeholder="Search users by name, email, or phone"
+                placeholder="Search users by name or email"
                 prop:value=move || query.get()
-                on:input=move |ev| query.set(event_target_value(&ev))
+                on:input=move |ev| {
+                    query.set(event_target_value(&ev));
+                    window.set(PAGE_SIZE);
+                }
             />
-            <div class="space-y-4">{users}</div>
+            <div class="space-y-4">{list}</div>
+            {footer}
         </Layout>
     }
     .into_any()
     })
 }
 
-/// A management card for a single user.
+/// A management card for a single user. `reload` is bumped after any mutation so
+/// the parent list refetches the current window and the card re-renders with
+/// fresh data (assignments, role, audit log).
 #[component]
-fn UserCard(user: User) -> impl IntoView {
+fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
     let state = expect_context::<AppState>();
     let user_id = user.id.clone();
-
-    let live_user = {
-        let user_id = user_id.clone();
-        move || state.users.get().into_iter().find(|u| u.id == user_id)
-    };
 
     // --- global role ---
     let role_change = {
@@ -136,15 +198,39 @@ fn UserCard(user: User) -> impl IntoView {
             if let Some(r) = AccountRole::from_slug(&event_target_value(&ev)) {
                 let user_id = user_id.clone();
                 spawn_local(async move {
-                    let _ = state.set_user_role(&user_id, r).await;
+                    if state.set_user_role(&user_id, r).await.is_ok() {
+                        reload.update(|n| *n += 1);
+                    }
                 });
             }
         }
     };
 
-    // --- add assignment (seeded from a preset) ---
+    // --- add assignment (case typeahead + preset) ---
+    // `new_case` holds the *selected* case id; `new_case_label` its display name.
+    // The picker searches all cases server-side (admin-only), so it scales to
+    // tens of thousands of cases without ever loading them into the browser.
     let new_case = RwSignal::new(String::new());
+    let new_case_label = RwSignal::new(String::new());
     let new_preset = RwSignal::new(CasePreset::Viewer.slug().to_string());
+    let case_query = RwSignal::new(String::new());
+    let case_results = RwSignal::new(Vec::<Case>::new());
+    let picker_open = RwSignal::new(false);
+
+    // Debounced-ish search: refetch whenever the query changes (and the picker is
+    // open). Empty query returns the first handful of cases as a starting point.
+    Effect::new(move |_| {
+        if !picker_open.get() {
+            return;
+        }
+        let q = case_query.get();
+        spawn_local(async move {
+            if let Ok(cases) = crate::server_fns::cases::admin_search_cases(q).await {
+                case_results.set(cases);
+            }
+        });
+    });
+
     let assign = {
         let user_id = user_id.clone();
         move |_| {
@@ -162,12 +248,44 @@ fn UserCard(user: User) -> impl IntoView {
                     .is_ok()
                 {
                     new_case.set(String::new());
+                    new_case_label.set(String::new());
+                    case_query.set(String::new());
+                    picker_open.set(false);
+                    reload.update(|n| *n += 1);
                 }
             });
         }
     };
 
+    // The admin's case cache is now scoped to their own cases, so a user's
+    // assignments may reference cases the admin doesn't own. Resolve those names
+    // once, admin-side, into a local map (id -> name) for display.
+    let case_names = RwSignal::new(std::collections::HashMap::<String, String>::new());
+    let assigned_ids: Vec<String> =
+        user.assigned_cases.iter().map(|a| a.case_id.clone()).collect();
+    {
+        let assigned_ids = assigned_ids.clone();
+        Effect::new(move |_| {
+            let ids = assigned_ids.clone();
+            if ids.is_empty() {
+                return;
+            }
+            spawn_local(async move {
+                if let Ok(cases) = crate::server_fns::cases::admin_cases_by_ids(ids).await {
+                    case_names.update(|m| {
+                        for c in cases {
+                            m.insert(c.id, c.name);
+                        }
+                    });
+                }
+            });
+        });
+    }
+
     let case_name = move |case_id: &str| -> String {
+        if let Some(name) = case_names.with(|m| m.get(case_id).cloned()) {
+            return name;
+        }
         state
             .cases
             .get()
@@ -177,15 +295,16 @@ fn UserCard(user: User) -> impl IntoView {
             .unwrap_or_else(|| case_id.to_string())
     };
 
-    let current_role = live_user().map(|u| u.role).unwrap_or(AccountRole::Client);
+    let current_role = user.role;
     let full_name = user.full_name();
     let email = user.email.clone();
+    let assigns_data = user.assigned_cases.clone();
+    let audit_data = user.audit_log.clone();
 
     let assignments_view = {
         let user_id = user_id.clone();
-        let live_user = live_user.clone();
         move || {
-            let assigns = live_user().map(|u| u.assigned_cases).unwrap_or_default();
+            let assigns = assigns_data.clone();
             if assigns.is_empty() {
                 return view! { <p class="text-sm text-slate-500">"No case assignments."</p> }
                     .into_any();
@@ -202,8 +321,9 @@ fn UserCard(user: User) -> impl IntoView {
                             let user_id = user_id.clone();
                             let case_id = case_id.clone();
                             spawn_local(async move {
-                                let _ =
-                                    state.unassign_user_from_case(&user_id, &case_id).await;
+                                if state.unassign_user_from_case(&user_id, &case_id).await.is_ok() {
+                                    reload.update(|n| *n += 1);
+                                }
                             });
                         }
                     };
@@ -220,11 +340,15 @@ fn UserCard(user: User) -> impl IntoView {
                                     let case_id = case_id.clone();
                                     let enabled = event_target_checked(&ev);
                                     spawn_local(async move {
-                                        let _ = state
+                                        if state
                                             .toggle_case_capability(
                                                 &user_id, &case_id, cap, enabled,
                                             )
-                                            .await;
+                                            .await
+                                            .is_ok()
+                                        {
+                                            reload.update(|n| *n += 1);
+                                        }
                                     });
                                 }
                             };
@@ -263,13 +387,52 @@ fn UserCard(user: User) -> impl IntoView {
         }
     };
 
-    let case_options = move || {
-        state
-            .cases
-            .get()
+    // The dropdown of search results; clicking one selects it (fills `new_case`).
+    let case_result_list = move || {
+        if !picker_open.get() {
+            return ().into_any();
+        }
+        let items = case_results.get();
+        if items.is_empty() {
+            return view! {
+                <div class="mt-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-500">
+                    "No matching cases."
+                </div>
+            }
+            .into_any();
+        }
+        let rows = items
             .into_iter()
-            .map(|c| view! { <option value=c.id.clone()>{c.name}</option> })
-            .collect_view()
+            .map(|c| {
+                let id = c.id.clone();
+                let label = format!("{} ({})", c.name, c.id);
+                let select = {
+                    let id = id.clone();
+                    let name = c.name.clone();
+                    move |_| {
+                        new_case.set(id.clone());
+                        new_case_label.set(name.clone());
+                        picker_open.set(false);
+                    }
+                };
+                view! {
+                    <button
+                        type="button"
+                        on:click=select
+                        class="block w-full truncate px-3 py-1.5 text-left text-sm text-slate-200 hover:bg-slate-800"
+                    >
+                        {label}
+                    </button>
+                }
+                .into_any()
+            })
+            .collect_view();
+        view! {
+            <div class="mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950">
+                {rows}
+            </div>
+        }
+        .into_any()
     };
 
     // --- change log: collapsed by default, filtered to a date range ---
@@ -283,7 +446,6 @@ fn UserCard(user: User) -> impl IntoView {
     // Collapsed by default; rendered reactively so it is `Fn` (works with the
     // reactive `{...}` slot instead of a `<Show>` that would move it out).
     let log_section = {
-        let live_user = live_user.clone();
         move || {
             if !log_open.get() {
                 return ().into_any();
@@ -361,9 +523,8 @@ fn UserCard(user: User) -> impl IntoView {
                     }
                     .into_any();
                 }
-                let matched: Vec<ChangeLogEntry> = live_user()
-                    .map(|u| u.audit_log)
-                    .unwrap_or_default()
+                let matched: Vec<ChangeLogEntry> = audit_data
+                    .clone()
                     .into_iter()
                     .filter(|e| {
                         date_ordinal(&e.at)
@@ -457,15 +618,30 @@ fn UserCard(user: User) -> impl IntoView {
             <div class="mt-4">
                 <h3 class="text-sm font-semibold text-slate-200">"Case permissions"</h3>
                 <div class="mt-2">{assignments_view}</div>
-                <div class="mt-3 flex flex-wrap items-center gap-2">
-                    <select
-                        class=input_class
-                        prop:value=move || new_case.get()
-                        on:change=move |ev| new_case.set(event_target_value(&ev))
-                    >
-                        <option value="">"Select case…"</option>
-                        {case_options}
-                    </select>
+                <div class="mt-3 flex flex-wrap items-end gap-2">
+                    <div class="relative min-w-[16rem] flex-1">
+                        <input
+                            class=input_class
+                            class:w-full=true
+                            placeholder="Search cases by name or id…"
+                            prop:value=move || {
+                                let label = new_case_label.get();
+                                if label.is_empty() { case_query.get() } else { label }
+                            }
+                            on:focus=move |_| {
+                                picker_open.set(true);
+                                new_case.set(String::new());
+                                new_case_label.set(String::new());
+                            }
+                            on:input=move |ev| {
+                                new_case.set(String::new());
+                                new_case_label.set(String::new());
+                                picker_open.set(true);
+                                case_query.set(event_target_value(&ev));
+                            }
+                        />
+                        {case_result_list}
+                    </div>
                     <select
                         class=input_class
                         prop:value=move || new_preset.get()
@@ -478,7 +654,8 @@ fn UserCard(user: User) -> impl IntoView {
                     </select>
                     <button
                         on:click=assign
-                        class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600"
+                        prop:disabled=move || new_case.get().is_empty()
+                        class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
                     >
                         "Assign"
                     </button>
