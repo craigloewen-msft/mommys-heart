@@ -4,6 +4,7 @@ use crate::server::db::{audit, ids, now_stamp, pool, users};
 use crate::types::{
     Case, CaseCapability, CaseNote, CaseProperty, CaseStatus, Evidence, Page,
 };
+use std::collections::HashMap;
 
 #[derive(sqlx::FromRow)]
 struct CaseRow {
@@ -99,6 +100,114 @@ async fn hydrate(row: CaseRow) -> Result<Case, sqlx::Error> {
         audit_log,
         message_count: 0,
     })
+}
+
+/// Batched notes for many cases, grouped by case id (each list in `seq` order).
+async fn load_notes_many(
+    case_ids: &[String],
+) -> Result<HashMap<String, Vec<CaseNote>>, sqlx::Error> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        case_id: String,
+        id: String,
+        author: String,
+        body: String,
+        created_at: String,
+    }
+    let rows = sqlx::query_as::<_, Row>(
+        "SELECT case_id, id, author, body, created_at
+         FROM case_notes WHERE case_id = ANY($1) ORDER BY case_id, seq ASC",
+    )
+    .bind(case_ids)
+    .fetch_all(pool())
+    .await?;
+    let mut map: HashMap<String, Vec<CaseNote>> = HashMap::new();
+    for r in rows {
+        map.entry(r.case_id).or_default().push(CaseNote {
+            id: r.id,
+            author: r.author,
+            body: r.body,
+            created_at: r.created_at,
+        });
+    }
+    Ok(map)
+}
+
+/// Batched evidence for many cases, grouped by case id (each list in `seq` order).
+async fn load_evidence_many(
+    case_ids: &[String],
+) -> Result<HashMap<String, Vec<Evidence>>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, EvidenceRow>(
+        "SELECT id, name, case_id, uploaded_by, uploaded_at, description
+         FROM evidence WHERE case_id = ANY($1) ORDER BY case_id, seq ASC",
+    )
+    .bind(case_ids)
+    .fetch_all(pool())
+    .await?;
+    let mut map: HashMap<String, Vec<Evidence>> = HashMap::new();
+    for r in rows {
+        map.entry(r.case_id.clone()).or_default().push(Evidence {
+            id: r.id,
+            name: r.name,
+            case_id: r.case_id,
+            uploaded_by: r.uploaded_by,
+            uploaded_at: r.uploaded_at,
+            description: r.description,
+        });
+    }
+    Ok(map)
+}
+
+/// Batched properties for many cases, grouped by case id (each list in `ord` order).
+async fn load_properties_many(
+    case_ids: &[String],
+) -> Result<HashMap<String, Vec<CaseProperty>>, sqlx::Error> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT case_id, key, value FROM case_properties
+         WHERE case_id = ANY($1) ORDER BY case_id, ord ASC",
+    )
+    .bind(case_ids)
+    .fetch_all(pool())
+    .await?;
+    let mut map: HashMap<String, Vec<CaseProperty>> = HashMap::new();
+    for (case_id, key, value) in rows {
+        map.entry(case_id)
+            .or_default()
+            .push(CaseProperty { key, value });
+    }
+    Ok(map)
+}
+
+/// Fully hydrate a page of cases with a fixed, small number of queries instead
+/// of one-query-per-sub-resource-per-case (an N+1 pattern). The four independent
+/// batch loads run concurrently, so the whole page costs roughly one round-trip.
+async fn hydrate_many(rows: Vec<CaseRow>) -> Result<Vec<Case>, sqlx::Error> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+
+    let (mut notes, mut evidence, mut properties, mut audit_log) = tokio::try_join!(
+        load_notes_many(&ids),
+        load_evidence_many(&ids),
+        load_properties_many(&ids),
+        audit::for_entities(pool(), audit::Entity::Case, &ids),
+    )?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| Case {
+            notes: notes.remove(&row.id).unwrap_or_default(),
+            evidence: evidence.remove(&row.id).unwrap_or_default(),
+            properties: properties.remove(&row.id).unwrap_or_default(),
+            audit_log: audit_log.remove(&row.id).unwrap_or_default(),
+            status: CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open),
+            id: row.id,
+            name: row.name,
+            owner_id: row.owner_id,
+            message_count: 0,
+        })
+        .collect())
 }
 
 /// A lightweight [`Case`] (id, name, status, owner only — no notes, evidence,
@@ -259,10 +368,7 @@ pub async fn page(
         .fetch_all(pool())
         .await?;
 
-    let mut items = Vec::with_capacity(rows.len());
-    for row in rows {
-        items.push(hydrate(row).await?);
-    }
+    let items = hydrate_many(rows).await?;
     Ok(Page { items, total })
 }
 

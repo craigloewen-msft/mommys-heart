@@ -3,6 +3,7 @@
 use crate::server::db::{ids, now_stamp, pool};
 use crate::types::ChangeLogEntry;
 use sqlx::PgExecutor;
+use std::collections::HashMap;
 
 /// How long audit entries are retained before the background task prunes them.
 const RETENTION_MONTHS: i64 = 12;
@@ -69,6 +70,57 @@ where
     .fetch_all(executor)
     .await?;
     Ok(rows.into_iter().map(Into::into).collect())
+}
+
+/// Load the audit logs for many entities of the same type in a single query,
+/// grouped by entity id (each list newest-first). Used by the paged list views
+/// to avoid running one audit query per row (an N+1 pattern).
+pub async fn for_entities<'e, E>(
+    executor: E,
+    entity: Entity,
+    entity_ids: &[String],
+) -> Result<HashMap<String, Vec<ChangeLogEntry>>, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    if entity_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        entity_id: String,
+        id: String,
+        actor: String,
+        field: String,
+        old_value: String,
+        new_value: String,
+        at: String,
+    }
+
+    let rows = sqlx::query_as::<_, Row>(
+        "SELECT entity_id, id, actor, field, old_value, new_value, at
+         FROM audit_log
+         WHERE entity_type = $1 AND entity_id = ANY($2)
+         ORDER BY entity_id, seq DESC",
+    )
+    .bind(entity.as_str())
+    .bind(entity_ids)
+    .fetch_all(executor)
+    .await?;
+
+    let mut map: HashMap<String, Vec<ChangeLogEntry>> = HashMap::new();
+    for r in rows {
+        map.entry(r.entity_id).or_default().push(ChangeLogEntry {
+            id: r.id,
+            actor: r.actor,
+            field: r.field,
+            old_value: r.old_value,
+            new_value: r.new_value,
+            at: r.at,
+        });
+    }
+    Ok(map)
 }
 
 /// Append a new audit entry, allocating its id. `actor` is the display name of

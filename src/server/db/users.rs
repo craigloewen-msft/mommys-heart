@@ -2,7 +2,7 @@
 
 use crate::server::db::{audit, ids, pool};
 use crate::types::{AccountRole, CaseAssignment, CaseCapability, Page, User};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(sqlx::FromRow)]
 struct UserRow {
@@ -63,6 +63,71 @@ async fn hydrate(row: UserRow) -> Result<User, sqlx::Error> {
     Ok(row.into_user(assignments, audit_log))
 }
 
+/// Batched capability assignments for many users, grouped by user id then case id
+/// (mirrors [`load_assignments`] but for a whole page in one query).
+async fn load_assignments_many(
+    user_ids: &[String],
+) -> Result<HashMap<String, Vec<CaseAssignment>>, sqlx::Error> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT user_id, case_id, capability FROM case_assignments
+         WHERE user_id = ANY($1) ORDER BY user_id, case_id",
+    )
+    .bind(user_ids)
+    .fetch_all(pool())
+    .await?;
+
+    let mut grouped: HashMap<String, BTreeMap<String, Vec<CaseCapability>>> = HashMap::new();
+    for (user_id, case_id, cap) in rows {
+        if let Some(c) = CaseCapability::from_slug(&cap) {
+            grouped
+                .entry(user_id)
+                .or_default()
+                .entry(case_id)
+                .or_default()
+                .push(c);
+        }
+    }
+    Ok(grouped
+        .into_iter()
+        .map(|(user_id, cases)| {
+            (
+                user_id,
+                cases
+                    .into_iter()
+                    .map(|(case_id, capabilities)| CaseAssignment {
+                        case_id,
+                        capabilities,
+                    })
+                    .collect(),
+            )
+        })
+        .collect())
+}
+
+/// Fully hydrate a page of users with a fixed, small number of queries instead
+/// of one-query-per-sub-resource-per-user (an N+1 pattern). The two independent
+/// batch loads run concurrently.
+async fn hydrate_many(rows: Vec<UserRow>) -> Result<Vec<User>, sqlx::Error> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+
+    let (mut assignments, mut audit_log) = tokio::try_join!(
+        load_assignments_many(&ids),
+        audit::for_entities(pool(), audit::Entity::User, &ids),
+    )?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let a = assignments.remove(&row.id).unwrap_or_default();
+            let log = audit_log.remove(&row.id).unwrap_or_default();
+            row.into_user(a, log)
+        })
+        .collect())
+}
+
 /// One page of users (ordered by id), each fully hydrated with assignments and
 /// audit log, plus the total number of users matching the search.
 ///
@@ -112,10 +177,7 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
     .fetch_all(pool())
     .await?;
 
-    let mut items = Vec::with_capacity(rows.len());
-    for row in rows {
-        items.push(hydrate(row).await?);
-    }
+    let items = hydrate_many(rows).await?;
     Ok(Page { items, total })
 }
 
