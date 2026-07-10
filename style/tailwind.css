@@ -64,4 +64,19 @@
     color: #1e293b;
     /* dark slate text */
   }
+
+  /*
+    Prevent mobile browsers (notably iOS Safari) from auto-zooming when a form
+    field is focused. The zoom is triggered whenever an input's font-size is
+    below 16px, which our `text-sm` / `text-xs` fields are. Bumping the font to
+    16px on touch (coarse-pointer) devices stops the zoom while leaving the
+    desktop appearance untouched.
+  */
+  @media (pointer: coarse) {
+    input,
+    textarea,
+    select {
+      font-size: 16px;
+    }
+  }
 }
