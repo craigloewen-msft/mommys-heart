@@ -1,8 +1,10 @@
 //! The dedicated JSON API (SSR only).
 //!
-//! Plain Axum routes under `/api/*` returning JSON. This is the API consumed by
-//! both the CRM website (via `crate::api_client`) and the embeddable Squarespace
-//! chat widget (cross-origin, hence [`cors_layer`]).
+//! Plain Axum routes under `/api/*` returning JSON. This now covers only the
+//! endpoints that must stay REST: the embeddable Squarespace chat widget
+//! (cross-origin, hence [`cors_layer`]) plus health/version/docs. The CRM's own
+//! authenticated operations are Leptos server functions in
+//! [`crate::server_fns`], served under `/api/rpc/*`.
 //!
 //! Each feature area lives in its own submodule exposing a `routes()` function;
 //! [`router`] merges them into one router.

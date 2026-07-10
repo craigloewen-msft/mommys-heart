@@ -2,14 +2,37 @@
 #[tokio::main]
 async fn main() {
     use axum::Router;
-    use leptos::logging::log;
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use mommys_heart_crm::app::{shell, App};
-    use mommys_heart_crm::server::{api, rag};
+    use mommys_heart_crm::server::{api, rag, telemetry};
+    use tower_http::trace::TraceLayer;
 
     // Load local .env in development (Azure OpenAI keys, ALLOWED_ORIGINS, etc.).
     let _ = dotenvy::dotenv();
+
+    // Start structured logging first so startup (incl. DB migrations/seeding) is
+    // captured. Verbosity is controlled by `RUST_LOG`.
+    telemetry::init();
+
+    // `mommys-heart-crm seed` — used by `etc/dev-db.sh seed` to (re)populate the
+    // dev database with demo data, then exit without starting the web server.
+    if std::env::args().nth(1).as_deref() == Some("seed") {
+        if let Err(e) = mommys_heart_crm::server::db::init().await {
+            panic!("failed to initialize database: {e}");
+        }
+        if let Err(e) = mommys_heart_crm::server::db::seed::reseed().await {
+            panic!("failed to seed database: {e}");
+        }
+        tracing::info!("demo data loaded");
+        return;
+    }
+
+    // Connect to PostgreSQL, run migrations, and seed on first run. Fail fast if
+    // the database is unreachable — the CRM cannot function without it.
+    if let Err(e) = mommys_heart_crm::server::db::init().await {
+        panic!("failed to initialize database: {e}");
+    }
 
     // Kick off document ingestion in the background so the server starts
     // serving immediately; the RAG store fills in once embeddings complete.
@@ -28,9 +51,11 @@ async fn main() {
         // The dedicated JSON API (+ CORS for the cross-origin Squarespace widget).
         .merge(api::router::<LeptosOptions>().layer(api::cors_layer()))
         .fallback(leptos_axum::file_and_error_handler(shell))
+        // Log every incoming request (method, path, status, latency).
+        .layer(TraceLayer::new_for_http())
         .with_state(leptos_options);
 
-    log!("listening on http://{}", &addr);
+    tracing::info!("listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app.into_make_service())
         .await

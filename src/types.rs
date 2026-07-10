@@ -454,3 +454,19 @@ pub struct Message {
     /// Human-readable timestamp (mock).
     pub sent_at: String,
 }
+
+// ===========================================================================
+// CRM bootstrap payload (shared by the `bootstrap` server function + client)
+// ===========================================================================
+
+/// Everything the CRM UI needs to populate its caches after sign-in. All other
+/// request/response shapes are expressed directly as server-function arguments
+/// and return types in [`crate::server_fns`], so they need no DTO structs here.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BootstrapResponse {
+    pub current_user: Option<User>,
+    pub users: Vec<User>,
+    pub cases: Vec<Case>,
+    pub grants: Vec<Grant>,
+}
+

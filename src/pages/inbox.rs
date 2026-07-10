@@ -1,6 +1,7 @@
 use leptos::prelude::*;
-use leptos_router::components::Redirect;
+use leptos::task::spawn_local;
 
+use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::state::AppState;
 use crate::types::CaseCapability;
@@ -11,156 +12,155 @@ use crate::types::CaseCapability;
 pub fn InboxPage() -> impl IntoView {
     let state = expect_context::<AppState>();
 
-    if state.current_user.get_untracked().is_none() {
-        return view! { <Redirect path="/login" /> }.into_any();
-    }
-
     let selected = RwSignal::new(None::<String>);
     let search = RwSignal::new(String::new());
     // Lazy-load: only render this many rows, growing on demand.
     const PAGE: usize = 15;
     let visible_count = RwSignal::new(PAGE);
 
-    // Auto-select the first accessible case so the chat is populated on load.
-    if selected.get_untracked().is_none() {
-        if let Some(first) = state.visible_cases().first() {
-            selected.set(Some(first.id.clone()));
+    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+
+    require_login(state, move || {
+        // Auto-select the first accessible case so the chat is populated on load.
+        if selected.get_untracked().is_none() {
+            if let Some(first) = state.visible_cases().first() {
+                selected.set(Some(first.id.clone()));
+            }
         }
-    }
 
-    // Display title for a case: the case name with its owner appended, so the
-    // search can match on either. Mirrors the admin user search (case-insensitive
-    // substring across the relevant fields).
-    let title_for =
-        move |c: &crate::types::Case| format!("{} · {}", c.name, state.user_name(&c.owner_id));
+        // Display title for a case: the case name with its owner appended, so the
+        // search can match on either.
+        let title_for =
+            move |c: &crate::types::Case| format!("{} · {}", c.name, state.user_name(&c.owner_id));
 
-    // Cases matching the current search, in display order.
-    let filtered_cases = move || {
-        let q = search.get().trim().to_lowercase();
-        state
-            .visible_cases()
-            .into_iter()
-            .filter(|c| q.is_empty() || title_for(c).to_lowercase().contains(&q))
-            .collect::<Vec<_>>()
-    };
+        // Cases matching the current search, in display order.
+        let filtered_cases = move || {
+            let q = search.get().trim().to_lowercase();
+            state
+                .visible_cases()
+                .into_iter()
+                .filter(|c| q.is_empty() || title_for(c).to_lowercase().contains(&q))
+                .collect::<Vec<_>>()
+        };
 
-    let case_list = move || {
-        let all = filtered_cases();
-        let total = all.len();
-        if total == 0 {
-            let msg = if search.get().trim().is_empty() {
-                "You have no case chats yet."
-            } else {
-                "No cases match your search."
-            };
-            return view! { <p class="text-sm text-slate-400">{msg}</p> }.into_any();
-        }
-        let shown = visible_count.get().min(total);
-        let rows = all
-            .into_iter()
-            .take(shown)
-            .map(|c| {
-                let case_id = c.id.clone();
-                let is_selected = {
-                    let case_id = case_id.clone();
-                    move || selected.get().as_deref() == Some(case_id.as_str())
+        let case_list = move || {
+            let all = filtered_cases();
+            let total = all.len();
+            if total == 0 {
+                let msg = if search.get().trim().is_empty() {
+                    "You have no case chats yet."
+                } else {
+                    "No cases match your search."
                 };
-                let count = state.messages_for_case(&c.id).len();
-                let name = title_for(&c);
-                let select = {
-                    let case_id = case_id.clone();
-                    move |_| selected.set(Some(case_id.clone()))
-                };
+                return view! { <p class="text-sm text-slate-400">{msg}</p> }.into_any();
+            }
+            let shown = visible_count.get().min(total);
+            let rows = all
+                .into_iter()
+                .take(shown)
+                .map(|c| {
+                    let case_id = c.id.clone();
+                    let is_selected = {
+                        let case_id = case_id.clone();
+                        move || selected.get().as_deref() == Some(case_id.as_str())
+                    };
+                    let count = state.messages_for_case(&c.id).len();
+                    let name = title_for(&c);
+                    let select = {
+                        let case_id = case_id.clone();
+                        move |_| selected.set(Some(case_id.clone()))
+                    };
+                    view! {
+                        <button
+                            on:click=select
+                            class=move || {
+                                let base = "w-full rounded-xl border p-3 text-left transition-colors";
+                                if is_selected() {
+                                    format!("{base} border-primary-500/50 bg-slate-800")
+                                } else {
+                                    format!("{base} border-slate-800 bg-slate-900 hover:bg-slate-800")
+                                }
+                            }
+                        >
+                            <div class="flex items-center justify-between gap-2">
+                                <span class="text-sm font-medium text-slate-200">{name}</span>
+                                <span class="text-xs text-slate-500">{count} " msgs"</span>
+                            </div>
+                        </button>
+                    }
+                    .into_any()
+                })
+                .collect_view();
+
+            let load_more = if shown < total {
                 view! {
                     <button
-                        on:click=select
-                        class=move || {
-                            let base = "w-full rounded-xl border p-3 text-left transition-colors";
-                            if is_selected() {
-                                format!("{base} border-primary-500/50 bg-slate-800")
-                            } else {
-                                format!("{base} border-slate-800 bg-slate-900 hover:bg-slate-800")
-                            }
-                        }
+                        on:click=move |_| visible_count.update(|n| *n += PAGE)
+                        class="w-full rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800"
                     >
-                        <div class="flex items-center justify-between gap-2">
-                            <span class="text-sm font-medium text-slate-200">{name}</span>
-                            <span class="text-xs text-slate-500">{count} " msgs"</span>
-                        </div>
+                        "Load more (" {shown} " of " {total} ")"
                     </button>
                 }
                 .into_any()
-            })
-            .collect_view();
+            } else if total > PAGE {
+                view! {
+                    <p class="text-center text-xs text-slate-500">
+                        "Showing all " {total} " cases"
+                    </p>
+                }
+                .into_any()
+            } else {
+                ().into_any()
+            };
 
-        let load_more = if shown < total {
             view! {
-                <button
-                    on:click=move |_| visible_count.update(|n| *n += PAGE)
-                    class="w-full rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800"
-                >
-                    "Load more (" {shown} " of " {total} ")"
-                </button>
+                <div class="space-y-2">{rows}</div>
+                <div class="pt-1">{load_more}</div>
             }
             .into_any()
-        } else if total > PAGE {
-            view! {
-                <p class="text-center text-xs text-slate-500">
-                    "Showing all " {total} " cases"
-                </p>
+        };
+
+        let thread = move || {
+            match selected.get() {
+                None => view! {
+                    <div class="rounded-xl border border-dashed border-slate-700 p-8 text-center text-sm text-slate-500">
+                        "Select a case to open its chat."
+                    </div>
+                }
+                .into_any(),
+                Some(id) => match state.cases.get().into_iter().find(|c| c.id == id) {
+                    Some(c) => {
+                        let title = title_for(&c);
+                        view! { <CaseChat case_id=c.id case_name=title /> }.into_any()
+                    }
+                    None => {
+                        view! { <p class="text-sm text-slate-400">"Case not found."</p> }.into_any()
+                    }
+                },
             }
-            .into_any()
-        } else {
-            ().into_any()
         };
 
         view! {
-            <div class="space-y-2">{rows}</div>
-            <div class="pt-1">{load_more}</div>
+            <Layout title="Case Chat".to_string()>
+                <div class="grid gap-6 lg:grid-cols-[22rem_1fr]">
+                    <div class="space-y-2">
+                        <input
+                            class=input_class
+                            placeholder="Search cases…"
+                            prop:value=move || search.get()
+                            on:input=move |ev| {
+                                search.set(event_target_value(&ev));
+                                visible_count.set(PAGE);
+                            }
+                        />
+                        {case_list}
+                    </div>
+                    <div>{thread}</div>
+                </div>
+            </Layout>
         }
         .into_any()
-    };
-
-    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
-
-    let thread = move || {
-        match selected.get() {
-        None => view! {
-            <div class="rounded-xl border border-dashed border-slate-700 p-8 text-center text-sm text-slate-500">
-                "Select a case to open its chat."
-            </div>
-        }
-        .into_any(),
-        Some(id) => match state.cases.get().into_iter().find(|c| c.id == id) {
-            Some(c) => {
-                let title = title_for(&c);
-                view! { <CaseChat case_id=c.id case_name=title /> }.into_any()
-            }
-            None => view! { <p class="text-sm text-slate-400">"Case not found."</p> }.into_any(),
-        },
-    }
-    };
-
-    view! {
-        <Layout title="Case Chat".to_string()>
-            <div class="grid gap-6 lg:grid-cols-[22rem_1fr]">
-                <div class="space-y-2">
-                    <input
-                        class=input_class
-                        placeholder="Search cases…"
-                        prop:value=move || search.get()
-                        on:input=move |ev| {
-                            search.set(event_target_value(&ev));
-                            visible_count.set(PAGE);
-                        }
-                    />
-                    {case_list}
-                </div>
-                <div>{thread}</div>
-            </div>
-        </Layout>
-    }
-    .into_any()
+    })
 }
 
 /// The chat thread for a single case.
@@ -181,17 +181,32 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
         .map(|c| state.case_can(&c, CaseCapability::SendMessages))
         .unwrap_or(false);
 
+    // Load this case's chat history from the server (browser-only; the SSR branch
+    // returns an error which we ignore).
+    {
+        let case_id = case_id.clone();
+        spawn_local(async move {
+            let _ = state.load_messages(&case_id).await;
+        });
+    }
+
     let body = RwSignal::new(String::new());
     let error = RwSignal::new(String::new());
 
     let send = {
         let case_id = case_id.clone();
-        move |_| match state.send_case_message(&case_id, &body.get()) {
-            Ok(()) => {
-                body.set(String::new());
-                error.set(String::new());
-            }
-            Err(e) => error.set(e),
+        move |_| {
+            let case_id = case_id.clone();
+            let body_val = body.get_untracked();
+            spawn_local(async move {
+                match state.send_case_message(&case_id, &body_val).await {
+                    Ok(()) => {
+                        body.set(String::new());
+                        error.set(String::new());
+                    }
+                    Err(e) => error.set(e),
+                }
+            });
         }
     };
 

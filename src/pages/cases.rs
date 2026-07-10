@@ -1,7 +1,9 @@
 use leptos::prelude::*;
-use leptos_router::components::{Redirect, A};
+use leptos::task::spawn_local;
+use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 
+use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::state::AppState;
 use crate::types::{Case, CaseCapability, CaseStatus};
@@ -54,13 +56,9 @@ fn access_label(caps: &[CaseCapability]) -> Option<(&'static str, &'static str)>
 #[component]
 pub fn CaseHomePage() -> impl IntoView {
     let state = expect_context::<AppState>();
-
-    if state.current_user.get_untracked().is_none() {
-        return view! { <Redirect path="/login" /> }.into_any();
-    }
-
     let selected = RwSignal::new(None::<String>);
 
+    require_login(state, move || {
     // Resolve a user id to a display name.
     let owner_name = move |owner_id: &str| -> String {
         state
@@ -167,16 +165,13 @@ pub fn CaseHomePage() -> impl IntoView {
         </Layout>
     }
     .into_any()
+    })
 }
 
 /// New Case: a dedicated form to open a case with its key details.
 #[component]
 pub fn NewCasePage() -> impl IntoView {
     let state = expect_context::<AppState>();
-
-    if state.current_user.get_untracked().is_none() {
-        return view! { <Redirect path="/login" /> }.into_any();
-    }
 
     let navigate = use_navigate();
 
@@ -189,31 +184,39 @@ pub fn NewCasePage() -> impl IntoView {
     let first_note = RwSignal::new(String::new());
     let error = RwSignal::new(String::new());
 
+    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+    let label_class = "block text-xs font-medium text-slate-400";
+
+    require_login(state, move || {
     let submit = {
         let navigate = navigate.clone();
         move |_| {
-            let status = CaseStatus::from_slug(&status.get()).unwrap_or(CaseStatus::Open);
+            let navigate = navigate.clone();
+            let status = CaseStatus::from_slug(&status.get_untracked()).unwrap_or(CaseStatus::Open);
             let properties = vec![
-                ("Attorney".to_string(), attorney.get()),
-                ("Opposing attorney".to_string(), opposing.get()),
-                ("Court".to_string(), court.get()),
-                ("Docket number".to_string(), docket.get()),
+                ("Attorney".to_string(), attorney.get_untracked()),
+                ("Opposing attorney".to_string(), opposing.get_untracked()),
+                ("Court".to_string(), court.get_untracked()),
+                ("Docket number".to_string(), docket.get_untracked()),
             ];
-            let note = first_note.get();
+            let note = first_note.get_untracked();
             let note = if note.trim().is_empty() {
                 None
             } else {
                 Some(note)
             };
-            match state.add_case_full(&name.get(), status, properties, note) {
-                Ok(_) => navigate("/cases", Default::default()),
-                Err(e) => error.set(e),
-            }
+            let name_val = name.get_untracked();
+            spawn_local(async move {
+                match state
+                    .add_case_full(&name_val, status, properties, note)
+                    .await
+                {
+                    Ok(_) => navigate("/cases", Default::default()),
+                    Err(e) => error.set(e),
+                }
+            });
         }
     };
-
-    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
-    let label_class = "block text-xs font-medium text-slate-400";
 
     view! {
         <Layout title="New case".to_string()>
@@ -316,6 +319,7 @@ pub fn NewCasePage() -> impl IntoView {
         </Layout>
     }
     .into_any()
+    })
 }
 
 /// The management panel for a single case.
@@ -394,25 +398,36 @@ fn CaseDetail(case: Case) -> impl IntoView {
 
     let save_edit = move |_| {
         let case_id = case_sv.get_value();
-        if let Err(e) = state.set_case_name(&case_id, &edit_name.get()) {
-            edit_error.set(e);
-            return;
-        }
-        if let Some(s) = CaseStatus::from_slug(&edit_status.get()) {
-            state.set_case_status(&case_id, s);
-        }
-        if let Err(e) = state.set_case_owner(&case_id, &edit_owner.get()) {
-            edit_error.set(e);
-            return;
-        }
+        let name = edit_name.get_untracked();
+        let status_slug = edit_status.get_untracked();
+        let owner = edit_owner.get_untracked();
         let props = edit_props
-            .get()
+            .get_untracked()
             .into_iter()
-            .map(|r| (r.key.get(), r.value.get()))
+            .map(|r| (r.key.get_untracked(), r.value.get_untracked()))
             .collect::<Vec<_>>();
-        state.replace_case_properties(&case_id, props);
-        edit_error.set(String::new());
-        editing.set(false);
+        spawn_local(async move {
+            if let Err(e) = state.set_case_name(&case_id, &name).await {
+                edit_error.set(e);
+                return;
+            }
+            if let Some(s) = CaseStatus::from_slug(&status_slug) {
+                if let Err(e) = state.set_case_status(&case_id, s).await {
+                    edit_error.set(e);
+                    return;
+                }
+            }
+            if let Err(e) = state.set_case_owner(&case_id, &owner).await {
+                edit_error.set(e);
+                return;
+            }
+            if let Err(e) = state.replace_case_properties(&case_id, props).await {
+                edit_error.set(e);
+                return;
+            }
+            edit_error.set(String::new());
+            editing.set(false);
+        });
     };
 
     // --- note form ---
@@ -420,9 +435,13 @@ fn CaseDetail(case: Case) -> impl IntoView {
     let add_note = {
         let case_id = case_id.clone();
         move |_| {
-            if state.add_case_note(&case_id, &note_body.get()).is_ok() {
-                note_body.set(String::new());
-            }
+            let case_id = case_id.clone();
+            let body = note_body.get_untracked();
+            spawn_local(async move {
+                if state.add_case_note(&case_id, &body).await.is_ok() {
+                    note_body.set(String::new());
+                }
+            });
         }
     };
 
@@ -432,13 +451,19 @@ fn CaseDetail(case: Case) -> impl IntoView {
     let add_evidence = {
         let case_id = case_id.clone();
         move |_| {
-            if state
-                .add_case_evidence(&case_id, &evi_name.get(), &evi_desc.get())
-                .is_ok()
-            {
-                evi_name.set(String::new());
-                evi_desc.set(String::new());
-            }
+            let case_id = case_id.clone();
+            let name = evi_name.get_untracked();
+            let desc = evi_desc.get_untracked();
+            spawn_local(async move {
+                if state
+                    .add_case_evidence(&case_id, &name, &desc)
+                    .await
+                    .is_ok()
+                {
+                    evi_name.set(String::new());
+                    evi_desc.set(String::new());
+                }
+            });
         }
     };
 
@@ -480,7 +505,15 @@ fn CaseDetail(case: Case) -> impl IntoView {
                     let delete = {
                         let case_id = case_id.clone();
                         let evidence_id = e.id.clone();
-                        move |_| state.delete_case_evidence(&case_id, &evidence_id)
+                        move |_| {
+                            let case_id = case_id.clone();
+                            let evidence_id = evidence_id.clone();
+                            spawn_local(async move {
+                                let _ = state
+                                    .delete_case_evidence(&case_id, &evidence_id)
+                                    .await;
+                            });
+                        }
                     };
                     let delete_btn = if can_delete_evidence {
                         view! {

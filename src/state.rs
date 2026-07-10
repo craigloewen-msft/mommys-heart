@@ -1,19 +1,31 @@
-//! Client-side application state for the V1 app: the signed-in user plus the
-//! local in-memory stores (users, cases, grants, messages). All data lives in
-//! reactive signals so screens can edit it live. Nothing is persisted — this is
-//! a mock until a real backend is wired in.
+//! Client-side application state for the CRM. Holds the signed-in user plus
+//! reactive caches (users, cases, grants, messages) that are **loaded from and
+//! written through to the server** via the Leptos server functions in
+//! [`crate::server_fns`]. The server (backed by PostgreSQL) is the source of
+//! truth; these signals are a live cache so the UI stays reactive. After every
+//! mutation we reconcile the affected cache from the server so ids and derived
+//! data stay correct.
 
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 
-use crate::mockdata;
-use crate::types::{
-    AccountRole, Case, CaseAssignment, CaseCapability, CaseNote, CaseProperty, CaseStatus,
-    ChangeLogEntry, Evidence, Grant, Message, User,
-};
+use crate::server_fns::{auth, cases, grants, session, users};
+use crate::types::{AccountRole, Case, CaseCapability, CaseStatus, Grant, Message, User};
+
+/// Flatten a [`ServerFnError`] into the plain, user-facing message. Domain
+/// errors are raised as `ServerFnError::ServerError(msg)`; we surface `msg`
+/// directly (dropping the library's "error running server function:" prefix) so
+/// the UI shows exactly the message we wrote.
+fn err_msg(e: ServerFnError) -> String {
+    match e {
+        ServerFnError::ServerError(m) => m,
+        other => other.to_string(),
+    }
+}
 
 /// Current local date-time as `YYYY-MM-DD HH:MM`, read from the browser clock.
-/// On the server build (where user mutations never run) it returns a fixed
-/// placeholder so the same code compiles for both targets.
+/// Retained for any client-side display needs; persisted timestamps are now
+/// produced on the server.
 pub fn now_stamp() -> String {
     #[cfg(feature = "hydrate")]
     {
@@ -38,16 +50,27 @@ pub fn today() -> String {
     now_stamp().chars().take(10).collect()
 }
 
-/// Shared, reactive application state. `RwSignal` is `Copy`, so the whole
-/// struct is cheap to copy and can be pulled from context anywhere.
+/// Where the app is in resolving the visitor's session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthPhase {
+    /// Still checking with the server (initial page load).
+    Loading,
+    /// No valid session — the visitor must sign in.
+    SignedOut,
+    /// A user is signed in and the caches are populated.
+    SignedIn,
+}
+
+/// Shared, reactive application state. `RwSignal` is `Copy`, so the whole struct
+/// is cheap to copy and can be pulled from context anywhere.
 #[derive(Clone, Copy)]
 pub struct AppState {
+    pub auth: RwSignal<AuthPhase>,
     pub current_user: RwSignal<Option<User>>,
     pub users: RwSignal<Vec<User>>,
     pub cases: RwSignal<Vec<Case>>,
     pub grants: RwSignal<Vec<Grant>>,
     pub messages: RwSignal<Vec<Message>>,
-    seq: RwSignal<u32>,
 }
 
 impl Default for AppState {
@@ -59,40 +82,47 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         Self {
+            auth: RwSignal::new(AuthPhase::Loading),
             current_user: RwSignal::new(None),
-            users: RwSignal::new(mockdata::users()),
-            cases: RwSignal::new(mockdata::cases()),
-            grants: RwSignal::new(mockdata::grants()),
-            messages: RwSignal::new(mockdata::messages()),
-            seq: RwSignal::new(5000),
+            users: RwSignal::new(Vec::new()),
+            cases: RwSignal::new(Vec::new()),
+            grants: RwSignal::new(Vec::new()),
+            messages: RwSignal::new(Vec::new()),
         }
     }
 
-    /// Monotonic id source for newly created records.
-    fn next_seq(&self) -> u32 {
-        let next = self.seq.get_untracked() + 1;
-        self.seq.set(next);
-        next
+    /// Kick off a session check + data load in the browser. On the server there
+    /// is no session cookie context, so we stay in `Loading` (the client re-runs
+    /// this after hydration).
+    pub fn start_bootstrap(self) {
+        #[cfg(feature = "hydrate")]
+        spawn_local(async move {
+            match session::bootstrap().await {
+                Ok(data) => self.apply_bootstrap(data),
+                Err(_) => self.auth.set(AuthPhase::SignedOut),
+            }
+        });
     }
 
-    /// Display name of the signed-in user (or "system").
-    fn actor_name(&self) -> String {
-        self.current_user
-            .get_untracked()
-            .map(|u| u.full_name())
-            .unwrap_or_else(|| "system".into())
-    }
-
-    fn change_entry(&self, field: &str, old_value: &str, new_value: &str) -> ChangeLogEntry {
-        let seq = self.next_seq();
-        ChangeLogEntry {
-            id: format!("cl-{seq}"),
-            actor: self.actor_name(),
-            field: field.into(),
-            old_value: old_value.into(),
-            new_value: new_value.into(),
-            at: now_stamp(),
+    fn apply_bootstrap(self, data: crate::types::BootstrapResponse) {
+        self.users.set(data.users);
+        self.cases.set(data.cases);
+        self.grants.set(data.grants);
+        match data.current_user {
+            Some(user) => {
+                self.current_user.set(Some(user));
+                self.auth.set(AuthPhase::SignedIn);
+            }
+            None => self.auth.set(AuthPhase::SignedOut),
         }
+    }
+
+    /// Reload users/cases/grants from the server (used to reconcile caches after
+    /// a mutation).
+    async fn refresh(self) -> Result<(), String> {
+        let data = session::bootstrap().await.map_err(err_msg)?;
+        self.apply_bootstrap(data);
+        Ok(())
     }
 
     // --- auth ---------------------------------------------------------------
@@ -109,81 +139,54 @@ impl AppState {
         self.role().map(|r| r.is_admin()).unwrap_or(false)
     }
 
-    pub fn login(&self, email: &str, password: &str) -> Result<User, String> {
-        let email = email.trim().to_lowercase();
-        let found = self
-            .users
-            .get_untracked()
-            .into_iter()
-            .find(|u| u.email.to_lowercase() == email && u.password == password);
-        match found {
-            Some(user) => {
-                self.current_user.set(Some(user.clone()));
-                Ok(user)
-            }
-            None => Err("Invalid email or password.".into()),
-        }
+    pub async fn login(self, email: &str, password: &str) -> Result<(), String> {
+        let user = auth::login(email.trim().to_string(), password.to_string())
+            .await
+            .map_err(err_msg)?;
+        self.current_user.set(Some(user));
+        self.auth.set(AuthPhase::SignedIn);
+        // Populate the caches for the freshly signed-in user.
+        self.refresh().await
     }
 
-    pub fn register(
-        &self,
+    pub async fn register(
+        self,
         first_name: &str,
         last_name: &str,
         email: &str,
         password: &str,
-    ) -> Result<User, String> {
-        let first_name = first_name.trim().to_string();
-        let last_name = last_name.trim().to_string();
-        let email = email.trim().to_string();
-        if first_name.is_empty() || email.is_empty() || password.is_empty() {
-            return Err("Please fill in first name, email, and password.".into());
-        }
-        let exists = self
-            .users
-            .get_untracked()
-            .iter()
-            .any(|u| u.email.to_lowercase() == email.to_lowercase());
-        if exists {
-            return Err("An account with that email already exists.".into());
-        }
-
-        // Self-service sign-ups become clients by default; admins promote later.
-        let seq = self.next_seq();
-        let user = User {
-            id: format!("u-{seq}"),
-            first_name,
-            last_name,
-            email,
-            phone: String::new(),
-            home_address: String::new(),
-            password: password.to_string(),
-            role: AccountRole::Client,
-            assigned_cases: Vec::new(),
-            audit_log: Vec::new(),
-        };
-        self.users.update(|u| u.push(user.clone()));
-        self.current_user.set(Some(user.clone()));
-        Ok(user)
+    ) -> Result<(), String> {
+        let user = auth::register(
+            first_name.trim().to_string(),
+            last_name.trim().to_string(),
+            email.trim().to_string(),
+            password.to_string(),
+        )
+        .await
+        .map_err(err_msg)?;
+        self.current_user.set(Some(user));
+        self.auth.set(AuthPhase::SignedIn);
+        self.refresh().await
     }
 
-    pub fn logout(&self) {
+    pub fn logout(self) {
         self.current_user.set(None);
+        self.users.set(Vec::new());
+        self.cases.set(Vec::new());
+        self.grants.set(Vec::new());
+        self.messages.set(Vec::new());
+        self.auth.set(AuthPhase::SignedOut);
+        spawn_local(async move {
+            let _ = auth::logout().await;
+        });
     }
 
-    // --- cases --------------------------------------------------------------
+    // --- cases (reads are synchronous against the cache) --------------------
 
-    /// Cases the signed-in user can see: admins see all; everyone else sees
-    /// only the cases they are assigned to (or own).
+    /// Cases the signed-in user can see. The server already filters to the
+    /// caller's visible set, so this simply returns the cache.
     pub fn visible_cases(&self) -> Vec<Case> {
-        let all = self.cases.get();
-        match self.current_user.get() {
-            Some(u) if u.role.is_admin() => all,
-            Some(u) => all
-                .into_iter()
-                .filter(|c| c.owner_id == u.id || u.is_assigned_to(&c.id))
-                .collect(),
-            None => Vec::new(),
-        }
+        self.cases.get()
     }
 
     /// The signed-in user's capabilities on a case. Admins and the case owner
@@ -197,127 +200,8 @@ impl AppState {
         }
     }
 
-    /// Whether the signed-in user holds a specific capability on a case.
     pub fn case_can(&self, case: &Case, cap: CaseCapability) -> bool {
         self.capabilities_on(case).contains(&cap)
-    }
-
-    /// Create a new case owned by the signed-in user, with an initial status,
-    /// key properties, and an optional first note. Returns the new case id.
-    pub fn add_case_full(
-        &self,
-        name: &str,
-        status: CaseStatus,
-        properties: Vec<(String, String)>,
-        first_note: Option<String>,
-    ) -> Result<String, String> {
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            return Err("Case name is required.".into());
-        }
-        let owner = self
-            .current_user
-            .get_untracked()
-            .ok_or("You must be signed in.")?;
-        let seq = self.next_seq();
-        let id = format!("c-{seq}");
-
-        let properties: Vec<CaseProperty> = properties
-            .into_iter()
-            .filter_map(|(k, v)| {
-                let key = k.trim().to_string();
-                let value = v.trim().to_string();
-                if key.is_empty() || value.is_empty() {
-                    None
-                } else {
-                    Some(CaseProperty { key, value })
-                }
-            })
-            .collect();
-
-        let mut notes = Vec::new();
-        if let Some(body) = first_note {
-            let body = body.trim().to_string();
-            if !body.is_empty() {
-                let nseq = self.next_seq();
-                notes.push(CaseNote {
-                    id: format!("n-{nseq}"),
-                    author: owner.full_name(),
-                    body,
-                    created_at: now_stamp(),
-                });
-            }
-        }
-
-        let case = Case {
-            id: id.clone(),
-            name,
-            status,
-            owner_id: owner.id.clone(),
-            notes,
-            evidence: Vec::new(),
-            properties,
-            audit_log: Vec::new(),
-        };
-        self.cases.update(|c| c.push(case));
-        // Give the owner an explicit full-control assignment too.
-        self.assign_user_to_case(&owner.id, &id, CaseCapability::ALL.to_vec());
-        Ok(id)
-    }
-
-    fn with_case<F: FnOnce(&mut Case)>(&self, case_id: &str, f: F) {
-        self.cases.update(|cases| {
-            if let Some(case) = cases.iter_mut().find(|c| c.id == case_id) {
-                f(case);
-            }
-        });
-    }
-
-    pub fn set_case_status(&self, case_id: &str, status: CaseStatus) {
-        let entry = {
-            let case = self
-                .cases
-                .get_untracked()
-                .into_iter()
-                .find(|c| c.id == case_id);
-            match case {
-                Some(c) if c.status != status => {
-                    Some(self.change_entry("status", c.status.slug(), status.slug()))
-                }
-                _ => None,
-            }
-        };
-        self.with_case(case_id, |c| {
-            c.status = status;
-            if let Some(e) = entry {
-                c.audit_log.insert(0, e);
-            }
-        });
-    }
-
-    pub fn set_case_name(&self, case_id: &str, name: &str) -> Result<(), String> {
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            return Err("Case name is required.".into());
-        }
-        let entry = {
-            let case = self
-                .cases
-                .get_untracked()
-                .into_iter()
-                .find(|c| c.id == case_id);
-            match case {
-                Some(c) if c.name != name => Some(self.change_entry("name", &c.name, &name)),
-                _ => None,
-            }
-        };
-        self.with_case(case_id, |c| {
-            c.name = name;
-            if let Some(e) = entry {
-                c.audit_log.insert(0, e);
-            }
-        });
-        Ok(())
     }
 
     /// Display name for a user id (falls back to the id if unknown).
@@ -330,153 +214,110 @@ impl AppState {
             .unwrap_or_else(|| user_id.to_string())
     }
 
-    /// Change who filed (owns) a case. `owner_id` must map to an existing user.
-    pub fn set_case_owner(&self, case_id: &str, owner_id: &str) -> Result<(), String> {
-        if !self.users.get_untracked().iter().any(|u| u.id == owner_id) {
-            return Err("Unknown owner.".into());
-        }
-        let entry = {
-            let case = self
-                .cases
-                .get_untracked()
-                .into_iter()
-                .find(|c| c.id == case_id);
-            match case {
-                Some(c) if c.owner_id != owner_id => Some(self.change_entry(
-                    "owner",
-                    &self.user_name(&c.owner_id),
-                    &self.user_name(owner_id),
-                )),
-                _ => None,
-            }
-        };
-        self.with_case(case_id, |c| {
-            c.owner_id = owner_id.to_string();
-            if let Some(e) = entry {
-                c.audit_log.insert(0, e);
-            }
-        });
-        Ok(())
+    // --- case mutations (write through to the server) -----------------------
+
+    pub async fn add_case_full(
+        self,
+        name: &str,
+        status: CaseStatus,
+        properties: Vec<(String, String)>,
+        first_note: Option<String>,
+    ) -> Result<String, String> {
+        let id = cases::create_case(name.trim().to_string(), status, properties, first_note)
+            .await
+            .map_err(err_msg)?;
+        self.refresh().await?;
+        Ok(id)
     }
 
-    /// Replace a case's whole property set (empty keys are dropped). Records a
-    /// single audit entry when the set actually changes.
-    pub fn replace_case_properties(&self, case_id: &str, props: Vec<(String, String)>) {
-        let cleaned: Vec<CaseProperty> = props
-            .into_iter()
-            .filter_map(|(k, v)| {
-                let key = k.trim().to_string();
-                if key.is_empty() {
-                    None
-                } else {
-                    Some(CaseProperty {
-                        key,
-                        value: v.trim().to_string(),
-                    })
-                }
-            })
-            .collect();
-        let changed = self
-            .cases
-            .get_untracked()
-            .into_iter()
-            .find(|c| c.id == case_id)
-            .map(|c| c.properties != cleaned)
-            .unwrap_or(false);
-        let entry = if changed {
-            Some(self.change_entry("properties", "", "updated"))
-        } else {
-            None
-        };
-        self.with_case(case_id, |c| {
-            c.properties = cleaned;
-            if let Some(e) = entry {
-                c.audit_log.insert(0, e);
-            }
-        });
+    pub async fn set_case_status(self, case_id: &str, status: CaseStatus) -> Result<(), String> {
+        cases::set_case_status(case_id.to_string(), status)
+            .await
+            .map_err(err_msg)?;
+        self.refresh().await
     }
 
-    pub fn add_case_note(&self, case_id: &str, body: &str) -> Result<(), String> {
-        let body = body.trim().to_string();
-        if body.is_empty() {
-            return Err("Note cannot be empty.".into());
-        }
-        let author = self.actor_name();
-        let seq = self.next_seq();
-        let note = CaseNote {
-            id: format!("n-{seq}"),
-            author,
-            body,
-            created_at: now_stamp(),
-        };
-        self.with_case(case_id, |c| c.notes.push(note));
-        Ok(())
+    pub async fn set_case_name(self, case_id: &str, name: &str) -> Result<(), String> {
+        cases::set_case_name(case_id.to_string(), name.trim().to_string())
+            .await
+            .map_err(err_msg)?;
+        self.refresh().await
     }
 
-    pub fn add_case_evidence(
-        &self,
+    pub async fn set_case_owner(self, case_id: &str, owner_id: &str) -> Result<(), String> {
+        cases::set_case_owner(case_id.to_string(), owner_id.to_string())
+            .await
+            .map_err(err_msg)?;
+        self.refresh().await
+    }
+
+    pub async fn replace_case_properties(
+        self,
+        case_id: &str,
+        props: Vec<(String, String)>,
+    ) -> Result<(), String> {
+        cases::set_case_properties(case_id.to_string(), props)
+            .await
+            .map_err(err_msg)?;
+        self.refresh().await
+    }
+
+    pub async fn add_case_note(self, case_id: &str, body: &str) -> Result<(), String> {
+        cases::add_case_note(case_id.to_string(), body.trim().to_string())
+            .await
+            .map_err(err_msg)?;
+        self.refresh().await
+    }
+
+    pub async fn add_case_evidence(
+        self,
         case_id: &str,
         name: &str,
         description: &str,
     ) -> Result<(), String> {
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            return Err("Evidence name is required.".into());
-        }
-        let uploaded_by = self.actor_name();
-        let seq = self.next_seq();
-        let item = Evidence {
-            id: format!("e-{seq}"),
-            name,
-            case_id: case_id.to_string(),
-            uploaded_by,
-            uploaded_at: now_stamp(),
-            description: description.trim().to_string(),
-        };
-        self.with_case(case_id, |c| c.evidence.push(item));
-        Ok(())
+        cases::add_case_evidence(
+            case_id.to_string(),
+            name.trim().to_string(),
+            description.trim().to_string(),
+        )
+        .await
+        .map_err(err_msg)?;
+        self.refresh().await
     }
 
-    pub fn delete_case_evidence(&self, case_id: &str, evidence_id: &str) {
-        self.with_case(case_id, |c| c.evidence.retain(|e| e.id != evidence_id));
+    pub async fn delete_case_evidence(self, case_id: &str, evidence_id: &str) -> Result<(), String> {
+        cases::delete_case_evidence(case_id.to_string(), evidence_id.to_string())
+            .await
+            .map_err(err_msg)?;
+        self.refresh().await
     }
 
     // --- grants -------------------------------------------------------------
 
-    pub fn add_grant(&self, name: &str) -> Result<(), String> {
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            return Err("Grant name is required.".into());
-        }
-        let seq = self.next_seq();
-        let grant = Grant {
-            id: format!("g-{seq}"),
-            name,
-        };
-        self.grants.update(|g| g.push(grant));
-        Ok(())
+    pub async fn add_grant(self, name: &str) -> Result<(), String> {
+        grants::add_grant(name.trim().to_string())
+            .await
+            .map_err(err_msg)?;
+        self.refresh().await
     }
 
-    pub fn rename_grant(&self, grant_id: &str, name: &str) -> Result<(), String> {
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            return Err("Grant name is required.".into());
-        }
-        self.grants.update(|grants| {
-            if let Some(g) = grants.iter_mut().find(|g| g.id == grant_id) {
-                g.name = name;
-            }
-        });
-        Ok(())
+    pub async fn rename_grant(self, grant_id: &str, name: &str) -> Result<(), String> {
+        grants::rename_grant(grant_id.to_string(), name.trim().to_string())
+            .await
+            .map_err(err_msg)?;
+        self.refresh().await
     }
 
-    pub fn delete_grant(&self, grant_id: &str) {
-        self.grants.update(|g| g.retain(|g| g.id != grant_id));
+    pub async fn delete_grant(self, grant_id: &str) -> Result<(), String> {
+        grants::delete_grant(grant_id.to_string())
+            .await
+            .map_err(err_msg)?;
+        self.refresh().await
     }
 
     // --- messages (per-case chat) ------------------------------------------
 
-    /// All chat messages for a given case, in send order.
+    /// All chat messages for a given case currently in the cache, in send order.
     pub fn messages_for_case(&self, case_id: &str) -> Vec<Message> {
         self.messages
             .get()
@@ -485,137 +326,74 @@ impl AppState {
             .collect()
     }
 
+    /// Fetch a case's chat from the server into the cache.
+    pub async fn load_messages(self, case_id: &str) -> Result<(), String> {
+        let msgs = cases::list_messages(case_id.to_string())
+            .await
+            .map_err(err_msg)?;
+        // Replace this case's messages, keep other cases' cached messages.
+        let case_id_owned = case_id.to_string();
+        self.messages.update(|all| {
+            all.retain(|m| m.case_id != case_id_owned);
+            all.extend(msgs);
+        });
+        Ok(())
+    }
+
     /// Post a message to a case's chat as the signed-in user.
-    pub fn send_case_message(&self, case_id: &str, body: &str) -> Result<(), String> {
-        let body = body.trim().to_string();
-        if body.is_empty() {
-            return Err("Message cannot be empty.".into());
-        }
-        let user = self
-            .current_user
-            .get_untracked()
-            .ok_or("You must be signed in.")?;
-        let seq = self.next_seq();
-        let message = Message {
-            id: format!("m-{seq}"),
-            case_id: case_id.to_string(),
-            author_id: user.id.clone(),
-            author: user.full_name(),
-            body,
-            sent_at: now_stamp(),
-        };
-        self.messages.update(|m| m.push(message));
+    pub async fn send_case_message(self, case_id: &str, body: &str) -> Result<(), String> {
+        let msg = cases::send_message(case_id.to_string(), body.trim().to_string())
+            .await
+            .map_err(err_msg)?;
+        self.messages.update(|all| all.push(msg));
         Ok(())
     }
 
     // --- users / admin ------------------------------------------------------
 
-    /// Change a user's global account role, recording the change on their log.
-    pub fn set_user_role(&self, user_id: &str, role: AccountRole) {
-        let entry = {
-            let user = self
-                .users
-                .get_untracked()
-                .into_iter()
-                .find(|u| u.id == user_id);
-            match user {
-                Some(u) if u.role != role => {
-                    Some(self.change_entry("role", u.role.slug(), role.slug()))
-                }
-                _ => None,
-            }
-        };
-        self.users.update(|users| {
-            if let Some(u) = users.iter_mut().find(|u| u.id == user_id) {
-                u.role = role;
-                if let Some(e) = entry {
-                    u.audit_log.insert(0, e);
-                }
-            }
-        });
-        self.sync_current_user(user_id);
+    pub async fn set_user_role(self, user_id: &str, role: AccountRole) -> Result<(), String> {
+        users::set_user_role(user_id.to_string(), role)
+            .await
+            .map_err(err_msg)?;
+        self.refresh_keeping_session(user_id).await
     }
 
-    /// Grant (or replace) a user's capability set on a case.
-    pub fn assign_user_to_case(
-        &self,
+    pub async fn assign_user_to_case(
+        self,
         user_id: &str,
         case_id: &str,
         capabilities: Vec<CaseCapability>,
-    ) {
-        let summary = capabilities
-            .iter()
-            .map(|c| c.slug())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let entry = self.change_entry(&format!("case:{case_id}"), "", &summary);
-        self.users.update(|users| {
-            if let Some(u) = users.iter_mut().find(|u| u.id == user_id) {
-                if let Some(a) = u.assigned_cases.iter_mut().find(|a| a.case_id == case_id) {
-                    a.capabilities = capabilities;
-                } else {
-                    u.assigned_cases.push(CaseAssignment {
-                        case_id: case_id.to_string(),
-                        capabilities,
-                    });
-                }
-                u.audit_log.insert(0, entry);
-            }
-        });
-        self.sync_current_user(user_id);
+    ) -> Result<(), String> {
+        users::assign_case(user_id.to_string(), case_id.to_string(), capabilities)
+            .await
+            .map_err(err_msg)?;
+        self.refresh_keeping_session(user_id).await
     }
 
-    /// Toggle a single capability for a user on a case (adds an assignment if
-    /// none exists yet).
-    pub fn toggle_case_capability(
-        &self,
+    pub async fn toggle_case_capability(
+        self,
         user_id: &str,
         case_id: &str,
         cap: CaseCapability,
         enabled: bool,
-    ) {
-        let (old, new) = if enabled {
-            ("", cap.slug())
-        } else {
-            (cap.slug(), "")
-        };
-        let entry = self.change_entry(&format!("case:{case_id}:{}", cap.slug()), old, new);
-        self.users.update(|users| {
-            if let Some(u) = users.iter_mut().find(|u| u.id == user_id) {
-                if let Some(a) = u.assigned_cases.iter_mut().find(|a| a.case_id == case_id) {
-                    if enabled {
-                        if !a.capabilities.contains(&cap) {
-                            a.capabilities.push(cap);
-                        }
-                    } else {
-                        a.capabilities.retain(|c| *c != cap);
-                    }
-                } else if enabled {
-                    u.assigned_cases.push(CaseAssignment {
-                        case_id: case_id.to_string(),
-                        capabilities: vec![cap],
-                    });
-                }
-                u.audit_log.insert(0, entry);
-            }
-        });
-        self.sync_current_user(user_id);
+    ) -> Result<(), String> {
+        users::toggle_capability(user_id.to_string(), case_id.to_string(), cap, enabled)
+            .await
+            .map_err(err_msg)?;
+        self.refresh_keeping_session(user_id).await
     }
 
-    /// Remove a user's assignment to a case.
-    pub fn unassign_user_from_case(&self, user_id: &str, case_id: &str) {
-        let entry = self.change_entry(&format!("case:{case_id}"), "assigned", "removed");
-        self.users.update(|users| {
-            if let Some(u) = users.iter_mut().find(|u| u.id == user_id) {
-                u.assigned_cases.retain(|a| a.case_id != case_id);
-                u.audit_log.insert(0, entry);
-            }
-        });
-        self.sync_current_user(user_id);
+    pub async fn unassign_user_from_case(self, user_id: &str, case_id: &str) -> Result<(), String> {
+        users::unassign_case(user_id.to_string(), case_id.to_string())
+            .await
+            .map_err(err_msg)?;
+        self.refresh_keeping_session(user_id).await
     }
 
-    /// Keep `current_user` in sync when the signed-in user's record changes.
-    fn sync_current_user(&self, changed_id: &str) {
+    /// Refresh caches, and if the changed user is the signed-in user, keep
+    /// `current_user` in sync from the reloaded list.
+    async fn refresh_keeping_session(self, changed_id: &str) -> Result<(), String> {
+        self.refresh().await?;
         if let Some(cu) = self.current_user.get_untracked() {
             if cu.id == changed_id {
                 if let Some(updated) = self
@@ -628,5 +406,6 @@ impl AppState {
                 }
             }
         }
+        Ok(())
     }
 }

@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 
 use crate::components::guard::require_admin;
 use crate::components::layout::Layout;
@@ -64,13 +65,9 @@ fn shift_days(date: &str, delta: i64) -> String {
 #[component]
 pub fn AdminDashboardPage() -> impl IntoView {
     let state = expect_context::<AppState>();
-
-    if let Some(redirect) = require_admin(&state) {
-        return redirect;
-    }
-
     let query = RwSignal::new(String::new());
 
+    require_admin(state, move || {
     let users = move || {
         let q = query.get().trim().to_lowercase();
         let matches: Vec<_> = state
@@ -118,6 +115,7 @@ pub fn AdminDashboardPage() -> impl IntoView {
         </Layout>
     }
     .into_any()
+    })
 }
 
 /// A management card for a single user.
@@ -136,7 +134,10 @@ fn UserCard(user: User) -> impl IntoView {
         let user_id = user_id.clone();
         move |ev| {
             if let Some(r) = AccountRole::from_slug(&event_target_value(&ev)) {
-                state.set_user_role(&user_id, r);
+                let user_id = user_id.clone();
+                spawn_local(async move {
+                    let _ = state.set_user_role(&user_id, r).await;
+                });
             }
         }
     };
@@ -147,13 +148,22 @@ fn UserCard(user: User) -> impl IntoView {
     let assign = {
         let user_id = user_id.clone();
         move |_| {
-            let case_id = new_case.get();
+            let case_id = new_case.get_untracked();
             if case_id.is_empty() {
                 return;
             }
-            let preset = CasePreset::from_slug(&new_preset.get()).unwrap_or(CasePreset::Viewer);
-            state.assign_user_to_case(&user_id, &case_id, preset.capabilities());
-            new_case.set(String::new());
+            let preset =
+                CasePreset::from_slug(&new_preset.get_untracked()).unwrap_or(CasePreset::Viewer);
+            let user_id = user_id.clone();
+            spawn_local(async move {
+                if state
+                    .assign_user_to_case(&user_id, &case_id, preset.capabilities())
+                    .await
+                    .is_ok()
+                {
+                    new_case.set(String::new());
+                }
+            });
         }
     };
 
@@ -188,7 +198,14 @@ fn UserCard(user: User) -> impl IntoView {
                     let remove = {
                         let user_id = user_id.clone();
                         let case_id = case_id.clone();
-                        move |_| state.unassign_user_from_case(&user_id, &case_id)
+                        move |_| {
+                            let user_id = user_id.clone();
+                            let case_id = case_id.clone();
+                            spawn_local(async move {
+                                let _ =
+                                    state.unassign_user_from_case(&user_id, &case_id).await;
+                            });
+                        }
                     };
                     let caps = a.capabilities.clone();
                     let checkboxes = CaseCapability::ALL
@@ -199,12 +216,16 @@ fn UserCard(user: User) -> impl IntoView {
                                 let user_id = user_id.clone();
                                 let case_id = case_id.clone();
                                 move |ev| {
-                                    state.toggle_case_capability(
-                                        &user_id,
-                                        &case_id,
-                                        cap,
-                                        event_target_checked(&ev),
-                                    );
+                                    let user_id = user_id.clone();
+                                    let case_id = case_id.clone();
+                                    let enabled = event_target_checked(&ev);
+                                    spawn_local(async move {
+                                        let _ = state
+                                            .toggle_case_capability(
+                                                &user_id, &case_id, cap, enabled,
+                                            )
+                                            .await;
+                                    });
                                 }
                             };
                             view! {

@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 
@@ -19,17 +20,24 @@ pub fn RegisterPage() -> impl IntoView {
 
     let submit = {
         let navigate = navigate.clone();
-        move || match state.register(
-            &first_name.get(),
-            &last_name.get(),
-            &email.get(),
-            &password.get(),
-        ) {
-            Ok(_) => {
-                error.set(String::new());
-                navigate("/cases", Default::default());
-            }
-            Err(e) => error.set(e),
+        move || {
+            let navigate = navigate.clone();
+            let first_name = first_name.get_untracked();
+            let last_name = last_name.get_untracked();
+            let email = email.get_untracked();
+            let password = password.get_untracked();
+            spawn_local(async move {
+                match state
+                    .register(&first_name, &last_name, &email, &password)
+                    .await
+                {
+                    Ok(_) => {
+                        error.set(String::new());
+                        navigate("/cases", Default::default());
+                    }
+                    Err(e) => error.set(e),
+                }
+            });
         }
     };
 

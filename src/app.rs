@@ -11,7 +11,7 @@ use crate::pages::{
     login::LoginPage,
     register::RegisterPage,
 };
-use crate::state::AppState;
+use crate::state::{AppState, AuthPhase};
 
 /// The HTML document shell rendered on the server around the hydrated app.
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -32,22 +32,25 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
     }
 }
 
-/// Sends the visitor to the right landing page based on their session.
+/// Sends the visitor to the right landing page based on their session. Reactive
+/// on the auth phase, which resolves asynchronously in the browser.
 #[component]
 fn HomeRedirect() -> impl IntoView {
     let state = expect_context::<AppState>();
-    let path = if state.current_user.get_untracked().is_some() {
-        "/cases"
-    } else {
-        "/login"
-    };
-    view! { <Redirect path=path /> }
+    move || match state.auth.get() {
+        AuthPhase::Loading => ().into_any(),
+        AuthPhase::SignedIn => view! { <Redirect path="/cases" /> }.into_any(),
+        AuthPhase::SignedOut => view! { <Redirect path="/login" /> }.into_any(),
+    }
 }
 
 #[component]
 pub fn App() -> impl IntoView {
     provide_meta_context();
-    provide_context(AppState::new());
+    let state = AppState::new();
+    provide_context(state);
+    // Resolve the visitor's session and load their data (browser-only).
+    state.start_bootstrap();
 
     view! {
         <Stylesheet id="leptos" href="/pkg/mommys-heart-crm.css" />

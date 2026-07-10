@@ -66,13 +66,13 @@ pub struct IngestStats {
 pub fn start_background_ingest() {
     tokio::spawn(async {
         match ingest().await {
-            Ok(stats) => leptos::logging::log!(
+            Ok(stats) => tracing::info!(
                 "RAG ingest: {} ({} files, {} chunks)",
                 stats.status,
                 stats.files_processed,
                 stats.chunks_created
             ),
-            Err(e) => leptos::logging::warn!("RAG ingest failed: {e}"),
+            Err(e) => tracing::warn!("RAG ingest failed: {e}"),
         }
     });
 }
