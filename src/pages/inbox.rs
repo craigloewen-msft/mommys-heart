@@ -352,9 +352,24 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
                         .into_any()
                 } else {
                     view! {
-                        <p class="text-center text-xs text-slate-500">
-                            "You have read-only access to this chat."
-                        </p>
+                        <div class="space-y-2">
+                            <div class="flex gap-2">
+                                <input
+                                    class=format!("{input_class} cursor-not-allowed opacity-50")
+                                    placeholder="You do not have permission to send messages"
+                                    disabled=true
+                                />
+                                <button
+                                    disabled=true
+                                    class="shrink-0 cursor-not-allowed rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white opacity-50"
+                                >
+                                    "Send"
+                                </button>
+                            </div>
+                            <p class="text-xs text-slate-500">
+                                "You have read-only access to this chat."
+                            </p>
+                        </div>
                     }
                         .into_any()
                 }}

@@ -189,12 +189,11 @@ impl AppState {
         self.cases.get()
     }
 
-    /// The signed-in user's capabilities on a case. The case owner implicitly
-    /// holds every capability; everyone else (including admins) holds exactly the
-    /// set granted by their assignment.
+    /// The signed-in user's capabilities on a case: exactly the set granted by
+    /// their assignment. No implicit grants for owners or admins — access is
+    /// governed solely by the stored permissions.
     pub fn capabilities_on(&self, case: &Case) -> Vec<CaseCapability> {
         match self.current_user.get() {
-            Some(u) if case.owner_id == u.id => CaseCapability::ALL.to_vec(),
             Some(u) => u.capabilities_for(&case.id),
             None => Vec::new(),
         }

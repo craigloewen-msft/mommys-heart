@@ -35,22 +35,20 @@ pub fn require_admin(user: &User) -> Result<(), ServerFnError> {
     }
 }
 
-/// The caller's capabilities on a case: the case owner implicitly holds every
-/// capability; everyone else (including admins) holds exactly their assignment.
-/// Errors if the case does not exist.
+/// The caller's capabilities on a case: exactly the set granted by their
+/// assignment (no implicit grants for owners or admins — access is governed
+/// solely by the stored permissions). Errors if the case does not exist.
 pub async fn capabilities_on(
     user: &User,
     case_id: &str,
 ) -> Result<Vec<CaseCapability>, ServerFnError> {
-    let owner = cases::owner_id(case_id)
+    // Confirm the case exists so callers get a clear "not found" error rather
+    // than an ambiguous empty-capabilities result.
+    cases::owner_id(case_id)
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("Case not found."))?;
-    if owner == user.id {
-        Ok(CaseCapability::ALL.to_vec())
-    } else {
-        Ok(user.capabilities_for(case_id))
-    }
+    Ok(user.capabilities_for(case_id))
 }
 
 /// Require a specific capability on a case, else a `Forbidden`-style error.
