@@ -209,16 +209,21 @@ pub async fn delete_case_evidence(
         .map_err(ServerFnError::new)
 }
 
-/// The chat messages for a case (requires the `SendMessages` capability).
+/// One page of a case's chat: the most recent `limit` messages (oldest-first)
+/// plus the thread's total message count (requires the `SendMessages`
+/// capability). Backs the chat's "Load more" pagination.
 #[server(prefix = "/api")]
-pub async fn list_messages(case_id: String) -> Result<Vec<Message>, ServerFnError> {
-    use crate::server::permissions::{require_cap, require_user};
+pub async fn list_messages_page(
+    case_id: String,
+    limit: i64,
+) -> Result<Page<Message>, ServerFnError> {
     use crate::server::db::messages;
+    use crate::server::permissions::{require_cap, require_user};
     use crate::types::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::SendMessages).await?;
-    messages::for_case(&case_id)
+    messages::page(&case_id, limit)
         .await
         .map_err(ServerFnError::new)
 }

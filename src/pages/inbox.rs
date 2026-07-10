@@ -164,6 +164,10 @@ pub fn InboxPage() -> impl IntoView {
 }
 
 /// The chat thread for a single case.
+///
+/// Messages are paginated newest-first: the thread opens scrolled to the latest
+/// message and a "Load earlier messages" button at the top pages older messages
+/// in on demand, so a long conversation never loads all at once.
 #[component]
 fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
     let state = expect_context::<AppState>();
@@ -181,12 +185,46 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
         .map(|c| state.case_can(&c, CaseCapability::SendMessages))
         .unwrap_or(false);
 
-    // Load this case's chat history from the server (browser-only; the SSR branch
-    // returns an error which we ignore).
+    // How many of the most recent messages to request; grows on "Load more".
+    const MSG_PAGE: i64 = 20;
+    let limit = RwSignal::new(MSG_PAGE);
+    let total = RwSignal::new(0i64);
+
+    // Scroll container; used to jump to the latest message on load and after
+    // sending. Growing `limit` (loading earlier messages) deliberately does not
+    // scroll, so the user stays where they were reading.
+    let scroll_ref = NodeRef::<leptos::html::Div>::new();
+    let scroll_to_bottom = move || {
+        if let Some(el) = scroll_ref.get() {
+            request_animation_frame(move || el.set_scroll_top(el.scroll_height()));
+        }
+    };
+    let did_initial_scroll = RwSignal::new(false);
+
+    // (Re)load the newest `limit` messages whenever the window grows. Browser
+    // only; the SSR branch errors and is ignored.
     {
         let case_id = case_id.clone();
-        spawn_local(async move {
-            let _ = state.load_messages(&case_id).await;
+        Effect::new(move |_| {
+            let lim = limit.get();
+            let case_id = case_id.clone();
+            spawn_local(async move {
+                if let Ok(t) = state.load_messages(&case_id, lim).await {
+                    total.set(t);
+                }
+            });
+        });
+    }
+
+    // Once messages first arrive, jump to the latest one.
+    {
+        let case_id = case_id.clone();
+        Effect::new(move |_| {
+            let has = !state.messages_for_case(&case_id).is_empty();
+            if has && !did_initial_scroll.get_untracked() {
+                did_initial_scroll.set(true);
+                scroll_to_bottom();
+            }
         });
     }
 
@@ -203,6 +241,8 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
                     Ok(()) => {
                         body.set(String::new());
                         error.set(String::new());
+                        total.update(|t| *t += 1);
+                        scroll_to_bottom();
                     }
                     Err(e) => error.set(e),
                 }
@@ -215,13 +255,32 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
         let me = me.clone();
         move || {
             let msgs = state.messages_for_case(&case_id);
+            let shown = msgs.len() as i64;
+
+            // "Load more" pages in earlier messages at the top of the thread.
+            let load_more = if shown < total.get() {
+                view! {
+                    <button
+                        on:click=move |_| limit.update(|l| *l += MSG_PAGE)
+                        class="mx-auto block rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                    >
+                        "Load earlier messages (" {shown} " of " {move || total.get()} ")"
+                    </button>
+                }
+                .into_any()
+            } else {
+                ().into_any()
+            };
+
             if msgs.is_empty() {
                 return view! {
                     <p class="text-sm text-slate-500">"No messages yet. Start the conversation."</p>
                 }
                 .into_any();
             }
-            msgs.into_iter()
+
+            let rows = msgs
+                .into_iter()
                 .map(|m| {
                     let mine = m.author_id == me;
                     let row = if mine {
@@ -246,8 +305,13 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
                     }
                     .into_any()
                 })
-                .collect_view()
-                .into_any()
+                .collect_view();
+
+            view! {
+                {load_more}
+                {rows}
+            }
+            .into_any()
         }
     };
 
@@ -259,7 +323,9 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
                 <h2 class="text-lg font-semibold">{case_name}</h2>
                 <p class="text-xs text-slate-500">"Case chat"</p>
             </div>
-            <div class="flex-1 space-y-3 overflow-y-auto p-4">{messages_view}</div>
+            <div node_ref=scroll_ref class="flex-1 space-y-3 overflow-y-auto p-4">
+                {messages_view}
+            </div>
             <div class="border-t border-slate-800 p-4">
                 {if can_send {
                     view! {

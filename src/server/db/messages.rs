@@ -1,7 +1,7 @@
 //! Per-case chat messages.
 
 use crate::server::db::{ids, now_stamp, pool};
-use crate::types::Message;
+use crate::types::{Message, Page};
 
 #[derive(sqlx::FromRow)]
 struct MessageRow {
@@ -26,17 +26,37 @@ impl From<MessageRow> for Message {
     }
 }
 
-/// All messages for a case, in send order.
-/// TODO: Make this paginate in the messages
-pub async fn for_case(case_id: &str) -> Result<Vec<Message>, sqlx::Error> {
+/// One page of a case's chat: the most recent `limit` messages (returned in
+/// send order, oldest-first) plus the total number of messages in the thread.
+///
+/// Backs the chat's "Load more" pagination — the newest messages load first and
+/// older ones page in on demand — so the browser never has to pull an entire
+/// long-running conversation at once.
+pub async fn page(case_id: &str, limit: i64) -> Result<Page<Message>, sqlx::Error> {
+    let limit = limit.clamp(1, 200);
+
+    let total = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE case_id = $1")
+        .bind(case_id)
+        .fetch_one(pool())
+        .await?;
+
+    // Take the newest `limit` rows (seq DESC), then re-sort ascending so the UI
+    // renders them oldest-first with the latest message at the bottom.
     let rows = sqlx::query_as::<_, MessageRow>(
-        "SELECT id, case_id, author_id, author, body, sent_at
-         FROM messages WHERE case_id = $1 ORDER BY seq ASC",
+        "SELECT id, case_id, author_id, author, body, sent_at FROM (
+             SELECT id, case_id, author_id, author, body, sent_at, seq
+             FROM messages WHERE case_id = $1 ORDER BY seq DESC LIMIT $2
+         ) recent ORDER BY seq ASC",
     )
     .bind(case_id)
+    .bind(limit)
     .fetch_all(pool())
     .await?;
-    Ok(rows.into_iter().map(Into::into).collect())
+
+    Ok(Page {
+        items: rows.into_iter().map(Into::into).collect(),
+        total,
+    })
 }
 
 /// Post a message to a case's chat.

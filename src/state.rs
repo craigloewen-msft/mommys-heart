@@ -326,18 +326,20 @@ impl AppState {
             .collect()
     }
 
-    /// Fetch a case's chat from the server into the cache.
-    pub async fn load_messages(self, case_id: &str) -> Result<(), String> {
-        let msgs = cases::list_messages(case_id.to_string())
+    /// Fetch the most recent `limit` messages for a case into the cache and
+    /// return the total number of messages in the thread (so the chat UI can
+    /// decide whether to offer "Load more" for earlier messages).
+    pub async fn load_messages(self, case_id: &str, limit: i64) -> Result<i64, String> {
+        let page = cases::list_messages_page(case_id.to_string(), limit)
             .await
             .map_err(err_msg)?;
         // Replace this case's messages, keep other cases' cached messages.
         let case_id_owned = case_id.to_string();
         self.messages.update(|all| {
             all.retain(|m| m.case_id != case_id_owned);
-            all.extend(msgs);
+            all.extend(page.items);
         });
-        Ok(())
+        Ok(page.total)
     }
 
     /// Post a message to a case's chat as the signed-in user.

@@ -77,8 +77,11 @@ fn shift_days(date: &str, delta: i64) -> String {
 #[component]
 pub fn AdminDashboardPage() -> impl IntoView {
     let state = expect_context::<AppState>();
-    // Search text, the fetched window of users, and the total match count.
+    // Search text (bound to the input for instant feedback) and its debounced
+    // mirror (drives the actual fetch, so we don't hit the server on every
+    // keystroke). The fetched window of users plus the total match count.
     let query = RwSignal::new(String::new());
+    let debounced_query = RwSignal::new(String::new());
     let results = RwSignal::new(Vec::<User>::new());
     let total = RwSignal::new(0i64);
     // How many rows the current window requests; grows on "Load more".
@@ -88,13 +91,13 @@ pub fn AdminDashboardPage() -> impl IntoView {
     // Bumped after a mutation to force the current window to reload.
     let reload = RwSignal::new(0u32);
 
-    // (Re)load the window whenever the query, window size, or reload tick
-    // changes — but only once a session is confirmed (server functions run in
-    // the browser after hydration). We always fetch `[0, window)` so both search
-    // changes and post-mutation refreshes are handled by one code path.
+    // (Re)load the window whenever the debounced query, window size, or reload
+    // tick changes — but only once a session is confirmed (server functions run
+    // in the browser after hydration). We always fetch `[0, window)` so both
+    // search changes and post-mutation refreshes are handled by one code path.
     Effect::new(move |_| {
         let count = window.get();
-        let q = query.get();
+        let q = debounced_query.get();
         reload.track();
         if !matches!(state.auth.get(), AuthPhase::SignedIn) {
             return;
@@ -161,6 +164,13 @@ pub fn AdminDashboardPage() -> impl IntoView {
         .into_any()
     };
 
+    // Debounce the search: update the visible input immediately, but wait 1s of
+    // idle typing before firing the fetch (and resetting the window).
+    let mut on_search = debounce(std::time::Duration::from_secs(1), move |val: String| {
+        window.set(PAGE_SIZE);
+        debounced_query.set(val);
+    });
+
     view! {
         <Layout title="Admin".to_string()>
             <p class="mb-6 text-sm text-slate-400">
@@ -171,8 +181,9 @@ pub fn AdminDashboardPage() -> impl IntoView {
                 placeholder="Search users by name or email"
                 prop:value=move || query.get()
                 on:input=move |ev| {
-                    query.set(event_target_value(&ev));
-                    window.set(PAGE_SIZE);
+                    let val = event_target_value(&ev);
+                    query.set(val.clone());
+                    on_search(val);
                 }
             />
             <div class="space-y-4">{list}</div>
