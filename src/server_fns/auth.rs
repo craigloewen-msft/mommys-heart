@@ -82,7 +82,7 @@ pub async fn register(
     .await
     .map_err(ServerFnError::new)?;
 
-    let user = users::get_with_capabilities(&id)
+    let user = users::get(&id)
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("User disappeared after insert."))?;

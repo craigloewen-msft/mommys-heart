@@ -60,7 +60,7 @@ pub async fn search_users(query: String) -> Result<Vec<UserSummary>, ServerFnErr
     use crate::server::permissions::require_user;
 
     require_user().await?;
-    users::search_directory(&query, 10)
+    users::search_user_summaries(&query, 10)
         .await
         .map_err(ServerFnError::new)
 }
