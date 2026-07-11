@@ -34,6 +34,25 @@ impl UserRow {
     }
 }
 
+/// Group flat `(case_id, capability)` rows into per-case [`CaseAssignment`]s,
+/// ordered by case id. Shared by every code path that turns a user's
+/// `case_assignments` rows into the domain shape.
+fn group_assignments(rows: Vec<(String, String)>) -> Vec<CaseAssignment> {
+    let mut grouped: BTreeMap<String, Vec<CaseCapability>> = BTreeMap::new();
+    for (case_id, cap) in rows {
+        if let Some(c) = CaseCapability::from_slug(&cap) {
+            grouped.entry(case_id).or_default().push(c);
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|(case_id, capabilities)| CaseAssignment {
+            case_id,
+            capabilities,
+        })
+        .collect()
+}
+
 async fn load_assignments(user_id: &str) -> Result<Vec<CaseAssignment>, sqlx::Error> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT case_id, capability FROM case_assignments WHERE user_id = $1 ORDER BY case_id",
@@ -41,20 +60,7 @@ async fn load_assignments(user_id: &str) -> Result<Vec<CaseAssignment>, sqlx::Er
     .bind(user_id)
     .fetch_all(pool())
     .await?;
-
-    let mut grouped: BTreeMap<String, Vec<CaseCapability>> = BTreeMap::new();
-    for (case_id, cap) in rows {
-        if let Some(c) = CaseCapability::from_slug(&cap) {
-            grouped.entry(case_id).or_default().push(c);
-        }
-    }
-    Ok(grouped
-        .into_iter()
-        .map(|(case_id, capabilities)| CaseAssignment {
-            case_id,
-            capabilities,
-        })
-        .collect())
+    Ok(group_assignments(rows))
 }
 
 async fn hydrate(row: UserRow) -> Result<User, sqlx::Error> {
@@ -162,20 +168,25 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
            OR (first_name || ' ' || last_name) ILIKE $1
            OR email ILIKE $1";
 
-    let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM users {FILTER}"))
-        .bind(&pattern)
-        .fetch_one(pool())
-        .await?;
-
-    let rows = sqlx::query_as::<_, UserRow>(&format!(
+    let count_sql = format!("SELECT count(*) FROM users {FILTER}");
+    let page_sql = format!(
         "SELECT id, first_name, last_name, email, phone, home_address, role
          FROM users {FILTER} ORDER BY id LIMIT $2 OFFSET $3"
-    ))
-    .bind(&pattern)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool())
-    .await?;
+    );
+
+    let total_fut = sqlx::query_scalar::<_, i64>(&count_sql)
+        .bind(&pattern)
+        .fetch_one(pool());
+
+    let rows_fut = sqlx::query_as::<_, UserRow>(&page_sql)
+        .bind(&pattern)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool());
+
+    // The count and the page fetch are independent, so run them concurrently —
+    // one fewer sequential round-trip against a networked database.
+    let (total, rows) = tokio::try_join!(total_fut, rows_fut)?;
 
     let items = hydrate_many(rows).await?;
     Ok(Page { items, total })
@@ -193,6 +204,56 @@ pub async fn get(id: &str) -> Result<Option<User>, sqlx::Error> {
         Some(r) => Ok(Some(hydrate(r).await?)),
         None => Ok(None),
     }
+}
+
+/// A single user with their per-case capability assignments, but **without** the
+/// audit log. Loads the user row and the assignments concurrently.
+///
+/// This is the lighter counterpart to [`get`]: authorization only needs
+/// identity, role, and capabilities — never the user's own change history (which
+/// the client never renders for the signed-in user), so we skip that query.
+pub async fn get_with_capabilities(id: &str) -> Result<Option<User>, sqlx::Error> {
+    let row_fut = sqlx::query_as::<_, UserRow>(
+        "SELECT id, first_name, last_name, email, phone, home_address, role FROM users WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool());
+
+    let (row, assignments) = tokio::try_join!(row_fut, load_assignments(id))?;
+    Ok(row.map(|r| r.into_user(assignments, Vec::new())))
+}
+
+/// Resolve a signed-in user (with capabilities, no audit log) from a session
+/// token hash. Scoped to the *one* session matching the token — the two queries
+/// (the session's user, and that user's assignments) are independent, so they
+/// run concurrently for a single effective round-trip without a fan-out JOIN
+/// that would ship the user's row once per assignment.
+///
+/// Returns `None` when there is no live (unexpired) session for the token.
+pub async fn resolve_by_session_token(token_hash: &str) -> Result<Option<User>, sqlx::Error> {
+    // The session's user (exactly one row, or none if the token is unknown/expired).
+    let user_fut = sqlx::query_as::<_, UserRow>(
+        "SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.home_address, u.role
+         FROM sessions s
+         JOIN users u ON u.id = s.user_id
+         WHERE s.token_hash = $1 AND s.expires_at > now()",
+    )
+    .bind(token_hash)
+    .fetch_optional(pool());
+
+    // That same user's capability assignments (each a small `(case_id, capability)`
+    // row), scoped through the identical session predicate.
+    let assignments_fut = sqlx::query_as::<_, (String, String)>(
+        "SELECT case_id, capability FROM case_assignments
+         WHERE user_id = (SELECT user_id FROM sessions
+                          WHERE token_hash = $1 AND expires_at > now())
+         ORDER BY case_id",
+    )
+    .bind(token_hash)
+    .fetch_all(pool());
+
+    let (row, assignment_rows) = tokio::try_join!(user_fut, assignments_fut)?;
+    Ok(row.map(|r| r.into_user(group_assignments(assignment_rows), Vec::new())))
 }
 
 /// Build a lightweight directory [`User`] (names + role only, no PII/assignments
@@ -268,14 +329,57 @@ pub async fn email_exists(email: &str) -> Result<bool, sqlx::Error> {
     Ok(exists.is_some())
 }
 
-/// The (id, password_hash) for a login attempt, matched case-insensitively.
-pub async fn credentials(email: &str) -> Result<Option<(String, String)>, sqlx::Error> {
-    let row: Option<(String, String)> =
-        sqlx::query_as("SELECT id, password_hash FROM users WHERE lower(email) = lower($1)")
-            .bind(email)
-            .fetch_optional(pool())
-            .await?;
-    Ok(row)
+/// Resolve a login attempt: fetch the auth-ready [`User`] (id, role, name,
+/// capabilities — no audit log) *and* the stored password hash for the account
+/// with this email (case-insensitive). The user row and the assignments load
+/// concurrently for a single effective round-trip. Returns `None` when no such
+/// account exists.
+pub async fn authenticate(email: &str) -> Result<Option<(User, String)>, sqlx::Error> {
+    #[derive(sqlx::FromRow)]
+    struct AuthRow {
+        id: String,
+        first_name: String,
+        last_name: String,
+        email: String,
+        phone: String,
+        home_address: String,
+        role: String,
+        password_hash: String,
+    }
+
+    // The account row (with the password hash), or none if the email is unknown.
+    let user_fut = sqlx::query_as::<_, AuthRow>(
+        "SELECT id, first_name, last_name, email, phone, home_address, role, password_hash
+         FROM users WHERE lower(email) = lower($1)",
+    )
+    .bind(email)
+    .fetch_optional(pool());
+
+    // That account's capability assignments, scoped through the same email predicate.
+    let assignments_fut = sqlx::query_as::<_, (String, String)>(
+        "SELECT case_id, capability FROM case_assignments
+         WHERE user_id = (SELECT id FROM users WHERE lower(email) = lower($1))
+         ORDER BY case_id",
+    )
+    .bind(email)
+    .fetch_all(pool());
+
+    let (row, assignment_rows) = tokio::try_join!(user_fut, assignments_fut)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let user = UserRow {
+        id: row.id,
+        first_name: row.first_name,
+        last_name: row.last_name,
+        email: row.email,
+        phone: row.phone,
+        home_address: row.home_address,
+        role: row.role,
+    }
+    .into_user(group_assignments(assignment_rows), Vec::new());
+    Ok(Some((user, row.password_hash)))
 }
 
 /// Insert a user with a pre-computed password hash. Used by registration and by

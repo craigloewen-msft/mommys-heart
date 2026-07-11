@@ -349,24 +349,25 @@ pub async fn page(
         "SELECT count(*) FROM cases WHERE {SEARCH} AND {}",
         SCOPE.replace("$VIEWER", "$2")
     );
-    let total = sqlx::query_scalar::<_, i64>(&count_sql)
-        .bind(&pattern)
-        .bind(viewer)
-        .fetch_one(pool())
-        .await?;
-
     let page_sql = format!(
         "SELECT id, name, status, owner_id FROM cases WHERE {SEARCH} AND {} \
          ORDER BY id LIMIT $2 OFFSET $3",
         SCOPE.replace("$VIEWER", "$4")
     );
-    let rows = sqlx::query_as::<_, CaseRow>(&page_sql)
+
+    // The count and the page fetch are independent, so run them concurrently —
+    // one fewer sequential round-trip against a networked database.
+    let count_fut = sqlx::query_scalar::<_, i64>(&count_sql)
+        .bind(&pattern)
+        .bind(viewer)
+        .fetch_one(pool());
+    let page_fut = sqlx::query_as::<_, CaseRow>(&page_sql)
         .bind(&pattern)
         .bind(limit)
         .bind(offset)
         .bind(viewer)
-        .fetch_all(pool())
-        .await?;
+        .fetch_all(pool());
+    let (total, rows) = tokio::try_join!(count_fut, page_fut)?;
 
     let items = hydrate_many(rows).await?;
     Ok(Page { items, total })

@@ -84,12 +84,11 @@ where
             .map(|c| c.value().to_string())
             .ok_or(StatusCode::UNAUTHORIZED)?;
 
-        let user_id = sessions::user_for_token(&token)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .ok_or(StatusCode::UNAUTHORIZED)?;
-
-        let user = users::get(&user_id)
+        // Resolve session → user → capabilities in a single round-trip. On a
+        // networked database this halves the per-request auth cost versus the
+        // old session-lookup-then-user-lookup chain.
+        let token_hash = sessions::hash_token(&token);
+        let user = users::resolve_by_session_token(&token_hash)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             .ok_or(StatusCode::UNAUTHORIZED)?;

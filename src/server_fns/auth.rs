@@ -28,7 +28,7 @@ pub async fn login(email: String, password: String) -> Result<User, ServerFnErro
     use crate::server::db::{sessions, users};
 
     let email = email.trim();
-    let (user_id, hash) = users::credentials(email)
+    let (user, hash) = users::authenticate(email)
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("Invalid email or password."))?;
@@ -36,11 +36,7 @@ pub async fn login(email: String, password: String) -> Result<User, ServerFnErro
         return Err(ServerFnError::new("Invalid email or password."));
     }
 
-    let user = users::get(&user_id)
-        .await
-        .map_err(ServerFnError::new)?
-        .ok_or_else(|| ServerFnError::new("User not found."))?;
-    let raw = sessions::create(&user_id).await.map_err(ServerFnError::new)?;
+    let raw = sessions::create(&user.id).await.map_err(ServerFnError::new)?;
     set_session_cookie(build_session_cookie(raw))?;
     Ok(user)
 }
@@ -86,7 +82,7 @@ pub async fn register(
     .await
     .map_err(ServerFnError::new)?;
 
-    let user = users::get(&id)
+    let user = users::get_with_capabilities(&id)
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("User disappeared after insert."))?;

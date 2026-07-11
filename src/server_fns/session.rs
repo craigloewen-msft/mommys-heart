@@ -30,24 +30,32 @@ pub async fn bootstrap() -> Result<BootstrapResponse, ServerFnError> {
 
     let user = require_user().await?;
 
+    // Admins get a lightweight directory of every user (names + role only) plus
+    // all grants. These three loads are independent, so run them concurrently —
+    // against a networked database, collapsing three sequential round-trips into
+    // one materially cuts bootstrap latency. The admin dashboard loads full,
+    // paginated user detail on demand via `list_users_page`, so we never hydrate
+    // (and ship) every user's PII + audit log here.
+    if user.role.is_admin() {
+        let (cases, users, grants) = tokio::try_join!(
+            cases::directory_for(&user.id),
+            users::directory_all(),
+            grants::list(),
+        )
+        .map_err(ServerFnError::new)?;
+        return Ok(BootstrapResponse {
+            current_user: Some(user),
+            users,
+            cases,
+            grants,
+        });
+    }
+
     // Cases are always scoped to the caller (owned or assigned), so bootstrap
     // stays cheap no matter how many cases exist system-wide.
     let cases = cases::directory_for(&user.id)
         .await
         .map_err(ServerFnError::new)?;
-
-    if user.role.is_admin() {
-        return Ok(BootstrapResponse {
-            current_user: Some(user),
-            // A lightweight directory of every user (names + role only) — enough
-            // for name resolution and owner pickers. The admin dashboard loads
-            // full, paginated user detail on demand via `list_users_page`, so we
-            // never hydrate (and ship) every user's PII + audit log here.
-            users: users::directory_all().await.map_err(ServerFnError::new)?,
-            cases,
-            grants: grants::list().await.map_err(ServerFnError::new)?,
-        });
-    }
 
     // Only the users referenced by the caller's visible cases need to be
     // resolvable by name in the UI (case owners + assignees), plus the caller.

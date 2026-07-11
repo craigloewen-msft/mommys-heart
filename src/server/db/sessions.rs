@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 const SESSION_TTL_DAYS: i64 = 30;
 
 /// Hash a raw token for storage/lookup.
-fn hash_token(raw: &str) -> String {
+pub(crate) fn hash_token(raw: &str) -> String {
     let digest = Sha256::digest(raw.as_bytes());
     hex::encode(digest)
 }
@@ -31,18 +31,6 @@ pub async fn create(user_id: &str) -> Result<String, sqlx::Error> {
     .execute(pool())
     .await?;
     Ok(raw)
-}
-
-/// Resolve a raw token to its user id if the session exists and is not expired.
-pub async fn user_for_token(raw: &str) -> Result<Option<String>, sqlx::Error> {
-    let token_hash = hash_token(raw);
-    let user_id: Option<String> = sqlx::query_scalar(
-        "SELECT user_id FROM sessions WHERE token_hash = $1 AND expires_at > now()",
-    )
-    .bind(&token_hash)
-    .fetch_optional(pool())
-    .await?;
-    Ok(user_id)
 }
 
 /// Invalidate a session (logout).
