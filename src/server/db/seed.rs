@@ -120,7 +120,7 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await?;
         }
 
-        insert_audit(&c.id, "case", &c.audit_log).await?;
+        insert_audit(&c.id, "case", &Vec::<ChangeLogEntry>::new()).await?;
     }
 
     // 4. Case assignments (after both users and cases exist).

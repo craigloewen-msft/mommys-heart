@@ -6,7 +6,7 @@ use crate::components::layout::Layout;
 use crate::server_fns::err_text;
 use crate::state::{today, AppState};
 use crate::types::{AccountRole, CaseCapability, CasePreset, ChangeLogEntry};
-use crate::server_fns::cases::Case;
+use crate::server_fns::cases::CaseSummary;
 use crate::server_fns::users::User;
 
 /// Cap on how many change-log rows are rendered at once (guards against huge
@@ -236,7 +236,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
     let new_case_label = RwSignal::new(String::new());
     let new_preset = RwSignal::new(CasePreset::Viewer.slug().to_string());
     let case_query = RwSignal::new(String::new());
-    let case_results = RwSignal::new(Vec::<Case>::new());
+    let case_results = RwSignal::new(Vec::<CaseSummary>::new());
     let picker_open = RwSignal::new(false);
 
     // Refetch whenever the query changes (and the picker is open). Empty query

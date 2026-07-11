@@ -84,7 +84,7 @@ pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
 /// This is a management action, not a case view — it never hydrates or exposes
 /// case contents.
 #[server(prefix = "/api")]
-pub async fn admin_search_cases(query: String) -> Result<Vec<Case>, ServerFnError> {
+pub async fn admin_search_cases(query: String) -> Result<Vec<CaseSummary>, ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_admin, require_user};
 
@@ -99,13 +99,13 @@ pub async fn admin_search_cases(query: String) -> Result<Vec<Case>, ServerFnErro
 /// permission tool can show which cases a user is already assigned to without
 /// loading every case.
 #[server(prefix = "/api")]
-pub async fn admin_cases_by_ids(ids: Vec<String>) -> Result<Vec<Case>, ServerFnError> {
+pub async fn admin_cases_by_ids(ids: Vec<String>) -> Result<Vec<CaseSummary>, ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_admin, require_user};
 
     let user = require_user().await?;
     require_admin(&user)?;
-    cases::by_ids_lite(&ids)
+    cases::get_summaries_by_ids(&ids)
         .await
         .map_err(ServerFnError::new)
 }

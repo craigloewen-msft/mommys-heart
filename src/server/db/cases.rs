@@ -32,88 +32,52 @@ struct EvidenceRow {
     description: String,
 }
 
-async fn load_notes(case_id: &str) -> Result<Vec<CaseNote>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, NoteRow>(
-        "SELECT id, author, body, created_at FROM case_notes WHERE case_id = $1 ORDER BY seq ASC",
-    )
-    .bind(case_id)
-    .fetch_all(pool())
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| CaseNote {
-            id: r.id,
-            author: r.author,
-            body: r.body,
-            created_at: r.created_at,
-        })
-        .collect())
+/// Flat row shape for the sparse [`CaseSummary`] projection (header fields plus
+/// resolved owner name and message count). Shared by every summary query.
+#[derive(sqlx::FromRow)]
+struct SummaryRow {
+    id: String,
+    name: String,
+    status: String,
+    owner_id: String,
+    owner_name: String,
+    message_count: i64,
 }
 
-async fn load_evidence(case_id: &str) -> Result<Vec<Evidence>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, EvidenceRow>(
-        "SELECT id, name, case_id, uploaded_by, uploaded_at, description
-         FROM evidence WHERE case_id = $1 ORDER BY seq ASC",
-    )
-    .bind(case_id)
-    .fetch_all(pool())
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| Evidence {
-            id: r.id,
-            name: r.name,
-            case_id: r.case_id,
-            uploaded_by: r.uploaded_by,
-            uploaded_at: r.uploaded_at,
-            description: r.description,
-        })
-        .collect())
-}
-
-async fn load_properties(case_id: &str) -> Result<Vec<CaseProperty>, sqlx::Error> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key, value FROM case_properties WHERE case_id = $1 ORDER BY ord ASC",
-    )
-    .bind(case_id)
-    .fetch_all(pool())
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(key, value)| CaseProperty { key, value })
-        .collect())
-}
-
-async fn hydrate(row: CaseRow) -> Result<Case, sqlx::Error> {
-    let notes = load_notes(&row.id).await?;
-    let evidence = load_evidence(&row.id).await?;
-    let properties = load_properties(&row.id).await?;
-    Ok(Case {
-        id: row.id,
-        name: row.name,
-        status: CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open),
-        owner_id: row.owner_id,
-        notes,
-        evidence,
-        properties,
-        message_count: 0,
-    })
-}
-
-/// A lightweight [`Case`] (id, name, status, owner only — no notes, evidence,
-/// properties, or audit) from a `CaseRow`. Used for list/directory views that
-/// never render the sub-resources.
-fn summary(row: CaseRow) -> Case {
-    Case {
-        id: row.id,
-        name: row.name,
-        status: CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open),
-        owner_id: row.owner_id,
-        notes: Vec::new(),
-        evidence: Vec::new(),
-        properties: Vec::new(),
-        message_count: 0,
+impl SummaryRow {
+    fn into_summary(self) -> CaseSummary {
+        CaseSummary {
+            // Fall back to the owner id if the user row is missing or unnamed.
+            owner_name: if self.owner_name.trim().is_empty() {
+                self.owner_id.clone()
+            } else {
+                self.owner_name
+            },
+            id: self.id,
+            name: self.name,
+            status: CaseStatus::from_slug(&self.status).unwrap_or(CaseStatus::Open),
+            owner_id: self.owner_id,
+            message_count: self.message_count.max(0) as usize,
+        }
     }
+}
+
+/// The `SELECT` list that projects a `cases` row (aliased `c`) into a
+/// [`SummaryRow`]: header fields, the owner's resolved display name, and the
+/// case's message count. Callers append their own `WHERE`/`ORDER`/`LIMIT`.
+const SUMMARY_SELECT: &str = "SELECT c.id, c.name, c.status, c.owner_id,
+        TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS owner_name,
+        (SELECT COUNT(*) FROM messages m WHERE m.case_id = c.id) AS message_count
+ FROM cases c
+ LEFT JOIN users u ON u.id = c.owner_id";
+
+/// The owner id of a case, if it exists (cheap authorization lookup).
+pub async fn owner_id(case_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let owner: Option<String> = sqlx::query_scalar("SELECT owner_id FROM cases WHERE id = $1")
+        .bind(case_id)
+        .fetch_optional(pool())
+        .await?;
+    Ok(owner)
 }
 
 /// One page of sparse cases visible to a user_id
@@ -207,7 +171,7 @@ pub async fn get_summaries_for_user(
 /// (case-insensitive, metacharacters escaped), ordered by id. Unscoped — used by
 /// the admin permission tool to find any case to grant access to. Empty search
 /// returns the first `limit` cases.
-pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<Case>, sqlx::Error> {
+pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, sqlx::Error> {
     let limit = limit.clamp(1, 50);
     let term = search.trim();
     let pattern = if term.is_empty() {
@@ -218,54 +182,108 @@ pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<Case>, sqlx::Er
             term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
         ))
     };
-    let rows = sqlx::query_as::<_, CaseRow>(
-        "SELECT id, name, status, owner_id FROM cases
-         WHERE $1::text IS NULL OR id ILIKE $1 OR name ILIKE $1
-         ORDER BY id LIMIT $2",
-    )
+    let rows = sqlx::query_as::<_, SummaryRow>(&format!(
+        "{SUMMARY_SELECT}
+         WHERE $1::text IS NULL OR c.id ILIKE $1 OR c.name ILIKE $1
+         ORDER BY c.id LIMIT $2"
+    ))
     .bind(&pattern)
     .bind(limit)
     .fetch_all(pool())
     .await?;
-    Ok(rows.into_iter().map(summary).collect())
+    Ok(rows.into_iter().map(SummaryRow::into_summary).collect())
 }
 
-/// Lightweight cases for a specific set of ids (see [`summary`]). Used to resolve
-/// case names for display without loading every case.
-pub async fn by_ids_lite(ids: &[String]) -> Result<Vec<Case>, sqlx::Error> {
+/// Lightweight [`CaseSummary`]s for a specific set of ids, ordered by id. Used to
+/// resolve case names for display without loading every case. Empty input
+/// returns an empty vec (no query).
+pub async fn get_summaries_by_ids(ids: &[String]) -> Result<Vec<CaseSummary>, sqlx::Error> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let rows = sqlx::query_as::<_, CaseRow>(
-        "SELECT id, name, status, owner_id FROM cases WHERE id = ANY($1) ORDER BY id",
-    )
+    let rows = sqlx::query_as::<_, SummaryRow>(&format!(
+        "{SUMMARY_SELECT} WHERE c.id = ANY($1) ORDER BY c.id"
+    ))
     .bind(ids)
     .fetch_all(pool())
     .await?;
-    Ok(rows.into_iter().map(summary).collect())
+    Ok(rows.into_iter().map(SummaryRow::into_summary).collect())
 }
 
-/// A single case by id, fully hydrated.
+/// A single case by id, fully hydrated (properties, evidence, and its newest
+/// notes), or `None` if no such case exists.
 pub async fn get(id: &str) -> Result<Option<Case>, sqlx::Error> {
-    let row = sqlx::query_as::<_, CaseRow>(
+    let Some(row) = sqlx::query_as::<_, CaseRow>(
         "SELECT id, name, status, owner_id FROM cases WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool())
-    .await?;
-    match row {
-        Some(r) => Ok(Some(hydrate(r).await?)),
-        None => Ok(None),
-    }
-}
+    .await?
+    else {
+        return Ok(None);
+    };
 
-/// The owner id of a case, if it exists (cheap authorization lookup).
-pub async fn owner_id(case_id: &str) -> Result<Option<String>, sqlx::Error> {
-    let owner: Option<String> = sqlx::query_scalar("SELECT owner_id FROM cases WHERE id = $1")
-        .bind(case_id)
-        .fetch_optional(pool())
-        .await?;
-    Ok(owner)
+    // Newest 10 notes: fetched newest-first (so only the 10 most recent are
+    // kept), then reversed to oldest-first so they render chronologically with
+    // the most recent last.
+    let note_rows = sqlx::query_as::<_, NoteRow>(
+        "SELECT id, author, body, created_at FROM case_notes
+         WHERE case_id = $1 ORDER BY seq DESC LIMIT 10",
+    )
+    .bind(id)
+    .fetch_all(pool())
+    .await?;
+    let notes = note_rows
+        .into_iter()
+        .rev()
+        .map(|r| CaseNote {
+            id: r.id,
+            author: r.author,
+            body: r.body,
+            created_at: r.created_at,
+        })
+        .collect();
+
+    let evidence_rows = sqlx::query_as::<_, EvidenceRow>(
+        "SELECT id, name, case_id, uploaded_by, uploaded_at, description
+         FROM evidence WHERE case_id = $1 ORDER BY seq ASC",
+    )
+    .bind(id)
+    .fetch_all(pool())
+    .await?;
+    let evidence = evidence_rows
+        .into_iter()
+        .map(|r| Evidence {
+            id: r.id,
+            name: r.name,
+            case_id: r.case_id,
+            uploaded_by: r.uploaded_by,
+            uploaded_at: r.uploaded_at,
+            description: r.description,
+        })
+        .collect();
+
+    let property_rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM case_properties WHERE case_id = $1 ORDER BY ord ASC",
+    )
+    .bind(id)
+    .fetch_all(pool())
+    .await?;
+    let properties = property_rows
+        .into_iter()
+        .map(|(key, value)| CaseProperty { key, value })
+        .collect();
+
+    Ok(Some(Case {
+        id: row.id,
+        name: row.name,
+        status: CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open),
+        owner_id: row.owner_id,
+        notes,
+        evidence,
+        properties,
+        message_count: 0,
+    }))
 }
 
 /// Create a case owned by `owner_id` with an initial status, cleaned property
@@ -333,24 +351,27 @@ pub async fn create(
     Ok(id)
 }
 
-/// Update a case's status, auditing the change.
-pub async fn set_status(
+/// Update a single `cases` column and record an audit entry — but only when the
+/// case exists and the value actually changes. `column` and `field` are always
+/// internal string constants (never caller/user input), so interpolating the
+/// column name into the SQL is safe. `old_display`/`new_display` are the
+/// human-readable values written to the audit log, which may differ from the
+/// stored value (e.g. owner ids stored, owner names audited).
+async fn update_field(
     case_id: &str,
-    status: CaseStatus,
+    column: &str,
+    new_stored: &str,
+    current_stored: &str,
     actor: &str,
+    field: &str,
+    old_display: &str,
+    new_display: &str,
 ) -> Result<(), sqlx::Error> {
-    let current: Option<String> = sqlx::query_scalar("SELECT status FROM cases WHERE id = $1")
-        .bind(case_id)
-        .fetch_optional(pool())
-        .await?;
-    let Some(current) = current else {
-        return Ok(());
-    };
-    if current == status.slug() {
+    if current_stored == new_stored {
         return Ok(());
     }
-    sqlx::query("UPDATE cases SET status = $1 WHERE id = $2")
-        .bind(status.slug())
+    sqlx::query(&format!("UPDATE cases SET {column} = $1 WHERE id = $2"))
+        .bind(new_stored)
         .bind(case_id)
         .execute(pool())
         .await?;
@@ -358,6 +379,37 @@ pub async fn set_status(
         pool(),
         audit::Entity::Case,
         case_id,
+        actor,
+        field,
+        old_display,
+        new_display,
+    )
+    .await
+}
+
+/// Current stored value of a single `cases` column, or `None` if the case is
+/// missing. `column` is always an internal constant, never user input.
+async fn current_field(case_id: &str, column: &str) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(&format!("SELECT {column} FROM cases WHERE id = $1"))
+        .bind(case_id)
+        .fetch_optional(pool())
+        .await
+}
+
+/// Update a case's status, auditing the change.
+pub async fn set_status(
+    case_id: &str,
+    status: CaseStatus,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let Some(current) = current_field(case_id, "status").await? else {
+        return Ok(());
+    };
+    update_field(
+        case_id,
+        "status",
+        status.slug(),
+        &current,
         actor,
         "status",
         &current,
@@ -368,50 +420,32 @@ pub async fn set_status(
 
 /// Rename a case, auditing the change.
 pub async fn set_name(case_id: &str, name: &str, actor: &str) -> Result<(), sqlx::Error> {
-    let current: Option<String> = sqlx::query_scalar("SELECT name FROM cases WHERE id = $1")
-        .bind(case_id)
-        .fetch_optional(pool())
-        .await?;
-    let Some(current) = current else {
+    let Some(current) = current_field(case_id, "name").await? else {
         return Ok(());
     };
-    if current == name {
-        return Ok(());
-    }
-    sqlx::query("UPDATE cases SET name = $1 WHERE id = $2")
-        .bind(name)
-        .bind(case_id)
-        .execute(pool())
-        .await?;
-    audit::record(pool(), audit::Entity::Case, case_id, actor, "name", &current, name).await
+    update_field(case_id, "name", name, &current, actor, "name", &current, name).await
 }
 
 /// Change a case's owner. `owner_id` must reference an existing user. Audits
 /// using display names for readability.
 pub async fn set_owner(case_id: &str, owner_id: &str, actor: &str) -> Result<(), sqlx::Error> {
-    let current: Option<String> = sqlx::query_scalar("SELECT owner_id FROM cases WHERE id = $1")
-        .bind(case_id)
-        .fetch_optional(pool())
-        .await?;
-    let Some(current) = current else {
+    let Some(current) = current_field(case_id, "owner_id").await? else {
         return Ok(());
     };
     if current == owner_id {
         return Ok(());
     }
-    sqlx::query("UPDATE cases SET owner_id = $1 WHERE id = $2")
-        .bind(owner_id)
-        .bind(case_id)
-        .execute(pool())
-        .await?;
-    audit::record(
-        pool(),
-        audit::Entity::Case,
+    let old_display = user_name(&current).await?;
+    let new_display = user_name(owner_id).await?;
+    update_field(
         case_id,
+        "owner_id",
+        owner_id,
+        &current,
         actor,
         "owner",
-        &user_name(&current).await?,
-        &user_name(owner_id).await?,
+        &old_display,
+        &new_display,
     )
     .await
 }
@@ -446,12 +480,17 @@ pub async fn replace_properties(
         })
         .collect();
 
-    let existing = load_properties(case_id).await?;
+    let existing: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM case_properties WHERE case_id = $1 ORDER BY ord ASC",
+    )
+    .bind(case_id)
+    .fetch_all(pool())
+    .await?;
     let changed = existing.len() != cleaned.len()
         || existing
             .iter()
             .zip(cleaned.iter())
-            .any(|(e, (k, v))| &e.key != k || &e.value != v);
+            .any(|((ek, ev), (k, v)) | ek != k || ev != v);
 
     let mut tx = pool().begin().await?;
     sqlx::query("DELETE FROM case_properties WHERE case_id = $1")
