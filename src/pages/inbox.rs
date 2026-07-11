@@ -6,7 +6,8 @@ use crate::components::layout::Layout;
 use crate::server_fns::cases::{load_case_summaries_for_user, CaseSummary};
 use crate::server_fns::err_text;
 use crate::state::AppState;
-use crate::types::{CaseCapability, Message};
+use crate::types::CaseCapability;
+use crate::server_fns::message::Message;
 
 /// Case Chat: one chat thread per case. Anyone assigned to a case (with
 /// permission) can read it; posting requires the `SendMessages` capability.

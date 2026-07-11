@@ -1,7 +1,8 @@
 //! Per-case chat messages.
 
 use crate::server::db::{ids, now_stamp, pool};
-use crate::types::{Message, Page};
+use crate::types::Page;
+use crate::server_fns::message::Message;
 
 #[derive(sqlx::FromRow)]
 struct MessageRow {

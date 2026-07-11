@@ -11,10 +11,12 @@
 //! well above these, so the two never collide.
 
 use crate::types::{
-    AccountRole, Case, CaseAssignment, CasePreset, CaseProperty, CaseStatus, Message,
+    AccountRole, CaseAssignment, CasePreset, CaseProperty, CaseStatus,
 };
 use crate::server_fns::users::User;
 use crate::server_fns::grants::Grant;
+use crate::server_fns::cases::Case;
+use crate::server_fns::message::Message;
 
 /// Organization display name.
 pub const ORG_NAME: &str = "Mommy's Heart";
@@ -175,7 +177,6 @@ pub fn cases() -> Vec<Case> {
                     prop("Court", "Springfield Family Court"),
                     prop("Docket", &format!("FC-2026-{:04}", i + 1)),
                 ],
-                audit_log: Vec::new(),
                 message_count: 0,
             }
         })

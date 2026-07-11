@@ -18,6 +18,7 @@
 pub mod auth;
 pub mod cases;
 pub mod grants;
+pub mod message;
 pub mod users;
 
 use leptos::prelude::*;

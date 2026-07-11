@@ -5,7 +5,32 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Case, CaseStatus, Message, Page};
+use crate::types::{
+    CaseNote, CaseProperty, CaseStatus, Evidence, Page,
+};
+use crate::server_fns::message::Message;
+
+/// A support case tracked by the organization.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Case {
+    pub id: String,
+    pub name: String,
+    pub status: CaseStatus,
+    /// The user who owns this case (implicitly has `Owner` permission).
+    pub owner_id: String,
+    /// Case notes, newest last.
+    #[serde(default)]
+    pub notes: Vec<CaseNote>,
+    /// Evidence gathered for this case.
+    #[serde(default)]
+    pub evidence: Vec<Evidence>,
+    /// Free-form case properties (e.g. "Opposing attorney" -> "J. Smith").
+    #[serde(default)]
+    pub properties: Vec<CaseProperty>,
+    /// Count only of messages
+    #[serde(default)]
+    pub message_count: usize,
+}
 
 /// A sparse view of a case for list/directory screens: the header fields only
 /// (id, name, status, owner id + resolved owner name, and chat message count),

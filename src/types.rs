@@ -354,60 +354,11 @@ pub struct Evidence {
     pub description: String,
 }
 
-/// A support case tracked by the organization.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Case {
-    pub id: String,
-    pub name: String,
-    pub status: CaseStatus,
-    /// The user who owns this case (implicitly has `Owner` permission).
-    pub owner_id: String,
-    /// Case notes, newest last.
-    #[serde(default)]
-    pub notes: Vec<CaseNote>,
-    /// Evidence gathered for this case.
-    #[serde(default)]
-    pub evidence: Vec<Evidence>,
-    /// Free-form case properties (e.g. "Opposing attorney" -> "J. Smith").
-    #[serde(default)]
-    pub properties: Vec<CaseProperty>,
-    /// Append-only log of changes to this case.
-    #[serde(default)]
-    pub audit_log: Vec<ChangeLogEntry>,
-    /// Number of chat messages on this case. Populated for lightweight
-    /// directory/list views (see [`crate::server_fns::session::bootstrap`]) so
-    /// the inbox can show a count without shipping every message body; the full
-    /// chat is loaded on demand when a case is opened. Defaults to `0` for the
-    /// fully-hydrated case screen, which doesn't display it.
-    #[serde(default)]
-    pub message_count: usize,
-}
-
 /// A named key/value property on a case (e.g. attorney names, court, docket).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CaseProperty {
     pub key: String,
     pub value: String,
-}
-
-// ---------------------------------------------------------------------------
-// Case chat messages
-// ---------------------------------------------------------------------------
-
-/// A message posted in a case's chat thread. Every case has its own thread that
-/// any assigned user with the `SendMessages` capability can read and post to.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Message {
-    pub id: String,
-    /// The case whose chat this message belongs to.
-    pub case_id: String,
-    /// User id of the author.
-    pub author_id: String,
-    /// Display name of the author.
-    pub author: String,
-    pub body: String,
-    /// Human-readable timestamp (mock).
-    pub sent_at: String,
 }
 
 // ===========================================================================

@@ -5,18 +5,17 @@ use leptos_router::hooks::use_navigate;
 
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
-use crate::server_fns::cases::{self, CaseSummary};
+use crate::server_fns::cases::{self, Case, CaseSummary};
 use crate::server_fns::err_text;
 use crate::server_fns::users::{search_users, UserSummary};
 use crate::state::AppState;
-use crate::types::{Case, CaseCapability, CaseStatus};
+use crate::types::{CaseCapability, CaseStatus};
 
 /// How many cases the list loads per "page" (each "Load more" click grows the
 /// visible window by this much).
 const PAGE_SIZE: i64 = 10;
 
-/// One editable property row while a case is in edit mode. Each field is its own
-/// signal so typing never re-creates the row (keeps input focus stable).
+/// One editable property row while a case is in edit mode.
 #[derive(Clone, Copy)]
 struct PropRow {
     id: usize,
@@ -704,7 +703,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
 
     let audit_view = {
         move || {
-            let log = live_case().map(|c| c.audit_log).unwrap_or_default();
+            let log: Vec<crate::types::ChangeLogEntry> = Vec::new();
             if log.is_empty() {
                 return view! { <p class="text-sm text-slate-500">"No changes recorded."</p> }
                     .into_any();

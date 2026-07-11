@@ -1,9 +1,9 @@
 //! Cases and their sub-resources: notes, evidence, properties, and audit log.
 
 use crate::server::db::{audit, ids, now_stamp, pool, users};
-use crate::server_fns::cases::CaseSummary;
+use crate::server_fns::cases::{Case, CaseSummary};
 use crate::types::{
-    Case, CaseCapability, CaseNote, CaseProperty, CaseStatus, Evidence, Page,
+    CaseCapability, CaseNote, CaseProperty, CaseStatus, Evidence, Page,
 };
 
 #[derive(sqlx::FromRow)]
@@ -88,7 +88,6 @@ async fn hydrate(row: CaseRow) -> Result<Case, sqlx::Error> {
     let notes = load_notes(&row.id).await?;
     let evidence = load_evidence(&row.id).await?;
     let properties = load_properties(&row.id).await?;
-    let audit_log = audit::for_entity(pool(), audit::Entity::Case, &row.id).await?;
     Ok(Case {
         id: row.id,
         name: row.name,
@@ -97,7 +96,6 @@ async fn hydrate(row: CaseRow) -> Result<Case, sqlx::Error> {
         notes,
         evidence,
         properties,
-        audit_log,
         message_count: 0,
     })
 }
@@ -114,7 +112,6 @@ fn summary(row: CaseRow) -> Case {
         notes: Vec::new(),
         evidence: Vec::new(),
         properties: Vec::new(),
-        audit_log: Vec::new(),
         message_count: 0,
     }
 }
