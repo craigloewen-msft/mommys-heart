@@ -1,16 +1,16 @@
 //! Funding grants (minimal: id + name).
 
 use crate::server::db::{ids, pool};
-use crate::types::Grant;
+use crate::server_fns::grants::GrantSummary;
 
-/// All grants, ordered by id.
-pub async fn list() -> Result<Vec<Grant>, sqlx::Error> {
+/// All grants, ordered by id — the grants screen's list-view shape.
+pub async fn summaries() -> Result<Vec<GrantSummary>, sqlx::Error> {
     let rows = sqlx::query_as::<_, (String, String)>("SELECT id, name FROM grants ORDER BY id")
         .fetch_all(pool())
         .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, name)| Grant { id, name })
+        .map(|(id, name)| GrantSummary { id, name })
         .collect())
 }
 

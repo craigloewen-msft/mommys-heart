@@ -5,7 +5,10 @@ use leptos_router::hooks::use_navigate;
 
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
-use crate::state::{AppState, AuthPhase};
+use crate::server_fns::cases::{self, CaseSummary};
+use crate::server_fns::err_text;
+use crate::server_fns::users::{search_users, UserSummary};
+use crate::state::AppState;
 use crate::types::{Case, CaseCapability, CaseStatus};
 
 /// How many cases the list loads per "page" (each "Load more" click grows the
@@ -19,14 +22,6 @@ struct PropRow {
     id: usize,
     key: RwSignal<String>,
     value: RwSignal<String>,
-}
-
-/// Flatten a [`ServerFnError`] to the plain message we wrote server-side.
-fn err_text(e: ServerFnError) -> String {
-    match e {
-        ServerFnError::ServerError(m) => m,
-        other => other.to_string(),
-    }
 }
 
 fn badge(classes: &str) -> String {
@@ -64,17 +59,18 @@ fn access_label(caps: &[CaseCapability]) -> Option<(&'static str, &'static str)>
     }
 }
 
-/// Case Home: view the cases you own / are assigned to and manage them. The list
-/// is server-side paginated + searchable ("Load more"), so the browser never
-/// pulls every case at once.
 #[component]
 pub fn CaseHomePage() -> impl IntoView {
     let state = expect_context::<AppState>();
     let selected = RwSignal::new(None::<String>);
-    // Search text, the fetched window of cases, and the total match count.
-    let query = RwSignal::new(String::new());
-    let results = RwSignal::new(Vec::<Case>::new());
+
+    // The fetched window of case summaries plus the total match count. `query`
+    // is bound to the input for instant feedback; `debounced_query` drives the
+    // actual fetch so we don't hit the server on every keystroke.
+    let cases = RwSignal::new(Vec::<CaseSummary>::new());
     let total = RwSignal::new(0i64);
+    let query = RwSignal::new(String::new());
+    let debounced_query = RwSignal::new(String::new());
     // How many rows the current window requests; grows on "Load more".
     let window = RwSignal::new(PAGE_SIZE);
     let loading = RwSignal::new(false);
@@ -82,22 +78,18 @@ pub fn CaseHomePage() -> impl IntoView {
     // Bumped after a mutation to force the current window to reload.
     let reload = RwSignal::new(0u32);
 
-    // (Re)load the window whenever the query, window size, or reload tick
-    // changes — but only once a session is confirmed (server functions run in
-    // the browser after hydration). We always fetch `[0, window)` so search
-    // changes and post-mutation refreshes share one code path.
     Effect::new(move |_| {
         let count = window.get();
-        let q = query.get();
+        let q = debounced_query.get();
         reload.track();
-        if !matches!(state.auth.get(), AuthPhase::SignedIn) {
+        if !state.is_authenticated() {
             return;
         }
         loading.set(true);
         spawn_local(async move {
-            match crate::server_fns::cases::list_cases_page(0, count, q).await {
+            match cases::load_case_summaries_for_user(0, count, q).await {
                 Ok(page) => {
-                    results.set(page.items);
+                    cases.set(page.items);
                     total.set(page.total);
                     load_error.set(None);
                 }
@@ -108,16 +100,6 @@ pub fn CaseHomePage() -> impl IntoView {
     });
 
     require_login(state, move || {
-    // Resolve a user id to a display name.
-    let owner_name = move |owner_id: &str| -> String {
-        state
-            .users
-            .get()
-            .into_iter()
-            .find(|u| u.id == owner_id)
-            .map(|u| u.full_name())
-            .unwrap_or_else(|| "—".into())
-    };
 
     let cases_list = move || {
         if let Some(msg) = load_error.get() {
@@ -126,8 +108,8 @@ pub fn CaseHomePage() -> impl IntoView {
             }
             .into_any();
         }
-        let cases = results.get();
-        if cases.is_empty() {
+        let all = cases.get();
+        if all.is_empty() {
             let text = if loading.get() {
                 "Loading\u{2026}"
             } else if query.get().trim().is_empty() {
@@ -137,7 +119,7 @@ pub fn CaseHomePage() -> impl IntoView {
             };
             return view! { <p class="text-sm text-slate-400">{text}</p> }.into_any();
         }
-        cases
+        all
             .into_iter()
             .map(|c| {
                 let case_id = c.id.clone();
@@ -145,7 +127,11 @@ pub fn CaseHomePage() -> impl IntoView {
                     let case_id = case_id.clone();
                     move || selected.get().as_deref() == Some(case_id.as_str())
                 };
-                let caps = state.capabilities_on(&c);
+                let caps = state
+                    .current_user
+                    .get()
+                    .map(|u| u.capabilities_for(&c.id))
+                    .unwrap_or_default();
                 let access_badge = access_label(&caps)
                     .map(|(label, classes)| {
                         view! { <span class=badge(classes)>{label}</span> }.into_any()
@@ -153,7 +139,7 @@ pub fn CaseHomePage() -> impl IntoView {
                     .unwrap_or_else(|| ().into_any());
                 let status = c.status;
                 let name = c.name.clone();
-                let owner = owner_name(&c.owner_id);
+                let owner = c.owner_name.clone();
                 let select = {
                     let case_id = case_id.clone();
                     move |_| selected.set(Some(case_id.clone()))
@@ -187,7 +173,7 @@ pub fn CaseHomePage() -> impl IntoView {
     };
 
     let footer = move || {
-        let shown = results.get().len() as i64;
+        let shown = cases.get().len() as i64;
         let tot = total.get();
         if tot == 0 {
             return ().into_any();
@@ -219,9 +205,8 @@ pub fn CaseHomePage() -> impl IntoView {
         }
         .into_any(),
         Some(id) => {
-            let case = results.get().into_iter().find(|c| c.id == id);
-            match case {
-                Some(c) => view! { <CaseDetail case=c source=results reload=reload /> }.into_any(),
+            match cases.get().into_iter().find(|c| c.id == id) {
+                Some(c) => view! { <CaseDetail summary=c reload=reload /> }.into_any(),
                 None => view! {
                     <p class="text-sm text-slate-400">"Case not found."</p>
                 }
@@ -232,6 +217,13 @@ pub fn CaseHomePage() -> impl IntoView {
     };
 
     let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+
+    // Debounce the search: update the visible input immediately, but wait 1s of
+    // idle typing before firing the fetch (and resetting the window).
+    let mut on_search = debounce(std::time::Duration::from_secs(1), move |val: String| {
+        window.set(PAGE_SIZE);
+        debounced_query.set(val);
+    });
 
     view! {
         <Layout title="Cases".to_string()>
@@ -248,8 +240,9 @@ pub fn CaseHomePage() -> impl IntoView {
                         placeholder="Search cases by name"
                         prop:value=move || query.get()
                         on:input=move |ev| {
-                            query.set(event_target_value(&ev));
-                            window.set(PAGE_SIZE);
+                            let val = event_target_value(&ev);
+                            query.set(val.clone());
+                            on_search(val);
                         }
                     />
                     <div class="space-y-3">{cases_list}</div>
@@ -302,12 +295,9 @@ pub fn NewCasePage() -> impl IntoView {
             };
             let name_val = name.get_untracked();
             spawn_local(async move {
-                match state
-                    .add_case_full(&name_val, status, properties, note)
-                    .await
-                {
+                match cases::create_case(name_val, status, properties, note).await {
                     Ok(_) => navigate("/cases", Default::default()),
-                    Err(e) => error.set(e),
+                    Err(e) => error.set(err_text(e)),
                 }
             });
         }
@@ -417,33 +407,66 @@ pub fn NewCasePage() -> impl IntoView {
     })
 }
 
-/// The management panel for a single case. `source` is the parent's fetched
-/// window of cases (the paginated list); we re-read the live case from it so
-/// edits show as soon as the window reloads. `reload` is bumped after any
-/// mutation to trigger that reload.
+/// The management panel for a single case.
 #[component]
-fn CaseDetail(case: Case, source: RwSignal<Vec<Case>>, reload: RwSignal<u32>) -> impl IntoView {
+fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
     let state = expect_context::<AppState>();
-    let case_id = case.id.clone();
+    let case_id = summary.id.clone();
 
     let owner = StoredValue::new(Owner::current().expect("component owner"));
 
-    // Capability gates for this case.
-    let can_edit = state.case_can(&case, CaseCapability::EditCase);
-    let can_note = state.case_can(&case, CaseCapability::AddNotes);
-    let can_view_evidence = state.case_can(&case, CaseCapability::ViewEvidence);
-    let can_upload_evidence = state.case_can(&case, CaseCapability::UploadEvidence);
-    let can_delete_evidence = state.case_can(&case, CaseCapability::DeleteEvidence);
+    // Capability gates for this case, derived from the signed-in user's
+    // assignment. No implicit grants for owners or admins.
+    let caps = state
+        .current_user
+        .get()
+        .map(|u| u.capabilities_for(&summary.id))
+        .unwrap_or_default();
+    let can_edit = caps.contains(&CaseCapability::EditCase);
+    let can_note = caps.contains(&CaseCapability::AddNotes);
+    let can_view_evidence = caps.contains(&CaseCapability::ViewEvidence);
+    let can_upload_evidence = caps.contains(&CaseCapability::UploadEvidence);
+    let can_delete_evidence = caps.contains(&CaseCapability::DeleteEvidence);
 
-    // Reactively re-read the case from the parent's fetched window so edits show
-    // as soon as it reloads.
+    // The full case behind the summary — the heavy sub-resources are pulled on
+    // demand only for the open case, keeping the list load lightweight.
     let case_sv = StoredValue::new(case_id.clone());
-    let live_case = move || {
-        source
-            .get()
-            .into_iter()
-            .find(|c| c.id == case_sv.get_value())
-    };
+    let detail = RwSignal::new(None::<Case>);
+    {
+        let case_id = case_id.clone();
+        Effect::new(move |_| {
+            let case_id = case_id.clone();
+            spawn_local(async move {
+                if let Ok(Some(c)) = cases::load_case(case_id).await {
+                    detail.set(Some(c));
+                }
+            });
+        });
+    }
+
+    let owner_name = StoredValue::new(summary.owner_name.clone());
+
+    // Owner picker (edit mode only)
+    let owner_query = RwSignal::new(String::new());
+    let owner_label = RwSignal::new(String::new());
+    let owner_results = RwSignal::new(Vec::<UserSummary>::new());
+    let owner_picker_open = RwSignal::new(false);
+
+    // Refetch matching users whenever the query changes while the picker is
+    // open. An empty query returns a starting set. Only editors ever open it.
+    Effect::new(move |_| {
+        if !owner_picker_open.get() {
+            return;
+        }
+        let q = owner_query.get();
+        spawn_local(async move {
+            if let Ok(list) = search_users(q).await {
+                owner_results.set(list);
+            }
+        });
+    });
+
+    let live_case = move || detail.get();
 
     let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
 
@@ -473,6 +496,9 @@ fn CaseDetail(case: Case, source: RwSignal<Vec<Case>>, reload: RwSignal<u32>) ->
             edit_name.set(c.name.clone());
             edit_status.set(c.status.slug().to_string());
             edit_owner.set(c.owner_id.clone());
+            owner_label.set(owner_name.get_value());
+            owner_query.set(String::new());
+            owner_picker_open.set(false);
             let rows = c
                 .properties
                 .iter()
@@ -486,6 +512,7 @@ fn CaseDetail(case: Case, source: RwSignal<Vec<Case>>, reload: RwSignal<u32>) ->
 
     let cancel_edit = move |_| {
         edit_error.set(String::new());
+        owner_picker_open.set(false);
         editing.set(false);
     };
 
@@ -505,22 +532,22 @@ fn CaseDetail(case: Case, source: RwSignal<Vec<Case>>, reload: RwSignal<u32>) ->
             .map(|r| (r.key.get_untracked(), r.value.get_untracked()))
             .collect::<Vec<_>>();
         spawn_local(async move {
-            if let Err(e) = state.set_case_name(&case_id, &name).await {
-                edit_error.set(e);
+            if let Err(e) = cases::set_case_name(case_id.clone(), name).await {
+                edit_error.set(err_text(e));
                 return;
             }
             if let Some(s) = CaseStatus::from_slug(&status_slug) {
-                if let Err(e) = state.set_case_status(&case_id, s).await {
-                    edit_error.set(e);
+                if let Err(e) = cases::set_case_status(case_id.clone(), s).await {
+                    edit_error.set(err_text(e));
                     return;
                 }
             }
-            if let Err(e) = state.set_case_owner(&case_id, &owner).await {
-                edit_error.set(e);
+            if let Err(e) = cases::set_case_owner(case_id.clone(), owner).await {
+                edit_error.set(err_text(e));
                 return;
             }
-            if let Err(e) = state.replace_case_properties(&case_id, props).await {
-                edit_error.set(e);
+            if let Err(e) = cases::set_case_properties(case_id.clone(), props).await {
+                edit_error.set(err_text(e));
                 return;
             }
             edit_error.set(String::new());
@@ -537,7 +564,7 @@ fn CaseDetail(case: Case, source: RwSignal<Vec<Case>>, reload: RwSignal<u32>) ->
             let case_id = case_id.clone();
             let body = note_body.get_untracked();
             spawn_local(async move {
-                if state.add_case_note(&case_id, &body).await.is_ok() {
+                if cases::add_case_note(case_id, body).await.is_ok() {
                     note_body.set(String::new());
                     reload.update(|n| *n += 1);
                 }
@@ -555,11 +582,7 @@ fn CaseDetail(case: Case, source: RwSignal<Vec<Case>>, reload: RwSignal<u32>) ->
             let name = evi_name.get_untracked();
             let desc = evi_desc.get_untracked();
             spawn_local(async move {
-                if state
-                    .add_case_evidence(&case_id, &name, &desc)
-                    .await
-                    .is_ok()
-                {
+                if cases::add_case_evidence(case_id, name, desc).await.is_ok() {
                     evi_name.set(String::new());
                     evi_desc.set(String::new());
                     reload.update(|n| *n += 1);
@@ -610,8 +633,7 @@ fn CaseDetail(case: Case, source: RwSignal<Vec<Case>>, reload: RwSignal<u32>) ->
                             let case_id = case_id.clone();
                             let evidence_id = evidence_id.clone();
                             spawn_local(async move {
-                                if state
-                                    .delete_case_evidence(&case_id, &evidence_id)
+                                if cases::delete_case_evidence(case_id, evidence_id)
                                     .await
                                     .is_ok()
                                 {
@@ -710,7 +732,7 @@ fn CaseDetail(case: Case, source: RwSignal<Vec<Case>>, reload: RwSignal<u32>) ->
             return ().into_any();
         };
         if !editing.get() {
-            let owner_name = state.user_name(&c.owner_id);
+            let owner_name = owner_name.get_value();
             let status = c.status;
             let edit_btn = if can_edit {
                 view! {
@@ -752,19 +774,50 @@ fn CaseDetail(case: Case, source: RwSignal<Vec<Case>>, reload: RwSignal<u32>) ->
         }
 
         // --- edit mode ---
-        let owner_options = state
-            .users
-            .get()
-            .into_iter()
-            .map(|u| {
-                let selected = u.id == edit_owner.get();
-                view! {
-                    <option value=u.id.clone() selected=selected>
-                        {u.full_name()}
-                    </option>
+        // The dropdown of owner search results; clicking one selects it.
+        let owner_result_list = move || {
+            if !owner_picker_open.get() {
+                return ().into_any();
+            }
+            let items = owner_results.get();
+            if items.is_empty() {
+                return view! {
+                    <div class="absolute z-10 mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-500">
+                        "No matching users."
+                    </div>
                 }
-            })
-            .collect_view();
+                .into_any();
+            }
+            let rows = items
+                .into_iter()
+                .map(|u| {
+                    let id = u.id.clone();
+                    let name = u.name.clone();
+                    let label = format!("{} ({})", u.name, u.id);
+                    let select = move |_| {
+                        edit_owner.set(id.clone());
+                        owner_label.set(name.clone());
+                        owner_picker_open.set(false);
+                    };
+                    view! {
+                        <button
+                            type="button"
+                            on:click=select
+                            class="block w-full truncate px-3 py-1.5 text-left text-sm text-slate-200 hover:bg-slate-800"
+                        >
+                            {label}
+                        </button>
+                    }
+                    .into_any()
+                })
+                .collect_view();
+            view! {
+                <div class="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-lg border border-slate-700 bg-slate-950">
+                    {rows}
+                </div>
+            }
+            .into_any()
+        };
         view! {
             <div class=section>
                 <div class="flex items-center justify-between gap-3">
@@ -824,12 +877,28 @@ fn CaseDetail(case: Case, source: RwSignal<Vec<Case>>, reload: RwSignal<u32>) ->
                             <label class="text-xs font-medium text-slate-400">
                                 "Owner (who filed it)"
                             </label>
-                            <select
-                                class=input_class
-                                on:change=move |ev| edit_owner.set(event_target_value(&ev))
-                            >
-                                {owner_options}
-                            </select>
+                            <div class="relative">
+                                <input
+                                    class=input_class
+                                    placeholder="Search users by name or email\u{2026}"
+                                    prop:value=move || {
+                                        if owner_picker_open.get() {
+                                            owner_query.get()
+                                        } else {
+                                            owner_label.get()
+                                        }
+                                    }
+                                    on:focus=move |_| {
+                                        owner_query.set(String::new());
+                                        owner_picker_open.set(true);
+                                    }
+                                    on:input=move |ev| {
+                                        owner_picker_open.set(true);
+                                        owner_query.set(event_target_value(&ev));
+                                    }
+                                />
+                                {owner_result_list}
+                            </div>
                         </div>
                     </div>
                     <div>

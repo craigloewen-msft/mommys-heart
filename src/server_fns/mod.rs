@@ -18,5 +18,19 @@
 pub mod auth;
 pub mod cases;
 pub mod grants;
-pub mod session;
 pub mod users;
+
+use leptos::prelude::*;
+
+/// Flatten a [`ServerFnError`] into the plain, user-facing message we wrote
+/// server-side. Domain errors are raised as `ServerFnError::ServerError(msg)`;
+/// we surface `msg` directly (dropping the library's "error running server
+/// function:" prefix) so the UI shows exactly the message we wrote. Shared by
+/// every page/component that calls a server function, so the mapping lives in
+/// one place.
+pub fn err_text(e: ServerFnError) -> String {
+    match e {
+        ServerFnError::ServerError(m) => m,
+        other => other.to_string(),
+    }
+}

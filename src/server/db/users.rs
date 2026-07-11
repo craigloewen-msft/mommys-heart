@@ -2,7 +2,7 @@
 
 use crate::server::db::{audit, ids, pool};
 use crate::types::{AccountRole, CaseAssignment, CaseCapability, Page, User};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 #[derive(sqlx::FromRow)]
 struct UserRow {
@@ -16,7 +16,7 @@ struct UserRow {
 }
 
 impl UserRow {
-    fn into_user(self, assigned_cases: Vec<CaseAssignment>, audit_log: Vec<crate::types::ChangeLogEntry>) -> User {
+    fn into_user(self, assigned_cases: Vec<CaseAssignment>) -> User {
         User {
             id: self.id,
             first_name: self.first_name,
@@ -28,8 +28,7 @@ impl UserRow {
             // hash stays in the DB. Keep the field for API compatibility.
             password: String::new(),
             role: AccountRole::from_slug(&self.role).unwrap_or(AccountRole::Client),
-            assigned_cases,
-            audit_log,
+            assigned_cases
         }
     }
 }
@@ -63,75 +62,12 @@ async fn load_assignments(user_id: &str) -> Result<Vec<CaseAssignment>, sqlx::Er
     Ok(group_assignments(rows))
 }
 
+/// Fully hydrate a user row: load their per-case assignments and complete audit
+/// log. Shared by [`get`] and [`page`].
 async fn hydrate(row: UserRow) -> Result<User, sqlx::Error> {
     let assignments = load_assignments(&row.id).await?;
     let audit_log = audit::for_entity(pool(), audit::Entity::User, &row.id).await?;
-    Ok(row.into_user(assignments, audit_log))
-}
-
-/// Batched capability assignments for many users, grouped by user id then case id
-/// (mirrors [`load_assignments`] but for a whole page in one query).
-async fn load_assignments_many(
-    user_ids: &[String],
-) -> Result<HashMap<String, Vec<CaseAssignment>>, sqlx::Error> {
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT user_id, case_id, capability FROM case_assignments
-         WHERE user_id = ANY($1) ORDER BY user_id, case_id",
-    )
-    .bind(user_ids)
-    .fetch_all(pool())
-    .await?;
-
-    let mut grouped: HashMap<String, BTreeMap<String, Vec<CaseCapability>>> = HashMap::new();
-    for (user_id, case_id, cap) in rows {
-        if let Some(c) = CaseCapability::from_slug(&cap) {
-            grouped
-                .entry(user_id)
-                .or_default()
-                .entry(case_id)
-                .or_default()
-                .push(c);
-        }
-    }
-    Ok(grouped
-        .into_iter()
-        .map(|(user_id, cases)| {
-            (
-                user_id,
-                cases
-                    .into_iter()
-                    .map(|(case_id, capabilities)| CaseAssignment {
-                        case_id,
-                        capabilities,
-                    })
-                    .collect(),
-            )
-        })
-        .collect())
-}
-
-/// Fully hydrate a page of users with a fixed, small number of queries instead
-/// of one-query-per-sub-resource-per-user (an N+1 pattern). The two independent
-/// batch loads run concurrently.
-async fn hydrate_many(rows: Vec<UserRow>) -> Result<Vec<User>, sqlx::Error> {
-    if rows.is_empty() {
-        return Ok(Vec::new());
-    }
-    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-
-    let (mut assignments, mut audit_log) = tokio::try_join!(
-        load_assignments_many(&ids),
-        audit::for_entities(pool(), audit::Entity::User, &ids),
-    )?;
-
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            let a = assignments.remove(&row.id).unwrap_or_default();
-            let log = audit_log.remove(&row.id).unwrap_or_default();
-            row.into_user(a, log)
-        })
-        .collect())
+    Ok(row.into_user(assignments))
 }
 
 /// One page of users (ordered by id), each fully hydrated with assignments and
@@ -188,7 +124,10 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
     // one fewer sequential round-trip against a networked database.
     let (total, rows) = tokio::try_join!(total_fut, rows_fut)?;
 
-    let items = hydrate_many(rows).await?;
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        items.push(hydrate(row).await?);
+    }
     Ok(Page { items, total })
 }
 
@@ -220,7 +159,7 @@ pub async fn get_with_capabilities(id: &str) -> Result<Option<User>, sqlx::Error
     .fetch_optional(pool());
 
     let (row, assignments) = tokio::try_join!(row_fut, load_assignments(id))?;
-    Ok(row.map(|r| r.into_user(assignments, Vec::new())))
+    Ok(row.map(|r| r.into_user(assignments)))
 }
 
 /// Resolve a signed-in user (with capabilities, no audit log) from a session
@@ -253,54 +192,78 @@ pub async fn resolve_by_session_token(token_hash: &str) -> Result<Option<User>, 
     .fetch_all(pool());
 
     let (row, assignment_rows) = tokio::try_join!(user_fut, assignments_fut)?;
-    Ok(row.map(|r| r.into_user(group_assignments(assignment_rows), Vec::new())))
+    Ok(row.map(|r| r.into_user(group_assignments(assignment_rows))))
 }
 
-/// Build a lightweight directory [`User`] (names + role only, no PII/assignments
-/// /audit) from a `(id, first_name, last_name, role)` row.
-fn directory_user((id, first_name, last_name, role): (String, String, String, String)) -> User {
-    User {
-        id,
-        first_name,
-        last_name,
-        email: String::new(),
-        phone: String::new(),
-        home_address: String::new(),
-        password: String::new(),
-        role: AccountRole::from_slug(&role).unwrap_or(AccountRole::Client),
-        assigned_cases: Vec::new(),
-        audit_log: Vec::new(),
-    }
-}
 
-/// Name-resolution directory entries for the given user ids: id, names, and role
-/// only. Deliberately omits contact details, assignments, and audit history (so
-/// no PII leaves the database), and skips the per-user hydration queries that
-/// [`page`] runs. Used to build the non-admin bootstrap directory efficiently.
-pub async fn directory(ids: &[String]) -> Result<Vec<User>, sqlx::Error> {
-    if ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-        "SELECT id, first_name, last_name, role FROM users WHERE id = ANY($1) ORDER BY id",
+/// Case-insensitive search over users 
+pub async fn search_directory(
+    query: &str,
+    limit: i64,
+) -> Result<Vec<crate::server_fns::users::UserSummary>, sqlx::Error> {
+    use crate::server_fns::users::UserSummary;
+
+    let limit = limit.clamp(1, 50);
+
+    // Build an escaped `%term%` pattern, or `None` for "no filter" (matches the
+    // escaping in [`page`] so user input is matched literally).
+    let term = query.trim();
+    let pattern = if term.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        ))
+    };
+
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT id,
+                NULLIF(TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')), '') AS name
+         FROM users
+         WHERE $1::text IS NULL
+            OR id ILIKE $1
+            OR first_name ILIKE $1
+            OR last_name ILIKE $1
+            OR (first_name || ' ' || last_name) ILIKE $1
+            OR email ILIKE $1
+         ORDER BY name NULLS LAST, id
+         LIMIT $2",
     )
-    .bind(ids)
+    .bind(&pattern)
+    .bind(limit)
     .fetch_all(pool())
     .await?;
-    Ok(rows.into_iter().map(directory_user).collect())
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, name)| UserSummary {
+            name: name.unwrap_or_else(|| id.clone()),
+            id,
+        })
+        .collect())
 }
 
-/// Lightweight directory of *every* user (id, names, and role only — same shape
-/// as [`directory`]). One flat query with no per-user hydration, so it stays
-/// cheap even with thousands of rows. This is what the admin bootstrap needs for
-/// name resolution and owner pickers; the admin management screen loads full
-/// user detail a page at a time via [`page`].
-pub async fn directory_all() -> Result<Vec<User>, sqlx::Error> {
-    let rows: Vec<(String, String, String, String)> =
-        sqlx::query_as("SELECT id, first_name, last_name, role FROM users ORDER BY id")
-            .fetch_all(pool())
-            .await?;
-    Ok(rows.into_iter().map(directory_user).collect())
+/// A single user's summary (id + display name) by id, or `None` if no such user
+/// exists. The lightweight, single-row counterpart to [`search_directory`] for
+/// resolving one owner/assignee's name. The name falls back to the id when unset.
+pub async fn summary(id: &str) -> Result<Option<crate::server_fns::users::UserSummary>, sqlx::Error> {
+    use crate::server_fns::users::UserSummary;
+
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT id,
+                NULLIF(TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')), '') AS name
+         FROM users
+         WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool())
+    .await?;
+
+    Ok(row.map(|(id, name)| UserSummary {
+        name: name.unwrap_or_else(|| id.clone()),
+        id,
+    }))
 }
 
 /// Distinct ids of users assigned (via `case_assignments`) to any of the given
@@ -378,7 +341,7 @@ pub async fn authenticate(email: &str) -> Result<Option<(User, String)>, sqlx::E
         home_address: row.home_address,
         role: row.role,
     }
-    .into_user(group_assignments(assignment_rows), Vec::new());
+    .into_user(group_assignments(assignment_rows));
     Ok(Some((user, row.password_hash)))
 }
 

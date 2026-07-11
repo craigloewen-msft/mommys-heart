@@ -2,8 +2,28 @@
 //! assignments. All require administrator rights.
 
 use leptos::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::types::{AccountRole, CaseCapability, Page, User};
+
+/// A user summary
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserSummary {
+    pub id: String,
+    pub name: String,
+}
+
+/// Server-side typeahead search over users for the case owner-picker
+#[server(prefix = "/api")]
+pub async fn search_users(query: String) -> Result<Vec<UserSummary>, ServerFnError> {
+    use crate::server::db::users;
+    use crate::server::permissions::require_user;
+
+    require_user().await?;
+    users::search_directory(&query, 10)
+        .await
+        .map_err(ServerFnError::new)
+}
 
 /// One page of users for the admin management screen, ordered by id, with an
 /// optional case-insensitive search over id/name/email. Admin only.
@@ -85,4 +105,32 @@ pub async fn unassign_case(user_id: String, case_id: String) -> Result<(), Serve
     users::unassign(&user_id, &case_id, &actor.full_name())
         .await
         .map_err(ServerFnError::new)
+}
+
+/// Apply a batch of per-case permission changes for one user in a single
+/// request. Each change is either a new capability set for a case (`Some`) or a
+/// removal of the assignment (`None`). Backs the admin "Edit → Save" flow so a
+/// whole draft applies in one round-trip instead of one server call per checkbox.
+#[server(prefix = "/api")]
+pub async fn save_case_permissions(
+    user_id: String,
+    changes: Vec<(String, Option<Vec<CaseCapability>>)>,
+) -> Result<(), ServerFnError> {
+    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::db::users;
+
+    let actor = require_user().await?;
+    require_admin(&actor)?;
+    let actor_name = actor.full_name();
+    for (case_id, caps) in changes {
+        match caps {
+            Some(caps) => users::assign_capabilities(&user_id, &case_id, &caps, &actor_name)
+                .await
+                .map_err(ServerFnError::new)?,
+            None => users::unassign(&user_id, &case_id, &actor_name)
+                .await
+                .map_err(ServerFnError::new)?,
+        }
+    }
+    Ok(())
 }

@@ -3,28 +3,55 @@
 //! before touching the database.
 
 use leptos::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::types::{Case, CaseStatus, Message, Page};
 
-/// One page of fully-hydrated cases for the case screen, ordered by id, with an
-/// optional case-insensitive search over id/name. Scoped to the cases the caller
-/// owns or is assigned to (admins are not special here).
-///
-/// Backs the case screen's server-side pagination ("Load more") so the UI never
-/// has to pull every case into the browser.
+/// A sparse view of a case for list/directory screens: the header fields only
+/// (id, name, status, owner id + resolved owner name, and chat message count),
+/// with none of the heavy sub-resources (notes, evidence, properties, audit
+/// log). Shared by the DB layer that produces it and the pages that render it,
+/// so it is defined exactly once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaseSummary {
+    pub id: String,
+    pub name: String,
+    pub status: CaseStatus,
+    pub owner_id: String,
+    pub owner_name: String,
+    pub message_count: usize,
+}
+
+/// One page of summarized cases the caller owns or is assigned to, ordered by
+/// id, with an optional case-insensitive search over id/name. Owner names and
+/// message counts are resolved server-side. Paginated ("Load more") so the
+/// browser never pulls every case at once; the full detail for one case is
+/// loaded on demand via [`load_case`].
 #[server(prefix = "/api")]
-pub async fn list_cases_page(
+pub async fn load_case_summaries_for_user(
     offset: i64,
     limit: i64,
     search: String,
-) -> Result<Page<Case>, ServerFnError> {
+) -> Result<Page<CaseSummary>, ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    cases::page(offset, limit, &search, &user.id)
+    cases::get_summaries_for_user(offset, limit, &search, &user.id)
         .await
         .map_err(ServerFnError::new)
+}
+
+/// Load a fully hydrated case
+#[server(prefix = "/api")]
+pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::{require_cap, require_user};
+    use crate::types::CaseCapability;
+
+    let user = require_user().await?;
+    require_cap(&user, &case_id, CaseCapability::ViewCase).await?;
+    cases::get(&case_id).await.map_err(ServerFnError::new)
 }
 
 /// Admin-only lightweight case search for the permission tool: find any case

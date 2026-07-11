@@ -278,10 +278,7 @@ pub struct User {
     pub role: AccountRole,
     /// Cases this user is assigned to, with their permission on each.
     #[serde(default)]
-    pub assigned_cases: Vec<CaseAssignment>,
-    /// Append-only log of who changed which field of this user, and when.
-    #[serde(default)]
-    pub audit_log: Vec<ChangeLogEntry>,
+    pub assigned_cases: Vec<CaseAssignment>
 }
 
 impl User {

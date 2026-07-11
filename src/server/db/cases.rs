@@ -1,10 +1,10 @@
 //! Cases and their sub-resources: notes, evidence, properties, and audit log.
 
 use crate::server::db::{audit, ids, now_stamp, pool, users};
+use crate::server_fns::cases::CaseSummary;
 use crate::types::{
     Case, CaseCapability, CaseNote, CaseProperty, CaseStatus, Evidence, Page,
 };
-use std::collections::HashMap;
 
 #[derive(sqlx::FromRow)]
 struct CaseRow {
@@ -102,114 +102,6 @@ async fn hydrate(row: CaseRow) -> Result<Case, sqlx::Error> {
     })
 }
 
-/// Batched notes for many cases, grouped by case id (each list in `seq` order).
-async fn load_notes_many(
-    case_ids: &[String],
-) -> Result<HashMap<String, Vec<CaseNote>>, sqlx::Error> {
-    #[derive(sqlx::FromRow)]
-    struct Row {
-        case_id: String,
-        id: String,
-        author: String,
-        body: String,
-        created_at: String,
-    }
-    let rows = sqlx::query_as::<_, Row>(
-        "SELECT case_id, id, author, body, created_at
-         FROM case_notes WHERE case_id = ANY($1) ORDER BY case_id, seq ASC",
-    )
-    .bind(case_ids)
-    .fetch_all(pool())
-    .await?;
-    let mut map: HashMap<String, Vec<CaseNote>> = HashMap::new();
-    for r in rows {
-        map.entry(r.case_id).or_default().push(CaseNote {
-            id: r.id,
-            author: r.author,
-            body: r.body,
-            created_at: r.created_at,
-        });
-    }
-    Ok(map)
-}
-
-/// Batched evidence for many cases, grouped by case id (each list in `seq` order).
-async fn load_evidence_many(
-    case_ids: &[String],
-) -> Result<HashMap<String, Vec<Evidence>>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, EvidenceRow>(
-        "SELECT id, name, case_id, uploaded_by, uploaded_at, description
-         FROM evidence WHERE case_id = ANY($1) ORDER BY case_id, seq ASC",
-    )
-    .bind(case_ids)
-    .fetch_all(pool())
-    .await?;
-    let mut map: HashMap<String, Vec<Evidence>> = HashMap::new();
-    for r in rows {
-        map.entry(r.case_id.clone()).or_default().push(Evidence {
-            id: r.id,
-            name: r.name,
-            case_id: r.case_id,
-            uploaded_by: r.uploaded_by,
-            uploaded_at: r.uploaded_at,
-            description: r.description,
-        });
-    }
-    Ok(map)
-}
-
-/// Batched properties for many cases, grouped by case id (each list in `ord` order).
-async fn load_properties_many(
-    case_ids: &[String],
-) -> Result<HashMap<String, Vec<CaseProperty>>, sqlx::Error> {
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT case_id, key, value FROM case_properties
-         WHERE case_id = ANY($1) ORDER BY case_id, ord ASC",
-    )
-    .bind(case_ids)
-    .fetch_all(pool())
-    .await?;
-    let mut map: HashMap<String, Vec<CaseProperty>> = HashMap::new();
-    for (case_id, key, value) in rows {
-        map.entry(case_id)
-            .or_default()
-            .push(CaseProperty { key, value });
-    }
-    Ok(map)
-}
-
-/// Fully hydrate a page of cases with a fixed, small number of queries instead
-/// of one-query-per-sub-resource-per-case (an N+1 pattern). The four independent
-/// batch loads run concurrently, so the whole page costs roughly one round-trip.
-async fn hydrate_many(rows: Vec<CaseRow>) -> Result<Vec<Case>, sqlx::Error> {
-    if rows.is_empty() {
-        return Ok(Vec::new());
-    }
-    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-
-    let (mut notes, mut evidence, mut properties, mut audit_log) = tokio::try_join!(
-        load_notes_many(&ids),
-        load_evidence_many(&ids),
-        load_properties_many(&ids),
-        audit::for_entities(pool(), audit::Entity::Case, &ids),
-    )?;
-
-    Ok(rows
-        .into_iter()
-        .map(|row| Case {
-            notes: notes.remove(&row.id).unwrap_or_default(),
-            evidence: evidence.remove(&row.id).unwrap_or_default(),
-            properties: properties.remove(&row.id).unwrap_or_default(),
-            audit_log: audit_log.remove(&row.id).unwrap_or_default(),
-            status: CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open),
-            id: row.id,
-            name: row.name,
-            owner_id: row.owner_id,
-            message_count: 0,
-        })
-        .collect())
-}
-
 /// A lightweight [`Case`] (id, name, status, owner only — no notes, evidence,
 /// properties, or audit) from a `CaseRow`. Used for list/directory views that
 /// never render the sub-resources.
@@ -227,46 +119,91 @@ fn summary(row: CaseRow) -> Case {
     }
 }
 
-/// Cases visible to `viewer` (those they hold capabilities on) in lightweight
-/// form (see [`summary`]). Bounded by the user's own assignments, so it stays
-/// cheap no matter how many cases exist system-wide. This is what bootstrap
-/// ships for name resolution and the case/chat pickers; the case screen loads
-/// full, paginated detail on demand via [`page`].
-pub async fn directory_for(viewer: &str) -> Result<Vec<Case>, sqlx::Error> {
+/// One page of sparse cases visible to a user_id
+pub async fn get_summaries_for_user(
+    offset: i64,
+    limit: i64,
+    search: &str,
+    user_id: &str,
+) -> Result<Page<CaseSummary>, sqlx::Error> {
     #[derive(sqlx::FromRow)]
     struct DirRow {
         id: String,
         name: String,
         status: String,
         owner_id: String,
+        owner_name: String,
         message_count: i64,
     }
 
-    let rows = sqlx::query_as::<_, DirRow>(
+    let limit = limit.clamp(1, 100);
+    let offset = offset.max(0);
+
+    // Escaped `%term%` pattern (or `None` for "no filter"), so user input is
+    // matched literally rather than as LIKE metacharacters.
+    let term = search.trim();
+    let pattern = if term.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        ))
+    };
+
+    // `$1` is the (nullable) search pattern; the viewer id scopes the results to
+    // cases they hold capabilities on. Its bind position differs between the
+    // COUNT query (`$2`) and the page query (`$4`, after LIMIT/OFFSET).
+    const SEARCH: &str = "($1::text IS NULL OR c.id ILIKE $1 OR c.name ILIKE $1)";
+    const SCOPE: &str = "EXISTS \
+        (SELECT 1 FROM case_assignments a WHERE a.case_id = c.id AND a.user_id = $VIEWER)";
+
+    let count_sql = format!(
+        "SELECT count(*) FROM cases c WHERE {SEARCH} AND {}",
+        SCOPE.replace("$VIEWER", "$2")
+    );
+    let page_sql = format!(
         "SELECT c.id, c.name, c.status, c.owner_id,
+                TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS owner_name,
                 (SELECT COUNT(*) FROM messages m WHERE m.case_id = c.id) AS message_count
          FROM cases c
-         WHERE EXISTS (SELECT 1 FROM case_assignments a
-                       WHERE a.case_id = c.id AND a.user_id = $1)
-         ORDER BY c.id",
-    )
-    .bind(viewer)
-    .fetch_all(pool())
-    .await?;
-    Ok(rows
+         LEFT JOIN users u ON u.id = c.owner_id
+         WHERE {SEARCH} AND {}
+         ORDER BY c.id LIMIT $2 OFFSET $3",
+        SCOPE.replace("$VIEWER", "$4")
+    );
+
+    // The count and the page fetch are independent, so run them concurrently —
+    // one fewer sequential round-trip against a networked database.
+    let count_fut = sqlx::query_scalar::<_, i64>(&count_sql)
+        .bind(&pattern)
+        .bind(user_id)
+        .fetch_one(pool());
+    let rows_fut = sqlx::query_as::<_, DirRow>(&page_sql)
+        .bind(&pattern)
+        .bind(limit)
+        .bind(offset)
+        .bind(user_id)
+        .fetch_all(pool());
+    let (total, rows) = tokio::try_join!(count_fut, rows_fut)?;
+
+    let items = rows
         .into_iter()
-        .map(|r| Case {
+        .map(|r| CaseSummary {
+            // Fall back to the owner id if the user row is missing or unnamed.
+            owner_name: if r.owner_name.is_empty() {
+                r.owner_id.clone()
+            } else {
+                r.owner_name
+            },
             id: r.id,
             name: r.name,
             status: CaseStatus::from_slug(&r.status).unwrap_or(CaseStatus::Open),
             owner_id: r.owner_id,
-            notes: Vec::new(),
-            evidence: Vec::new(),
-            properties: Vec::new(),
-            audit_log: Vec::new(),
             message_count: r.message_count.max(0) as usize,
         })
-        .collect())
+        .collect();
+    Ok(Page { items, total })
 }
 
 /// Up to `limit` lightweight cases whose id or name matches `search`
@@ -309,68 +246,6 @@ pub async fn by_ids_lite(ids: &[String]) -> Result<Vec<Case>, sqlx::Error> {
     .fetch_all(pool())
     .await?;
     Ok(rows.into_iter().map(summary).collect())
-}
-
-/// One page of fully-hydrated cases, ordered by id, with an optional
-/// case-insensitive search over id/name, scoped to the cases `viewer` holds
-/// capabilities on.
-///
-/// Backs the case screen's server-side pagination ("Load more") so the UI never
-/// has to pull every case into the browser.
-pub async fn page(
-    offset: i64,
-    limit: i64,
-    search: &str,
-    viewer: &str,
-) -> Result<Page<Case>, sqlx::Error> {
-    let limit = limit.clamp(1, 100);
-    let offset = offset.max(0);
-
-    // Escaped `%term%` pattern (or `None` for "no filter"), so user input is
-    // matched literally rather than as LIKE metacharacters.
-    let term = search.trim();
-    let pattern = if term.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "%{}%",
-            term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
-        ))
-    };
-
-    // `$1` is the (nullable) search pattern; the viewer id scopes the results to
-    // cases they hold capabilities on. Its bind position differs between the
-    // COUNT query (`$2`) and the page query (`$4`, after LIMIT/OFFSET).
-    const SEARCH: &str = "($1::text IS NULL OR id ILIKE $1 OR name ILIKE $1)";
-    const SCOPE: &str = "EXISTS \
-        (SELECT 1 FROM case_assignments a WHERE a.case_id = cases.id AND a.user_id = $VIEWER)";
-
-    let count_sql = format!(
-        "SELECT count(*) FROM cases WHERE {SEARCH} AND {}",
-        SCOPE.replace("$VIEWER", "$2")
-    );
-    let page_sql = format!(
-        "SELECT id, name, status, owner_id FROM cases WHERE {SEARCH} AND {} \
-         ORDER BY id LIMIT $2 OFFSET $3",
-        SCOPE.replace("$VIEWER", "$4")
-    );
-
-    // The count and the page fetch are independent, so run them concurrently —
-    // one fewer sequential round-trip against a networked database.
-    let count_fut = sqlx::query_scalar::<_, i64>(&count_sql)
-        .bind(&pattern)
-        .bind(viewer)
-        .fetch_one(pool());
-    let page_fut = sqlx::query_as::<_, CaseRow>(&page_sql)
-        .bind(&pattern)
-        .bind(limit)
-        .bind(offset)
-        .bind(viewer)
-        .fetch_all(pool());
-    let (total, rows) = tokio::try_join!(count_fut, page_fut)?;
-
-    let items = hydrate_many(rows).await?;
-    Ok(Page { items, total })
 }
 
 /// A single case by id, fully hydrated.

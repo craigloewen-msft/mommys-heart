@@ -13,16 +13,7 @@
 use leptos::prelude::*;
 use leptos_router::components::Redirect;
 
-use crate::state::{AppState, AuthPhase};
-
-fn loading_screen() -> AnyView {
-    view! {
-        <div class="grid min-h-screen place-items-center bg-slate-950 text-slate-400">
-            <p class="text-sm">"Loading\u{2026}"</p>
-        </div>
-    }
-    .into_any()
-}
+use crate::state::AppState;
 
 /// Show `content` only to authenticated visitors; redirect signed-out visitors
 /// to `/login`. Reactive on the auth phase.
@@ -30,10 +21,10 @@ pub fn require_login<F>(state: AppState, content: F) -> AnyView
 where
     F: Fn() -> AnyView + Send + 'static,
 {
-    (move || match state.auth.get() {
-        AuthPhase::Loading => loading_screen(),
-        AuthPhase::SignedOut => view! { <Redirect path="/login" /> }.into_any(),
-        AuthPhase::SignedIn => content(),
+    (move || if state.is_authenticated() {
+        content()
+    } else {
+        view! { <Redirect path="/login" /> }.into_any()
     })
     .into_any()
 }
@@ -44,13 +35,14 @@ pub fn require_admin<F>(state: AppState, content: F) -> AnyView
 where
     F: Fn() -> AnyView + Send + 'static,
 {
-    (move || match state.auth.get() {
-        AuthPhase::Loading => loading_screen(),
-        AuthPhase::SignedOut => view! { <Redirect path="/login" /> }.into_any(),
-        AuthPhase::SignedIn => match state.current_user.get() {
-            Some(u) if u.role.is_admin() => content(),
-            _ => view! { <Redirect path="/cases" /> }.into_any(),
-        },
+    (move || if state.is_authenticated() {
+        if state.is_admin() {
+            content()
+        } else {
+            view! { <Redirect path="/cases" /> }.into_any()
+        }
+    } else {
+        view! { <Redirect path="/login" /> }.into_any()
     })
     .into_any()
 }

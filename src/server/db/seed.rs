@@ -56,7 +56,7 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .execute(pool)
         .await?;
 
-        insert_audit(&u.id, "user", &u.audit_log).await?;
+        insert_audit(&u.id, "user", &Vec::<ChangeLogEntry>::new()).await?;
     }
 
     // 2. Grants.

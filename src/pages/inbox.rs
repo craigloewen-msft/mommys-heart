@@ -3,8 +3,10 @@ use leptos::task::spawn_local;
 
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
+use crate::server_fns::cases::{load_case_summaries_for_user, CaseSummary};
+use crate::server_fns::err_text;
 use crate::state::AppState;
-use crate::types::CaseCapability;
+use crate::types::{CaseCapability, Message};
 
 /// Case Chat: one chat thread per case. Anyone assigned to a case (with
 /// permission) can read it; posting requires the `SendMessages` capability.
@@ -12,52 +14,72 @@ use crate::types::CaseCapability;
 pub fn InboxPage() -> impl IntoView {
     let state = expect_context::<AppState>();
 
+    let cases = RwSignal::new(Vec::<CaseSummary>::new());
+    let total = RwSignal::new(0i64);
+    let load_error = RwSignal::new(None::<String>);
+
     let selected = RwSignal::new(None::<String>);
     let search = RwSignal::new(String::new());
-    // Lazy-load: only render this many rows, growing on demand.
-    const PAGE: usize = 15;
-    let visible_count = RwSignal::new(PAGE);
+    let debounced_search = RwSignal::new(String::new());
+    // How many rows the current window requests; grows on "Load more".
+    const PAGE: i64 = 15;
+    let window = RwSignal::new(PAGE);
+    let loading = RwSignal::new(false);
 
     let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+
+    // (Re)load the window whenever the debounced search or window size changes
+    Effect::new(move |_| {
+        let count = window.get();
+        let q = debounced_search.get();
+        if !state.is_authenticated() {
+            return;
+        }
+        loading.set(true);
+        spawn_local(async move {
+            match load_case_summaries_for_user(0, count, q).await {
+                Ok(page) => {
+                    cases.set(page.items);
+                    total.set(page.total);
+                    load_error.set(None);
+                }
+                Err(e) => load_error.set(Some(err_text(e))),
+            }
+            loading.set(false);
+        });
+    });
 
     require_login(state, move || {
         // Auto-select the first accessible case so the chat is populated on load.
         if selected.get_untracked().is_none() {
-            if let Some(first) = state.visible_cases().first() {
+            if let Some(first) = cases.get().first() {
                 selected.set(Some(first.id.clone()));
             }
         }
 
-        // Display title for a case: the case name with its owner appended, so the
-        // search can match on either.
-        let title_for =
-            move |c: &crate::types::Case| format!("{} · {}", c.name, state.user_name(&c.owner_id));
-
-        // Cases matching the current search, in display order.
-        let filtered_cases = move || {
-            let q = search.get().trim().to_lowercase();
-            state
-                .visible_cases()
-                .into_iter()
-                .filter(|c| q.is_empty() || title_for(c).to_lowercase().contains(&q))
-                .collect::<Vec<_>>()
-        };
+        // Display title for a case: the case name with its owner appended.
+        let title_for = move |c: &CaseSummary| format!("{} · {}", c.name, c.owner_name);
 
         let case_list = move || {
-            let all = filtered_cases();
-            let total = all.len();
-            if total == 0 {
-                let msg = if search.get().trim().is_empty() {
+            if let Some(msg) = load_error.get() {
+                return view! {
+                    <p class="text-sm text-rose-300">"Could not load case chats: " {msg}</p>
+                }
+                .into_any();
+            }
+            let all = cases.get();
+            if all.is_empty() {
+                let msg = if loading.get() {
+                    "Loading\u{2026}"
+                } else if search.get().trim().is_empty() {
                     "You have no case chats yet."
                 } else {
                     "No cases match your search."
                 };
                 return view! { <p class="text-sm text-slate-400">{msg}</p> }.into_any();
             }
-            let shown = visible_count.get().min(total);
-            let rows = all
+            all
                 .into_iter()
-                .take(shown)
                 .map(|c| {
                     let case_id = c.id.clone();
                     let is_selected = {
@@ -90,32 +112,30 @@ pub fn InboxPage() -> impl IntoView {
                     }
                     .into_any()
                 })
-                .collect_view();
-
-            let load_more = if shown < total {
-                view! {
-                    <button
-                        on:click=move |_| visible_count.update(|n| *n += PAGE)
-                        class="w-full rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800"
-                    >
-                        "Load more (" {shown} " of " {total} ")"
-                    </button>
-                }
+                .collect_view()
                 .into_any()
-            } else if total > PAGE {
-                view! {
-                    <p class="text-center text-xs text-slate-500">
-                        "Showing all " {total} " cases"
-                    </p>
-                }
-                .into_any()
-            } else {
-                ().into_any()
-            };
+        };
 
+        let footer = move || {
+            let shown = cases.get().len() as i64;
+            let tot = total.get();
+            if tot == 0 {
+                return ().into_any();
+            }
+            let more = shown < tot;
             view! {
-                <div class="space-y-2">{rows}</div>
-                <div class="pt-1">{load_more}</div>
+                <div class="mt-2 flex items-center justify-between">
+                    <p class="text-xs text-slate-500">"Showing " {shown} " of " {tot}</p>
+                    <Show when=move || more>
+                        <button
+                            on:click=move |_| window.update(|w| *w += PAGE)
+                            prop:disabled=move || loading.get()
+                            class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                        >
+                            {move || if loading.get() { "Loading\u{2026}" } else { "Load more" }}
+                        </button>
+                    </Show>
+                </div>
             }
             .into_any()
         };
@@ -128,7 +148,7 @@ pub fn InboxPage() -> impl IntoView {
                     </div>
                 }
                 .into_any(),
-                Some(id) => match state.cases.get().into_iter().find(|c| c.id == id) {
+                Some(id) => match cases.get().into_iter().find(|c| c.id == id) {
                     Some(c) => {
                         let title = title_for(&c);
                         view! { <CaseChat case_id=c.id case_name=title /> }.into_any()
@@ -140,6 +160,12 @@ pub fn InboxPage() -> impl IntoView {
             }
         };
 
+        // Debounce the search
+        let mut on_search = debounce(std::time::Duration::from_secs(1), move |val: String| {
+            window.set(PAGE);
+            debounced_search.set(val);
+        });
+
         view! {
             <Layout title="Case Chat".to_string()>
                 <div class="grid gap-6 lg:grid-cols-[22rem_1fr]">
@@ -149,11 +175,13 @@ pub fn InboxPage() -> impl IntoView {
                             placeholder="Search cases…"
                             prop:value=move || search.get()
                             on:input=move |ev| {
-                                search.set(event_target_value(&ev));
-                                visible_count.set(PAGE);
+                                let val = event_target_value(&ev);
+                                search.set(val.clone());
+                                on_search(val);
                             }
                         />
                         {case_list}
+                        {footer}
                     </div>
                     <div>{thread}</div>
                 </div>
@@ -178,12 +206,16 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
         .unwrap_or_default();
 
     let can_send = state
-        .cases
+        .current_user
         .get_untracked()
-        .into_iter()
-        .find(|c| c.id == case_id)
-        .map(|c| state.case_can(&c, CaseCapability::SendMessages))
+        .map(|u| {
+            u.capabilities_for(&case_id)
+                .contains(&CaseCapability::SendMessages)
+        })
         .unwrap_or(false);
+
+    // This case's chat messages live here — loaded on demand for the open case.
+    let messages = RwSignal::new(Vec::<Message>::new());
 
     // How many of the most recent messages to request; grows on "Load more".
     const MSG_PAGE: i64 = 20;
@@ -209,24 +241,22 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
             let lim = limit.get();
             let case_id = case_id.clone();
             spawn_local(async move {
-                if let Ok(t) = state.load_messages(&case_id, lim).await {
-                    total.set(t);
+                if let Ok(page) = crate::server_fns::cases::list_messages_page(case_id, lim).await {
+                    messages.set(page.items);
+                    total.set(page.total);
                 }
             });
         });
     }
 
     // Once messages first arrive, jump to the latest one.
-    {
-        let case_id = case_id.clone();
-        Effect::new(move |_| {
-            let has = !state.messages_for_case(&case_id).is_empty();
-            if has && !did_initial_scroll.get_untracked() {
-                did_initial_scroll.set(true);
-                scroll_to_bottom();
-            }
-        });
-    }
+    Effect::new(move |_| {
+        let has = !messages.get().is_empty();
+        if has && !did_initial_scroll.get_untracked() {
+            did_initial_scroll.set(true);
+            scroll_to_bottom();
+        }
+    });
 
     let body = RwSignal::new(String::new());
     let error = RwSignal::new(String::new());
@@ -237,24 +267,24 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
             let case_id = case_id.clone();
             let body_val = body.get_untracked();
             spawn_local(async move {
-                match state.send_case_message(&case_id, &body_val).await {
-                    Ok(()) => {
+                match crate::server_fns::cases::send_message(case_id, body_val).await {
+                    Ok(msg) => {
+                        messages.update(|all| all.push(msg));
                         body.set(String::new());
                         error.set(String::new());
                         total.update(|t| *t += 1);
                         scroll_to_bottom();
                     }
-                    Err(e) => error.set(e),
+                    Err(e) => error.set(err_text(e)),
                 }
             });
         }
     };
 
     let messages_view = {
-        let case_id = case_id.clone();
         let me = me.clone();
         move || {
-            let msgs = state.messages_for_case(&case_id);
+            let msgs = messages.get();
             let shown = msgs.len() as i64;
 
             // "Load more" pages in earlier messages at the top of the thread.

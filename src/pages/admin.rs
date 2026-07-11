@@ -3,7 +3,8 @@ use leptos::task::spawn_local;
 
 use crate::components::guard::require_admin;
 use crate::components::layout::Layout;
-use crate::state::{today, AppState, AuthPhase};
+use crate::server_fns::err_text;
+use crate::state::{today, AppState};
 use crate::types::{AccountRole, Case, CaseCapability, CasePreset, ChangeLogEntry, User};
 
 /// Cap on how many change-log rows are rendered at once (guards against huge
@@ -30,14 +31,6 @@ struct DraftAssignment {
 /// Order-insensitive equality of two capability sets.
 fn same_caps(a: &[CaseCapability], b: &[CaseCapability]) -> bool {
     a.len() == b.len() && a.iter().all(|c| b.contains(c))
-}
-
-/// Flatten a [`ServerFnError`] to the plain message we wrote server-side.
-fn err_text(e: ServerFnError) -> String {
-    match e {
-        ServerFnError::ServerError(m) => m,
-        other => other.to_string(),
-    }
 }
 
 fn badge(classes: &str) -> String {
@@ -116,7 +109,7 @@ pub fn AdminDashboardPage() -> impl IntoView {
         let count = window.get();
         let q = debounced_query.get();
         reload.track();
-        if !matches!(state.auth.get(), AuthPhase::SignedIn) {
+        if !state.is_authenticated() {
             return;
         }
         loading.set(true);
@@ -216,7 +209,6 @@ pub fn AdminDashboardPage() -> impl IntoView {
 /// fresh data (assignments, role, audit log).
 #[component]
 fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
-    let state = expect_context::<AppState>();
     let user_id = user.id.clone();
 
     // --- global role ---
@@ -226,7 +218,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
             if let Some(r) = AccountRole::from_slug(&event_target_value(&ev)) {
                 let user_id = user_id.clone();
                 spawn_local(async move {
-                    if state.set_user_role(&user_id, r).await.is_ok() {
+                    if crate::server_fns::users::set_user_role(user_id, r).await.is_ok() {
                         reload.update(|n| *n += 1);
                     }
                 });
@@ -306,28 +298,16 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
     }
 
     let case_name = move |case_id: &str| -> String {
-        if let Some(name) = case_names.with(|m| m.get(case_id).cloned()) {
-            return name;
-        }
-        state
-            .cases
-            .get()
-            .into_iter()
-            .find(|c| c.id == case_id)
-            .map(|c| c.name)
+        case_names
+            .with(|m| m.get(case_id).cloned())
             .unwrap_or_else(|| case_id.to_string())
     };
 
     let current_role = user.role;
     let full_name = user.full_name();
     let email = user.email.clone();
-    let audit_data = user.audit_log.clone();
+    let audit_data: Vec<ChangeLogEntry> = Vec::new();
 
-    // --- per-case permissions: an "Edit → Save/Cancel" flow ---
-    // `draft` is the working copy edited in place; `originals` is the snapshot we
-    // diff against on save so only genuine changes hit the server. Every change
-    // (capability toggles, removals, and newly added cases) is batched into a
-    // single save instead of one server round-trip per checkbox.
     let originals = StoredValue::new(user.assigned_cases.clone());
     let editing = RwSignal::new(false);
     let draft: RwSignal<Vec<DraftAssignment>> = RwSignal::new(Vec::new());
@@ -416,13 +396,13 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
         }
         saving.set(true);
         spawn_local(async move {
-            match state.save_case_permissions(&user_id, changes).await {
+            match crate::server_fns::users::save_case_permissions(user_id, changes).await {
                 Ok(()) => {
                     save_error.set(String::new());
                     editing.set(false);
                     reload.update(|n| *n += 1);
                 }
-                Err(e) => save_error.set(e),
+                Err(e) => save_error.set(err_text(e)),
             }
             saving.set(false);
         });

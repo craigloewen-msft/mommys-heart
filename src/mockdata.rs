@@ -129,8 +129,7 @@ pub fn users() -> Vec<User> {
                 assigned_cases: vec![
                     assign(i % CASES, CasePreset::ALL[i % 3]),
                     assign((i + CASES / 2) % CASES, CasePreset::ALL[(i + 1) % 3]),
-                ],
-                audit_log: Vec::new(),
+                ]
             }
         })
         .collect()
