@@ -3,11 +3,13 @@ use leptos::task::spawn_local;
 
 use crate::components::guard::require_admin;
 use crate::components::layout::Layout;
-use crate::server_fns::err_text;
-use crate::state::{today, AppState};
-use crate::types::{AccountRole, CaseCapability, CasePreset, ChangeLogEntry};
+use crate::server_fns::audit::ChangeLogEntry;
 use crate::server_fns::cases::CaseSummary;
+use crate::server_fns::err_text;
+use crate::server_fns::permissions::{CaseCapability, CasePreset};
+use crate::server_fns::users::AccountRole;
 use crate::server_fns::users::User;
+use crate::state::{today, AppState};
 
 /// Cap on how many change-log rows are rendered at once (guards against huge
 /// result sets).
@@ -129,37 +131,37 @@ pub fn AdminDashboardPage() -> impl IntoView {
     });
 
     require_admin(state, move || {
-    let list = move || {
-        if let Some(msg) = load_error.get() {
-            return view! {
-                <p class="text-sm text-rose-300">"Could not load users: " {msg}</p>
+        let list = move || {
+            if let Some(msg) = load_error.get() {
+                return view! {
+                    <p class="text-sm text-rose-300">"Could not load users: " {msg}</p>
+                }
+                .into_any();
             }
-            .into_any();
-        }
-        let items = results.get();
-        if items.is_empty() {
-            let text = if loading.get() {
-                "Loading\u{2026}"
-            } else {
-                "No users match your search."
-            };
-            return view! { <p class="text-sm text-slate-500">{text}</p> }.into_any();
-        }
-        items
-            .into_iter()
-            .map(|u| view! { <UserCard user=u reload=reload /> }.into_any())
-            .collect_view()
-            .into_any()
-    };
+            let items = results.get();
+            if items.is_empty() {
+                let text = if loading.get() {
+                    "Loading\u{2026}"
+                } else {
+                    "No users match your search."
+                };
+                return view! { <p class="text-sm text-slate-500">{text}</p> }.into_any();
+            }
+            items
+                .into_iter()
+                .map(|u| view! { <UserCard user=u reload=reload /> }.into_any())
+                .collect_view()
+                .into_any()
+        };
 
-    let footer = move || {
-        let shown = results.get().len() as i64;
-        let tot = total.get();
-        if tot == 0 {
-            return ().into_any();
-        }
-        let more = shown < tot;
-        view! {
+        let footer = move || {
+            let shown = results.get().len() as i64;
+            let tot = total.get();
+            if tot == 0 {
+                return ().into_any();
+            }
+            let more = shown < tot;
+            view! {
             <div class="mt-4 flex items-center justify-between">
                 <p class="text-xs text-slate-500">"Showing " {shown} " of " {tot}</p>
                 <Show when=move || more>
@@ -174,16 +176,16 @@ pub fn AdminDashboardPage() -> impl IntoView {
             </div>
         }
         .into_any()
-    };
+        };
 
-    // Debounce the search: update the visible input immediately, but wait 1s of
-    // idle typing before firing the fetch (and resetting the window).
-    let mut on_search = debounce(std::time::Duration::from_secs(1), move |val: String| {
-        window.set(PAGE_SIZE);
-        debounced_query.set(val);
-    });
+        // Debounce the search: update the visible input immediately, but wait 1s of
+        // idle typing before firing the fetch (and resetting the window).
+        let mut on_search = debounce(std::time::Duration::from_secs(1), move |val: String| {
+            window.set(PAGE_SIZE);
+            debounced_query.set(val);
+        });
 
-    view! {
+        view! {
         <Layout title="Admin".to_string()>
             <p class="mb-6 text-sm text-slate-400">
                 "Manage every user's global role and per-case permissions."
@@ -220,7 +222,10 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
             if let Some(r) = AccountRole::from_slug(&event_target_value(&ev)) {
                 let user_id = user_id.clone();
                 spawn_local(async move {
-                    if crate::server_fns::users::set_user_role(user_id, r).await.is_ok() {
+                    if crate::server_fns::users::set_user_role(user_id, r)
+                        .await
+                        .is_ok()
+                    {
                         reload.update(|n| *n += 1);
                     }
                 });
@@ -278,8 +283,11 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
     // assignments may reference cases the admin doesn't own. Resolve those names
     // once, admin-side, into a local map (id -> name) for display.
     let case_names = RwSignal::new(std::collections::HashMap::<String, String>::new());
-    let assigned_ids: Vec<String> =
-        user.assigned_cases.iter().map(|a| a.case_id.clone()).collect();
+    let assigned_ids: Vec<String> = user
+        .assigned_cases
+        .iter()
+        .map(|a| a.case_id.clone())
+        .collect();
     {
         let assigned_ids = assigned_ids.clone();
         Effect::new(move |_| {
@@ -347,13 +355,21 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
         if case_id.is_empty() {
             return;
         }
-        if let Some(d) = draft.get_untracked().into_iter().find(|d| d.case_id == case_id) {
+        if let Some(d) = draft
+            .get_untracked()
+            .into_iter()
+            .find(|d| d.case_id == case_id)
+        {
             d.removed.set(false);
         } else {
             let preset =
                 CasePreset::from_slug(&new_preset.get_untracked()).unwrap_or(CasePreset::Viewer);
             let label = new_case_label.get_untracked();
-            let name = if label.is_empty() { case_name(&case_id) } else { label };
+            let name = if label.is_empty() {
+                case_name(&case_id)
+            } else {
+                label
+            };
             let row = make_draft(case_id.clone(), name, preset.capabilities());
             draft.update(|rows| rows.push(row));
         }

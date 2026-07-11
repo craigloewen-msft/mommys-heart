@@ -1,7 +1,7 @@
 //! The unified append-only audit log shared by users and cases.
 
 use crate::server::db::{ids, now_stamp, pool};
-use crate::types::ChangeLogEntry;
+use crate::server_fns::audit::ChangeLogEntry;
 use sqlx::PgExecutor;
 use std::collections::HashMap;
 
@@ -156,12 +156,11 @@ pub async fn record(
 /// returning the number of rows removed. Retention is computed against the
 /// machine-readable `created_at` timestamp (not the display-only `at` text).
 pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query(
-        "DELETE FROM audit_log WHERE created_at < now() - make_interval(months => $1)",
-    )
-    .bind(RETENTION_MONTHS as i32)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("DELETE FROM audit_log WHERE created_at < now() - make_interval(months => $1)")
+            .bind(RETENTION_MONTHS as i32)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected())
 }
 

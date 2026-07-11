@@ -6,11 +6,11 @@ use leptos_router::hooks::use_navigate;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
-use crate::server_fns::cases::{self, Case, CaseSummary};
+use crate::server_fns::cases::{self, Case, CaseStatus, CaseSummary};
 use crate::server_fns::err_text;
+use crate::server_fns::permissions::CaseCapability;
 use crate::server_fns::users::{search_users, UserSummary};
 use crate::state::AppState;
-use crate::types::{CaseCapability, CaseStatus};
 
 /// How many cases the list loads per "page" (each "Load more" click grows the
 /// visible window by this much).
@@ -100,51 +100,49 @@ pub fn CaseHomePage() -> impl IntoView {
     });
 
     require_login(state, move || {
-
-    let cases_list = move || {
-        if let Some(msg) = load_error.get() {
-            return view! {
-                <p class="text-sm text-rose-300">"Could not load cases: " {msg}</p>
+        let cases_list = move || {
+            if let Some(msg) = load_error.get() {
+                return view! {
+                    <p class="text-sm text-rose-300">"Could not load cases: " {msg}</p>
+                }
+                .into_any();
             }
-            .into_any();
-        }
-        let all = cases.get();
-        if all.is_empty() {
-            let text = if loading.get() {
-                "Loading\u{2026}"
-            } else if query.get().trim().is_empty() {
-                "You have no cases yet."
-            } else {
-                "No cases match your search."
-            };
-            return view! { <p class="text-sm text-slate-400">{text}</p> }.into_any();
-        }
-        all
-            .into_iter()
-            .map(|c| {
-                let case_id = c.id.clone();
-                let is_selected = {
-                    let case_id = case_id.clone();
-                    move || selected.get().as_deref() == Some(case_id.as_str())
+            let all = cases.get();
+            if all.is_empty() {
+                let text = if loading.get() {
+                    "Loading\u{2026}"
+                } else if query.get().trim().is_empty() {
+                    "You have no cases yet."
+                } else {
+                    "No cases match your search."
                 };
-                let caps = state
-                    .current_user
-                    .get()
-                    .map(|u| u.capabilities_for(&c.id))
-                    .unwrap_or_default();
-                let access_badge = access_label(&caps)
-                    .map(|(label, classes)| {
-                        view! { <span class=badge(classes)>{label}</span> }.into_any()
-                    })
-                    .unwrap_or_else(|| ().into_any());
-                let status = c.status;
-                let name = c.name.clone();
-                let owner = c.owner_name.clone();
-                let select = {
-                    let case_id = case_id.clone();
-                    move |_| selected.set(Some(case_id.clone()))
-                };
-                view! {
+                return view! { <p class="text-sm text-slate-400">{text}</p> }.into_any();
+            }
+            all.into_iter()
+                .map(|c| {
+                    let case_id = c.id.clone();
+                    let is_selected = {
+                        let case_id = case_id.clone();
+                        move || selected.get().as_deref() == Some(case_id.as_str())
+                    };
+                    let caps = state
+                        .current_user
+                        .get()
+                        .map(|u| u.capabilities_for(&c.id))
+                        .unwrap_or_default();
+                    let access_badge = access_label(&caps)
+                        .map(|(label, classes)| {
+                            view! { <span class=badge(classes)>{label}</span> }.into_any()
+                        })
+                        .unwrap_or_else(|| ().into_any());
+                    let status = c.status;
+                    let name = c.name.clone();
+                    let owner = c.owner_name.clone();
+                    let select = {
+                        let case_id = case_id.clone();
+                        move |_| selected.set(Some(case_id.clone()))
+                    };
+                    view! {
                     <button
                         on:click=select
                         class=move || {
@@ -167,19 +165,19 @@ pub fn CaseHomePage() -> impl IntoView {
                     </button>
                 }
                 .into_any()
-            })
-            .collect_view()
-            .into_any()
-    };
+                })
+                .collect_view()
+                .into_any()
+        };
 
-    let footer = move || {
-        let shown = cases.get().len() as i64;
-        let tot = total.get();
-        if tot == 0 {
-            return ().into_any();
-        }
-        let more = shown < tot;
-        view! {
+        let footer = move || {
+            let shown = cases.get().len() as i64;
+            let tot = total.get();
+            if tot == 0 {
+                return ().into_any();
+            }
+            let more = shown < tot;
+            view! {
             <div class="mt-3 flex items-center justify-between">
                 <p class="text-xs text-slate-500">"Showing " {shown} " of " {tot}</p>
                 <Show when=move || more>
@@ -194,10 +192,10 @@ pub fn CaseHomePage() -> impl IntoView {
             </div>
         }
         .into_any()
-    };
+        };
 
-    let detail = move || {
-        match selected.get() {
+        let detail = move || {
+            match selected.get() {
         None => view! {
             <div class="rounded-xl border border-dashed border-slate-700 p-8 text-center text-sm text-slate-500">
                 "Select a case to view and manage it."
@@ -214,18 +212,18 @@ pub fn CaseHomePage() -> impl IntoView {
             }
         }
     }
-    };
+        };
 
-    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+        let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
 
-    // Debounce the search: update the visible input immediately, but wait 1s of
-    // idle typing before firing the fetch (and resetting the window).
-    let mut on_search = debounce(std::time::Duration::from_secs(1), move |val: String| {
-        window.set(PAGE_SIZE);
-        debounced_query.set(val);
-    });
+        // Debounce the search: update the visible input immediately, but wait 1s of
+        // idle typing before firing the fetch (and resetting the window).
+        let mut on_search = debounce(std::time::Duration::from_secs(1), move |val: String| {
+            window.set(PAGE_SIZE);
+            debounced_query.set(val);
+        });
 
-    view! {
+        view! {
         <Layout title="Cases".to_string()>
             <div class="grid gap-6 lg:grid-cols-[22rem_1fr]">
                 <div class="space-y-4">
@@ -276,34 +274,35 @@ pub fn NewCasePage() -> impl IntoView {
     let label_class = "block text-xs font-medium text-slate-400";
 
     require_login(state, move || {
-    let submit = {
-        let navigate = navigate.clone();
-        move |_| {
+        let submit = {
             let navigate = navigate.clone();
-            let status = CaseStatus::from_slug(&status.get_untracked()).unwrap_or(CaseStatus::Open);
-            let properties = vec![
-                ("Attorney".to_string(), attorney.get_untracked()),
-                ("Opposing attorney".to_string(), opposing.get_untracked()),
-                ("Court".to_string(), court.get_untracked()),
-                ("Docket number".to_string(), docket.get_untracked()),
-            ];
-            let note = first_note.get_untracked();
-            let note = if note.trim().is_empty() {
-                None
-            } else {
-                Some(note)
-            };
-            let name_val = name.get_untracked();
-            spawn_local(async move {
-                match cases::create_case(name_val, status, properties, note).await {
-                    Ok(_) => navigate("/cases", Default::default()),
-                    Err(e) => error.set(err_text(e)),
-                }
-            });
-        }
-    };
+            move |_| {
+                let navigate = navigate.clone();
+                let status =
+                    CaseStatus::from_slug(&status.get_untracked()).unwrap_or(CaseStatus::Open);
+                let properties = vec![
+                    ("Attorney".to_string(), attorney.get_untracked()),
+                    ("Opposing attorney".to_string(), opposing.get_untracked()),
+                    ("Court".to_string(), court.get_untracked()),
+                    ("Docket number".to_string(), docket.get_untracked()),
+                ];
+                let note = first_note.get_untracked();
+                let note = if note.trim().is_empty() {
+                    None
+                } else {
+                    Some(note)
+                };
+                let name_val = name.get_untracked();
+                spawn_local(async move {
+                    match cases::create_case(name_val, status, properties, note).await {
+                        Ok(_) => navigate("/cases", Default::default()),
+                        Err(e) => error.set(err_text(e)),
+                    }
+                });
+            }
+        };
 
-    view! {
+        view! {
         <Layout title="New case".to_string()>
             <div class="mx-auto max-w-2xl space-y-6">
                 <div class="rounded-xl border border-slate-800 bg-slate-900 p-6 space-y-5">
@@ -709,7 +708,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
 
     let audit_view = {
         move || {
-            let log: Vec<crate::types::ChangeLogEntry> = Vec::new();
+            let log: Vec<crate::server_fns::audit::ChangeLogEntry> = Vec::new();
             if log.is_empty() {
                 return view! { <p class="text-sm text-slate-500">"No changes recorded."</p> }
                     .into_any();

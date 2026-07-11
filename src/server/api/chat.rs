@@ -2,9 +2,22 @@
 //! `POST /api/reingest` to rebuild the vector store on demand.
 
 use axum::{http::StatusCode, routing::post, Json, Router};
+use serde::{Deserialize, Serialize};
 
+use crate::server::rag::ChatResponse;
 use crate::server::{captcha, service};
-use crate::types::{ChatRequest, ChatResponse};
+
+/// `POST /api/chat` request body.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatRequest {
+    pub message: String,
+    #[serde(default)]
+    pub captcha_token: Option<String>,
+    /// Existing conversation to continue. Omitted on the first message; the
+    /// server echoes back an id the widget/UI can send on later turns.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+}
 
 pub fn routes<S>() -> Router<S>
 where

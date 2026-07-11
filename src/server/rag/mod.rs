@@ -16,13 +16,44 @@ pub mod store;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::server::config::AzureConfig;
-use crate::types::{ChatResponse, SourceInfo, SourceType};
 use store::{StoredChunk, VectorStore};
+
+/// A single cited source returned by the RAG chat endpoint.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceInfo {
+    pub filename: String,
+    pub heading: String,
+    pub snippet: String,
+    pub relevance: f64,
+    pub anchor: String,
+}
+
+/// Where a chat answer came from — mirrors the legacy Python contract.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceType {
+    Documents,
+    GeneralKnowledge,
+    Mixed,
+}
+
+/// `POST /api/chat` response body — the RAG engine's public answer shape,
+/// serialized directly by the chat endpoint.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatResponse {
+    pub answer: String,
+    pub sources: Vec<SourceInfo>,
+    pub source_type: SourceType,
+    /// The conversation this turn belongs to. Echo it back on the next request
+    /// to keep the thread continuous.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+}
 
 const TOP_K: usize = 5;
 

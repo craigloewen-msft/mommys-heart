@@ -10,13 +10,11 @@
 //! running app creates get their ids from the database sequence, which starts
 //! well above these, so the two never collide.
 
-use crate::types::{
-    AccountRole, CaseAssignment, CasePreset, CaseProperty, CaseStatus,
-};
-use crate::server_fns::users::User;
+use crate::server_fns::cases::{Case, CaseProperty, CaseStatus};
 use crate::server_fns::grants::Grant;
-use crate::server_fns::cases::Case;
 use crate::server_fns::message::Message;
+use crate::server_fns::permissions::{CaseAssignment, CasePreset};
+use crate::server_fns::users::{AccountRole, User};
 
 /// Organization display name.
 pub const ORG_NAME: &str = "Mommy's Heart";
@@ -133,7 +131,7 @@ pub fn users() -> Vec<User> {
                 assigned_cases: vec![
                     assign(i % CASES, CasePreset::ALL[i % 3]),
                     assign((i + CASES / 2) % CASES, CasePreset::ALL[(i + 1) % 3]),
-                ]
+                ],
             }
         })
         .collect()

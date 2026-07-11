@@ -15,10 +15,13 @@
 //! (`/api/chat`), which is called cross-origin from the Squarespace site and so
 //! cannot use same-origin server functions.
 
+pub mod audit;
 pub mod auth;
 pub mod cases;
 pub mod grants;
 pub mod message;
+pub mod pagination;
+pub mod permissions;
 pub mod users;
 
 use leptos::prelude::*;

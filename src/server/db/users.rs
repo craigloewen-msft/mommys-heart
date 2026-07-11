@@ -1,8 +1,9 @@
 //! Users, their per-case capability assignments, and admin mutations.
 
 use crate::server::db::{audit, ids, pool};
-use crate::server_fns::users::User;
-use crate::types::{AccountRole, CaseAssignment, CaseCapability, Page};
+use crate::server_fns::pagination::Page;
+use crate::server_fns::permissions::{CaseAssignment, CaseCapability};
+use crate::server_fns::users::{AccountRole, User};
 use std::collections::BTreeMap;
 
 #[derive(sqlx::FromRow)]
@@ -89,7 +90,9 @@ pub async fn insert(
 
 /// A single user's summary (id + display name) by id, or `None` if no such user
 /// exists. The name falls back to the id when unset.
-pub async fn summary(id: &str) -> Result<Option<crate::server_fns::users::UserSummary>, sqlx::Error> {
+pub async fn summary(
+    id: &str,
+) -> Result<Option<crate::server_fns::users::UserSummary>, sqlx::Error> {
     use crate::server_fns::users::UserSummary;
 
     let row: Option<(String, Option<String>)> = sqlx::query_as(
@@ -125,7 +128,9 @@ pub async fn search_user_summaries(
     } else {
         Some(format!(
             "%{}%",
-            term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+            term.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
         ))
     };
 
@@ -232,7 +237,11 @@ pub async fn toggle_capability(
         .execute(pool())
         .await?;
     }
-    let (old, new) = if enabled { ("", cap.slug()) } else { (cap.slug(), "") };
+    let (old, new) = if enabled {
+        ("", cap.slug())
+    } else {
+        (cap.slug(), "")
+    };
     audit::record(
         pool(),
         audit::Entity::User,
@@ -315,7 +324,10 @@ pub async fn get(id: &str) -> Result<Option<User>, sqlx::Error> {
     }
     let assignments = grouped
         .into_iter()
-        .map(|(case_id, capabilities)| CaseAssignment { case_id, capabilities })
+        .map(|(case_id, capabilities)| CaseAssignment {
+            case_id,
+            capabilities,
+        })
         .collect();
 
     Ok(Some(row.into_user(assignments)))
@@ -362,7 +374,10 @@ pub async fn resolve_by_session_token(token_hash: &str) -> Result<Option<User>, 
     }
     let assignments = grouped
         .into_iter()
-        .map(|(case_id, capabilities)| CaseAssignment { case_id, capabilities })
+        .map(|(case_id, capabilities)| CaseAssignment {
+            case_id,
+            capabilities,
+        })
         .collect();
 
     Ok(Some(row.into_user(assignments)))
@@ -415,7 +430,10 @@ pub async fn authenticate(email: &str) -> Result<Option<(User, String)>, sqlx::E
     }
     let assignments = grouped
         .into_iter()
-        .map(|(case_id, capabilities)| CaseAssignment { case_id, capabilities })
+        .map(|(case_id, capabilities)| CaseAssignment {
+            case_id,
+            capabilities,
+        })
         .collect();
 
     let password_hash = row.password_hash.clone();
@@ -447,7 +465,9 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
     } else {
         Some(format!(
             "%{}%",
-            term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+            term.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
         ))
     };
 
@@ -493,7 +513,10 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
         }
         let assignments = grouped
             .into_iter()
-            .map(|(case_id, capabilities)| CaseAssignment { case_id, capabilities })
+            .map(|(case_id, capabilities)| CaseAssignment {
+                case_id,
+                capabilities,
+            })
             .collect();
 
         items.push(row.into_user(assignments));

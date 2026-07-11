@@ -2,8 +2,9 @@
 //! the dedicated REST API (`server::api`) and the UI data loaders
 //! (`crate::api_client`, SSR branch).
 
+use crate::server::api::version::VersionResponse;
 use crate::server::rag;
-use crate::types::{ChatResponse, VersionResponse};
+use crate::server::rag::ChatResponse;
 
 /// The Turnstile secret, if CAPTCHA enforcement is configured.
 pub fn turnstile_secret() -> Option<String> {

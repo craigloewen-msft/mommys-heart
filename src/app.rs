@@ -37,10 +37,12 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 #[component]
 fn HomeRedirect() -> impl IntoView {
     let state = expect_context::<AppState>();
-    move || if state.is_authenticated() {
-        view! { <Redirect path="/cases" /> }.into_any()
-    } else {
-        view! { <Redirect path="/login" /> }.into_any()
+    move || {
+        if state.is_authenticated() {
+            view! { <Redirect path="/cases" /> }.into_any()
+        } else {
+            view! { <Redirect path="/login" /> }.into_any()
+        }
     }
 }
 

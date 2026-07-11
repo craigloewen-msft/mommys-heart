@@ -1,8 +1,13 @@
 //! `GET /api/health` — liveness probe.
 
 use axum::{routing::get, Json, Router};
+use serde::{Deserialize, Serialize};
 
-use crate::types::HealthResponse;
+/// `GET /api/health` response body.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HealthResponse {
+    pub status: String,
+}
 
 pub fn routes<S>() -> Router<S>
 where

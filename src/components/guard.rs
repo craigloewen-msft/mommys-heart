@@ -21,10 +21,12 @@ pub fn require_login<F>(state: AppState, content: F) -> AnyView
 where
     F: Fn() -> AnyView + Send + 'static,
 {
-    (move || if state.is_authenticated() {
-        content()
-    } else {
-        view! { <Redirect path="/login" /> }.into_any()
+    (move || {
+        if state.is_authenticated() {
+            content()
+        } else {
+            view! { <Redirect path="/login" /> }.into_any()
+        }
     })
     .into_any()
 }
@@ -35,14 +37,16 @@ pub fn require_admin<F>(state: AppState, content: F) -> AnyView
 where
     F: Fn() -> AnyView + Send + 'static,
 {
-    (move || if state.is_authenticated() {
-        if state.is_admin() {
-            content()
+    (move || {
+        if state.is_authenticated() {
+            if state.is_admin() {
+                content()
+            } else {
+                view! { <Redirect path="/cases" /> }.into_any()
+            }
         } else {
-            view! { <Redirect path="/cases" /> }.into_any()
+            view! { <Redirect path="/login" /> }.into_any()
         }
-    } else {
-        view! { <Redirect path="/login" /> }.into_any()
     })
     .into_any()
 }

@@ -22,14 +22,12 @@ pub async fn create(user_id: &str) -> Result<String, sqlx::Error> {
     let token_hash = hash_token(&raw);
     let expires_at = chrono::Utc::now() + chrono::Duration::days(SESSION_TTL_DAYS);
 
-    sqlx::query(
-        "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
-    )
-    .bind(&token_hash)
-    .bind(user_id)
-    .bind(expires_at)
-    .execute(pool())
-    .await?;
+    sqlx::query("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)")
+        .bind(&token_hash)
+        .bind(user_id)
+        .bind(expires_at)
+        .execute(pool())
+        .await?;
     Ok(raw)
 }
 

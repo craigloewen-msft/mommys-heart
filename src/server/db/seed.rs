@@ -4,7 +4,7 @@
 
 use crate::server::auth::hash_password;
 use crate::server::db::{pool, users};
-use crate::types::ChangeLogEntry;
+use crate::server_fns::audit::ChangeLogEntry;
 use crate::server_fns::users::User;
 
 /// Seed the database from the mock fixtures, but only if there are no users yet.

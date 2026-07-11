@@ -4,11 +4,11 @@
 
 pub mod api;
 pub mod auth;
-pub mod permissions;
 pub mod captcha;
 pub mod config;
 pub mod db;
 pub mod docs;
+pub mod permissions;
 pub mod rag;
 pub mod service;
 pub mod telemetry;

@@ -26,8 +26,8 @@ const DEFAULT_FILTER: &str = "info,mommys_heart_crm=debug,tower_http=debug,sqlx:
 /// Install the global tracing subscriber. Safe to call once at startup; a second
 /// call is ignored so tests and re-inits don't panic.
 pub fn init() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
 
     let _ = tracing_subscriber::registry()
         .with(filter)

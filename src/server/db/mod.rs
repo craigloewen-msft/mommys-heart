@@ -50,4 +50,3 @@ pub async fn init() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 pub fn now_stamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()
 }
-

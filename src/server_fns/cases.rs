@@ -5,10 +5,81 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{
-    CaseNote, CaseProperty, CaseStatus, Evidence, Page,
-};
 use crate::server_fns::message::Message;
+use crate::server_fns::pagination::Page;
+
+/// The lifecycle status of a case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaseStatus {
+    Open,
+    Monitor,
+    Closed,
+}
+
+impl CaseStatus {
+    pub const ALL: [CaseStatus; 3] = [CaseStatus::Open, CaseStatus::Monitor, CaseStatus::Closed];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CaseStatus::Open => "Open",
+            CaseStatus::Monitor => "Monitor",
+            CaseStatus::Closed => "Closed",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            CaseStatus::Open => "open",
+            CaseStatus::Monitor => "monitor",
+            CaseStatus::Closed => "closed",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s2| s2.slug() == s)
+    }
+
+    pub fn badge_classes(self) -> &'static str {
+        match self {
+            CaseStatus::Open => "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30",
+            CaseStatus::Monitor => "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30",
+            CaseStatus::Closed => "bg-slate-500/15 text-slate-400 ring-1 ring-slate-500/30",
+        }
+    }
+}
+
+/// A free-text note recorded against a case.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaseNote {
+    pub id: String,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+}
+
+/// A piece of evidence attached to a case.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Evidence {
+    pub id: String,
+    pub name: String,
+    /// The case this evidence belongs to.
+    pub case_id: String,
+    /// Display name of the user who uploaded it.
+    pub uploaded_by: String,
+    /// Human-readable upload timestamp (mock).
+    pub uploaded_at: String,
+    /// Free-text extra information / description.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// A named key/value property on a case (e.g. attorney names, court, docket).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaseProperty {
+    pub key: String,
+    pub value: String,
+}
 
 /// A support case tracked by the organization.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -72,7 +143,7 @@ pub async fn load_case_summaries_for_user(
 pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::types::CaseCapability;
+    use crate::server_fns::permissions::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::ViewCase).await?;
@@ -118,8 +189,8 @@ pub async fn create_case(
     properties: Vec<(String, String)>,
     first_note: Option<String>,
 ) -> Result<String, ServerFnError> {
-    use crate::server::permissions::require_user;
     use crate::server::db::cases;
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
     let name = name.trim().to_string();
@@ -141,9 +212,9 @@ pub async fn create_case(
 /// Change a case's status (requires the `EditCase` capability).
 #[server(prefix = "/api")]
 pub async fn set_case_status(case_id: String, status: CaseStatus) -> Result<(), ServerFnError> {
-    use crate::server::permissions::{require_cap, require_user};
     use crate::server::db::cases;
-    use crate::types::CaseCapability;
+    use crate::server::permissions::{require_cap, require_user};
+    use crate::server_fns::permissions::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
@@ -155,9 +226,9 @@ pub async fn set_case_status(case_id: String, status: CaseStatus) -> Result<(), 
 /// Rename a case (requires the `EditCase` capability).
 #[server(prefix = "/api")]
 pub async fn set_case_name(case_id: String, name: String) -> Result<(), ServerFnError> {
-    use crate::server::permissions::{require_cap, require_user};
     use crate::server::db::cases;
-    use crate::types::CaseCapability;
+    use crate::server::permissions::{require_cap, require_user};
+    use crate::server_fns::permissions::CaseCapability;
 
     let user = require_user().await?;
     let name = name.trim().to_string();
@@ -173,13 +244,17 @@ pub async fn set_case_name(case_id: String, name: String) -> Result<(), ServerFn
 /// Reassign a case's owner (requires the `EditCase` capability).
 #[server(prefix = "/api")]
 pub async fn set_case_owner(case_id: String, owner_id: String) -> Result<(), ServerFnError> {
-    use crate::server::permissions::{require_cap, require_user};
     use crate::server::db::{cases, users};
-    use crate::types::CaseCapability;
+    use crate::server::permissions::{require_cap, require_user};
+    use crate::server_fns::permissions::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
-    if users::get(&owner_id).await.map_err(ServerFnError::new)?.is_none() {
+    if users::get(&owner_id)
+        .await
+        .map_err(ServerFnError::new)?
+        .is_none()
+    {
         return Err(ServerFnError::new("Unknown owner."));
     }
     cases::set_owner(&case_id, &owner_id, &user.full_name())
@@ -193,9 +268,9 @@ pub async fn set_case_properties(
     case_id: String,
     properties: Vec<(String, String)>,
 ) -> Result<(), ServerFnError> {
-    use crate::server::permissions::{require_cap, require_user};
     use crate::server::db::cases;
-    use crate::types::CaseCapability;
+    use crate::server::permissions::{require_cap, require_user};
+    use crate::server_fns::permissions::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
@@ -207,9 +282,9 @@ pub async fn set_case_properties(
 /// Add a note to a case (requires the `AddNotes` capability).
 #[server(prefix = "/api")]
 pub async fn add_case_note(case_id: String, body: String) -> Result<(), ServerFnError> {
-    use crate::server::permissions::{require_cap, require_user};
     use crate::server::db::cases;
-    use crate::types::CaseCapability;
+    use crate::server::permissions::{require_cap, require_user};
+    use crate::server_fns::permissions::CaseCapability;
 
     let user = require_user().await?;
     let body = body.trim().to_string();
@@ -229,9 +304,9 @@ pub async fn add_case_evidence(
     name: String,
     description: String,
 ) -> Result<(), ServerFnError> {
-    use crate::server::permissions::{require_cap, require_user};
     use crate::server::db::cases;
-    use crate::types::CaseCapability;
+    use crate::server::permissions::{require_cap, require_user};
+    use crate::server_fns::permissions::CaseCapability;
 
     let user = require_user().await?;
     let name = name.trim().to_string();
@@ -250,9 +325,9 @@ pub async fn delete_case_evidence(
     case_id: String,
     evidence_id: String,
 ) -> Result<(), ServerFnError> {
-    use crate::server::permissions::{require_cap, require_user};
     use crate::server::db::cases;
-    use crate::types::CaseCapability;
+    use crate::server::permissions::{require_cap, require_user};
+    use crate::server_fns::permissions::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::DeleteEvidence).await?;
@@ -271,7 +346,7 @@ pub async fn list_messages_page(
 ) -> Result<Page<Message>, ServerFnError> {
     use crate::server::db::messages;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::types::CaseCapability;
+    use crate::server_fns::permissions::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::SendMessages).await?;
@@ -284,9 +359,9 @@ pub async fn list_messages_page(
 /// `SendMessages` capability). Returns the stored message.
 #[server(prefix = "/api")]
 pub async fn send_message(case_id: String, body: String) -> Result<Message, ServerFnError> {
-    use crate::server::permissions::{require_cap, require_user};
     use crate::server::db::messages;
-    use crate::types::CaseCapability;
+    use crate::server::permissions::{require_cap, require_user};
+    use crate::server_fns::permissions::CaseCapability;
 
     let user = require_user().await?;
     let body = body.trim().to_string();

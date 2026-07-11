@@ -2,7 +2,6 @@ pub mod app;
 pub mod mockdata;
 pub mod server_fns;
 pub mod state;
-pub mod types;
 
 pub mod components {
     pub mod guard;

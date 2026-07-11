@@ -36,7 +36,9 @@ pub async fn login(email: String, password: String) -> Result<User, ServerFnErro
         return Err(ServerFnError::new("Invalid email or password."));
     }
 
-    let raw = sessions::create(&user.id).await.map_err(ServerFnError::new)?;
+    let raw = sessions::create(&user.id)
+        .await
+        .map_err(ServerFnError::new)?;
     set_session_cookie(build_session_cookie(raw))?;
     Ok(user)
 }
@@ -51,7 +53,7 @@ pub async fn register(
 ) -> Result<User, ServerFnError> {
     use crate::server::auth::{build_session_cookie, hash_password};
     use crate::server::db::{sessions, users};
-    use crate::types::AccountRole;
+    use crate::server_fns::users::AccountRole;
 
     let first_name = first_name.trim().to_string();
     let last_name = last_name.trim().to_string();
@@ -61,7 +63,10 @@ pub async fn register(
             "Please fill in first name, email, and password.",
         ));
     }
-    if users::email_exists(&email).await.map_err(ServerFnError::new)? {
+    if users::email_exists(&email)
+        .await
+        .map_err(ServerFnError::new)?
+    {
         return Err(ServerFnError::new(
             "An account with that email already exists.",
         ));

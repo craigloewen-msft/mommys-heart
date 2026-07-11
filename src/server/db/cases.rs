@@ -1,10 +1,9 @@
 //! Cases and their sub-resources: notes, evidence, properties, and audit log.
 
 use crate::server::db::{audit, ids, now_stamp, pool, users};
-use crate::server_fns::cases::{Case, CaseSummary};
-use crate::types::{
-    CaseCapability, CaseNote, CaseProperty, CaseStatus, Evidence, Page,
-};
+use crate::server_fns::cases::{Case, CaseNote, CaseProperty, CaseStatus, CaseSummary, Evidence};
+use crate::server_fns::pagination::Page;
+use crate::server_fns::permissions::CaseCapability;
 
 #[derive(sqlx::FromRow)]
 struct CaseRow {
@@ -108,7 +107,9 @@ pub async fn get_summaries_for_user(
     } else {
         Some(format!(
             "%{}%",
-            term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+            term.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
         ))
     };
 
@@ -179,7 +180,9 @@ pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, s
     } else {
         Some(format!(
             "%{}%",
-            term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+            term.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
         ))
     };
     let rows = sqlx::query_as::<_, SummaryRow>(&format!(
@@ -213,12 +216,11 @@ pub async fn get_summaries_by_ids(ids: &[String]) -> Result<Vec<CaseSummary>, sq
 /// A single case by id, fully hydrated (properties, evidence, and its newest
 /// notes), or `None` if no such case exists.
 pub async fn get(id: &str) -> Result<Option<Case>, sqlx::Error> {
-    let Some(row) = sqlx::query_as::<_, CaseRow>(
-        "SELECT id, name, status, owner_id FROM cases WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(pool())
-    .await?
+    let Some(row) =
+        sqlx::query_as::<_, CaseRow>("SELECT id, name, status, owner_id FROM cases WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool())
+            .await?
     else {
         return Ok(None);
     };
@@ -397,11 +399,7 @@ async fn current_field(case_id: &str, column: &str) -> Result<Option<String>, sq
 }
 
 /// Update a case's status, auditing the change.
-pub async fn set_status(
-    case_id: &str,
-    status: CaseStatus,
-    actor: &str,
-) -> Result<(), sqlx::Error> {
+pub async fn set_status(case_id: &str, status: CaseStatus, actor: &str) -> Result<(), sqlx::Error> {
     let Some(current) = current_field(case_id, "status").await? else {
         return Ok(());
     };
@@ -423,7 +421,10 @@ pub async fn set_name(case_id: &str, name: &str, actor: &str) -> Result<(), sqlx
     let Some(current) = current_field(case_id, "name").await? else {
         return Ok(());
     };
-    update_field(case_id, "name", name, &current, actor, "name", &current, name).await
+    update_field(
+        case_id, "name", name, &current, actor, "name", &current, name,
+    )
+    .await
 }
 
 /// Change a case's owner. `owner_id` must reference an existing user. Audits
@@ -490,7 +491,7 @@ pub async fn replace_properties(
         || existing
             .iter()
             .zip(cleaned.iter())
-            .any(|((ek, ev), (k, v)) | ek != k || ev != v);
+            .any(|((ek, ev), (k, v))| ek != k || ev != v);
 
     let mut tx = pool().begin().await?;
     sqlx::query("DELETE FROM case_properties WHERE case_id = $1")

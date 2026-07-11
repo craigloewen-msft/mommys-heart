@@ -16,7 +16,7 @@ use leptos::prelude::ServerFnError;
 
 use crate::server::auth::AuthUser;
 use crate::server::db::cases;
-use crate::types::CaseCapability;
+use crate::server_fns::permissions::CaseCapability;
 use crate::server_fns::users::User;
 
 /// Resolve the signed-in user from the request's session cookie, or an error if

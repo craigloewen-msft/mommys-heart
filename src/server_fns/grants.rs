@@ -34,8 +34,8 @@ pub async fn load_grants() -> Result<Vec<GrantSummary>, ServerFnError> {
 /// Create a new grant. Returns its id.
 #[server(prefix = "/api")]
 pub async fn add_grant(name: String) -> Result<String, ServerFnError> {
-    use crate::server::permissions::{require_admin, require_user};
     use crate::server::db::grants;
+    use crate::server::permissions::{require_admin, require_user};
 
     let user = require_user().await?;
     require_admin(&user)?;
@@ -49,8 +49,8 @@ pub async fn add_grant(name: String) -> Result<String, ServerFnError> {
 /// Rename an existing grant.
 #[server(prefix = "/api")]
 pub async fn rename_grant(grant_id: String, name: String) -> Result<(), ServerFnError> {
-    use crate::server::permissions::{require_admin, require_user};
     use crate::server::db::grants;
+    use crate::server::permissions::{require_admin, require_user};
 
     let user = require_user().await?;
     require_admin(&user)?;
@@ -66,8 +66,8 @@ pub async fn rename_grant(grant_id: String, name: String) -> Result<(), ServerFn
 /// Delete a grant.
 #[server(prefix = "/api")]
 pub async fn delete_grant(grant_id: String) -> Result<(), ServerFnError> {
-    use crate::server::permissions::{require_admin, require_user};
     use crate::server::db::grants;
+    use crate::server::permissions::{require_admin, require_user};
 
     let user = require_user().await?;
     require_admin(&user)?;

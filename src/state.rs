@@ -9,9 +9,8 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::server_fns::users::{AccountRole, User};
 use crate::server_fns::{auth, err_text};
-use crate::types::AccountRole;
-use crate::server_fns::users::User;
 
 /// Current local date-time as `YYYY-MM-DD HH:MM`, read from the browser clock.
 /// Retained for any client-side display needs; persisted timestamps are now
