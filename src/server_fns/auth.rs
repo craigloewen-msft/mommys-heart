@@ -6,7 +6,7 @@
 
 use leptos::prelude::*;
 
-use crate::types::User;
+use crate::server_fns::users::User;
 
 /// Attach a `Set-Cookie` header to the outgoing response. Server-only.
 #[cfg(feature = "ssr")]

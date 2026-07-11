@@ -14,7 +14,7 @@ use axum::http::StatusCode;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 
 use crate::server::db::{sessions, users};
-use crate::types::User;
+use crate::server_fns::users::User;
 
 /// Name of the session cookie.
 pub const COOKIE_NAME: &str = "session";

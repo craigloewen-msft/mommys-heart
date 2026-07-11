@@ -4,13 +4,53 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{AccountRole, CaseCapability, Page, User};
+use crate::types::{AccountRole, CaseAssignment, CaseCapability, Page};
 
 /// A user summary
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UserSummary {
     pub id: String,
     pub name: String,
+}
+
+/// An application user account
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct User {
+    pub id: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    pub phone: String,
+    pub home_address: String,
+    /// Plaintext for the local demo only. Do not use this pattern for real auth.
+    pub password: String,
+    pub role: AccountRole,
+    /// Cases this user is assigned to, with their permission on each.
+    #[serde(default)]
+    pub assigned_cases: Vec<CaseAssignment>
+}
+
+impl User {
+    /// Convenience: the user's full display name.
+    pub fn full_name(&self) -> String {
+        format!("{} {}", self.first_name, self.last_name)
+            .trim()
+            .to_string()
+    }
+
+    /// This user's capabilities on a given case (empty if not assigned).
+    pub fn capabilities_for(&self, case_id: &str) -> Vec<CaseCapability> {
+        self.assigned_cases
+            .iter()
+            .find(|a| a.case_id == case_id)
+            .map(|a| a.capabilities.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether this user is assigned to the given case at all.
+    pub fn is_assigned_to(&self, case_id: &str) -> bool {
+        self.assigned_cases.iter().any(|a| a.case_id == case_id)
+    }
 }
 
 /// Server-side typeahead search over users for the case owner-picker

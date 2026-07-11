@@ -1,7 +1,8 @@
 //! Users, their per-case capability assignments, and admin mutations.
 
 use crate::server::db::{audit, ids, pool};
-use crate::types::{AccountRole, CaseAssignment, CaseCapability, Page, User};
+use crate::server_fns::users::User;
+use crate::types::{AccountRole, CaseAssignment, CaseCapability, Page};
 use std::collections::BTreeMap;
 
 #[derive(sqlx::FromRow)]

@@ -12,6 +12,13 @@ pub struct GrantSummary {
     pub name: String,
 }
 
+/// A funding grant. Minimal for V1 — just an id and a name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Grant {
+    pub id: String,
+    pub name: String,
+}
+
 /// Every grant, ready to render on the grants screen (admin only). This is the
 /// grants page's single source of data.
 #[server(prefix = "/api")]

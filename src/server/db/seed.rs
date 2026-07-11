@@ -4,7 +4,8 @@
 
 use crate::server::auth::hash_password;
 use crate::server::db::{pool, users};
-use crate::types::{ChangeLogEntry, User};
+use crate::types::ChangeLogEntry;
+use crate::server_fns::users::User;
 
 /// Seed the database from the mock fixtures, but only if there are no users yet.
 pub async fn seed_if_empty() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

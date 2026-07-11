@@ -11,8 +11,10 @@
 //! well above these, so the two never collide.
 
 use crate::types::{
-    AccountRole, Case, CaseAssignment, CasePreset, CaseProperty, CaseStatus, Grant, Message, User,
+    AccountRole, Case, CaseAssignment, CasePreset, CaseProperty, CaseStatus, Message,
 };
+use crate::server_fns::users::User;
+use crate::server_fns::grants::Grant;
 
 /// Organization display name.
 pub const ORG_NAME: &str = "Mommy's Heart";

@@ -5,7 +5,8 @@ use crate::components::guard::require_admin;
 use crate::components::layout::Layout;
 use crate::server_fns::err_text;
 use crate::state::{today, AppState};
-use crate::types::{AccountRole, Case, CaseCapability, CasePreset, ChangeLogEntry, User};
+use crate::types::{AccountRole, Case, CaseCapability, CasePreset, ChangeLogEntry};
+use crate::server_fns::users::User;
 
 /// Cap on how many change-log rows are rendered at once (guards against huge
 /// result sets).

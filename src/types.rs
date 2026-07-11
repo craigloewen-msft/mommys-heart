@@ -9,6 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::server_fns::users::User;
+
 // ===========================================================================
 // RAG chatbot + API contract types
 // ===========================================================================
@@ -264,46 +266,6 @@ pub struct CaseAssignment {
     pub capabilities: Vec<CaseCapability>,
 }
 
-/// An application user account (demo credentials only — never real auth).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct User {
-    pub id: String,
-    pub first_name: String,
-    pub last_name: String,
-    pub email: String,
-    pub phone: String,
-    pub home_address: String,
-    /// Plaintext for the local demo only. Do not use this pattern for real auth.
-    pub password: String,
-    pub role: AccountRole,
-    /// Cases this user is assigned to, with their permission on each.
-    #[serde(default)]
-    pub assigned_cases: Vec<CaseAssignment>
-}
-
-impl User {
-    /// Convenience: the user's full display name.
-    pub fn full_name(&self) -> String {
-        format!("{} {}", self.first_name, self.last_name)
-            .trim()
-            .to_string()
-    }
-
-    /// This user's capabilities on a given case (empty if not assigned).
-    pub fn capabilities_for(&self, case_id: &str) -> Vec<CaseCapability> {
-        self.assigned_cases
-            .iter()
-            .find(|a| a.case_id == case_id)
-            .map(|a| a.capabilities.clone())
-            .unwrap_or_default()
-    }
-
-    /// Whether this user is assigned to the given case at all.
-    pub fn is_assigned_to(&self, case_id: &str) -> bool {
-        self.assigned_cases.iter().any(|a| a.case_id == case_id)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Audit change log (shared by users and cases)
 // ---------------------------------------------------------------------------
@@ -320,17 +282,6 @@ pub struct ChangeLogEntry {
     pub new_value: String,
     /// Human-readable timestamp (mock; ISO or "just now").
     pub at: String,
-}
-
-// ---------------------------------------------------------------------------
-// Grants
-// ---------------------------------------------------------------------------
-
-/// A funding grant. Minimal for V1 — just an id and a name.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Grant {
-    pub id: String,
-    pub name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -475,16 +426,5 @@ pub struct Page<T> {
     pub items: Vec<T>,
     /// Total rows matching the query across every page (not just this one).
     pub total: i64,
-}
-
-/// Everything the CRM UI needs to populate its caches after sign-in. All other
-/// request/response shapes are expressed directly as server-function arguments
-/// and return types in [`crate::server_fns`], so they need no DTO structs here.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct BootstrapResponse {
-    pub current_user: Option<User>,
-    pub users: Vec<User>,
-    pub cases: Vec<Case>,
-    pub grants: Vec<Grant>,
 }
 
