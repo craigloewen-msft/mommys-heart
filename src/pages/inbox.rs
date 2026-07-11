@@ -3,6 +3,7 @@ use leptos::task::spawn_local;
 
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
+use crate::components::loading::Loading;
 use crate::server_fns::cases::{load_case_summaries_for_user, CaseSummary};
 use crate::server_fns::err_text;
 use crate::state::AppState;
@@ -217,6 +218,9 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
 
     // This case's chat messages live here — loaded on demand for the open case.
     let messages = RwSignal::new(Vec::<Message>::new());
+    // Tracks the in-flight fetch of the newest messages so the thread can show a
+    // loading indicator instead of a premature "no messages" state.
+    let loading = RwSignal::new(true);
 
     // How many of the most recent messages to request; grows on "Load more".
     const MSG_PAGE: i64 = 20;
@@ -241,11 +245,13 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
         Effect::new(move |_| {
             let lim = limit.get();
             let case_id = case_id.clone();
+            loading.set(true);
             spawn_local(async move {
                 if let Ok(page) = crate::server_fns::cases::list_messages_page(case_id, lim).await {
                     messages.set(page.items);
                     total.set(page.total);
                 }
+                loading.set(false);
             });
         });
     }
@@ -304,6 +310,9 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
             };
 
             if msgs.is_empty() {
+                if loading.get() {
+                    return view! { <Loading label="Loading messages\u{2026}" /> }.into_any();
+                }
                 return view! {
                     <p class="text-sm text-slate-500">"No messages yet. Start the conversation."</p>
                 }

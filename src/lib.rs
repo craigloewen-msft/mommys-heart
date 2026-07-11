@@ -7,6 +7,7 @@ pub mod types;
 pub mod components {
     pub mod guard;
     pub mod layout;
+    pub mod loading;
 }
 
 pub mod pages {

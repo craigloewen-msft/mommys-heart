@@ -5,6 +5,7 @@ use leptos_router::hooks::use_navigate;
 
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
+use crate::components::loading::Loading;
 use crate::server_fns::cases::{self, Case, CaseSummary};
 use crate::server_fns::err_text;
 use crate::server_fns::users::{search_users, UserSummary};
@@ -431,14 +432,19 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
     // demand only for the open case, keeping the list load lightweight.
     let case_sv = StoredValue::new(case_id.clone());
     let detail = RwSignal::new(None::<Case>);
+    // Tracks the in-flight fetch of the full case so the view can show a loading
+    // state instead of a premature "empty" one while the request is pending.
+    let detail_loading = RwSignal::new(true);
     {
         let case_id = case_id.clone();
         Effect::new(move |_| {
             let case_id = case_id.clone();
+            detail_loading.set(true);
             spawn_local(async move {
                 if let Ok(Some(c)) = cases::load_case(case_id).await {
                     detail.set(Some(c));
                 }
+                detail_loading.set(false);
             });
         });
     }
@@ -942,7 +948,17 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
     };
 
     view! {
-        <div class="space-y-6">
+        <div>
+            // While the full case is loading, show only a loading indicator and
+            // hide the (empty) section scaffolding beneath it.
+            <div class=move || {
+                if detail_loading.get() { section.to_string() } else { "hidden".to_string() }
+            }>
+                <Loading label="Loading case details\u{2026}" />
+            </div>
+            <div class=move || {
+                if detail_loading.get() { "hidden".to_string() } else { "space-y-6".to_string() }
+            }>
             {details_section}
 
             // Notes
@@ -1016,6 +1032,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
             <div class=section>
                 <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
                 <div class="mt-3 space-y-1.5">{audit_view}</div>
+            </div>
             </div>
         </div>
     }
