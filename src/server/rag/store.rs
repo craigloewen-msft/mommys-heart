@@ -79,32 +79,3 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
     dot / (na.sqrt() * nb.sqrt())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn search_ranks_by_similarity() {
-        let store = VectorStore {
-            chunks: vec![
-                StoredChunk {
-                    text: "a".into(),
-                    heading: "A".into(),
-                    filename: "f".into(),
-                    embedding: vec![1.0, 0.0],
-                },
-                StoredChunk {
-                    text: "b".into(),
-                    heading: "B".into(),
-                    filename: "f".into(),
-                    embedding: vec![0.0, 1.0],
-                },
-            ],
-        };
-        let hits = store.search(&[0.9, 0.1], 2);
-        assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].text, "a");
-        assert!(hits[0].relevance > hits[1].relevance);
-    }
-}

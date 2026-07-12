@@ -77,6 +77,46 @@ impl CaseCapability {
     pub fn from_slug(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|c| c.slug() == s)
     }
+
+    /// The other capabilities that must also be held for this one to make sense.
+    /// Access is layered: you cannot act on a case (or its evidence) you cannot
+    /// even see, so every capability implies at least [`ViewCase`], and the
+    /// evidence-mutating ones additionally imply [`ViewEvidence`].
+    ///
+    /// [`ViewCase`]: CaseCapability::ViewCase
+    /// [`ViewEvidence`]: CaseCapability::ViewEvidence
+    pub fn requires(self) -> &'static [CaseCapability] {
+        use CaseCapability::*;
+        match self {
+            ViewCase => &[],
+            EditCase => &[ViewCase],
+            AddNotes => &[ViewCase],
+            ViewEvidence => &[ViewCase],
+            UploadEvidence => &[ViewCase, ViewEvidence],
+            DeleteEvidence => &[ViewCase, ViewEvidence, UploadEvidence],
+            SendMessages => &[ViewCase],
+        }
+    }
+}
+
+/// Check that a capability set is internally consistent: every capability's
+/// prerequisites (see [`CaseCapability::requires`]) are also present in the set.
+/// Returns a human-readable error describing the first missing prerequisite, or
+/// `Ok(())` when the set makes sense (e.g. you cannot grant "Edit case" without
+/// also granting "View case").
+pub fn validate_capabilities(capabilities: &[CaseCapability]) -> Result<(), String> {
+    for &cap in capabilities {
+        for &req in cap.requires() {
+            if !capabilities.contains(&req) {
+                return Err(format!(
+                    "\"{}\" requires \"{}\".",
+                    cap.label(),
+                    req.label()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Convenience presets that expand to a common set of [`CaseCapability`]s. These

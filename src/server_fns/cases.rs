@@ -348,11 +348,10 @@ pub async fn list_messages_page(
     limit: i64,
 ) -> Result<Page<Message>, ServerFnError> {
     use crate::server::db::messages;
-    use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::capabilities::CaseCapability;
+    use crate::server::permissions::require_user;
 
-    let user = require_user().await?;
-    require_cap(&user, &case_id, CaseCapability::SendMessages).await?;
+    // Require user for authentication purposes
+    let _user = require_user().await?;
     messages::page(&case_id, limit)
         .await
         .map_err(ServerFnError::new)

@@ -167,9 +167,11 @@ pub async fn assign_case(
 ) -> Result<(), ServerFnError> {
     use crate::server::db::users;
     use crate::server::permissions::{require_admin, require_user};
+    use crate::server_fns::capabilities::validate_capabilities;
 
     let actor = require_user().await?;
     require_admin(&actor)?;
+    validate_capabilities(&capabilities).map_err(ServerFnError::new)?;
     users::assign_capabilities(&user_id, &case_id, &capabilities, &actor.full_name())
         .await
         .map_err(ServerFnError::new)
@@ -217,9 +219,15 @@ pub async fn save_case_capabilities(
 ) -> Result<(), ServerFnError> {
     use crate::server::db::users;
     use crate::server::permissions::{require_admin, require_user};
+    use crate::server_fns::capabilities::validate_capabilities;
 
     let actor = require_user().await?;
     require_admin(&actor)?;
+    for (_, caps) in &changes {
+        if let Some(caps) = caps {
+            validate_capabilities(caps).map_err(ServerFnError::new)?;
+        }
+    }
     let actor_name = actor.full_name();
     for (case_id, caps) in changes {
         match caps {
