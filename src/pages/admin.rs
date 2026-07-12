@@ -7,7 +7,7 @@ use crate::components::layout::Layout;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::cases::CaseSummary;
 use crate::server_fns::err_text;
-use crate::server_fns::permissions::{CaseCapability, CasePreset};
+use crate::server_fns::capabilities::{CaseCapability, CasePreset};
 use crate::server_fns::users::AccountRole;
 use crate::server_fns::users::User;
 use crate::state::AppState;
@@ -16,7 +16,7 @@ use crate::state::AppState;
 /// the visible window by this much).
 const PAGE_SIZE: i64 = 10;
 
-/// A single case assignment being edited in the admin permissions "Edit" flow.
+/// A single case assignment being edited in the admin capabilities "Edit" flow.
 /// Holds the working capability set and a "marked for removal" flag; nothing is
 /// persisted until the admin clicks "Save", at which point the whole draft is
 /// diffed against the originals and applied in one batch.
@@ -38,7 +38,7 @@ fn badge(classes: &str) -> String {
 }
 
 /// Admin dashboard: browse users (server-side paginated + searchable) and manage
-/// their permissions.
+/// their per-case capabilities.
 #[component]
 pub fn AdminDashboardPage() -> impl IntoView {
     let state = expect_context::<AppState>();
@@ -139,7 +139,7 @@ pub fn AdminDashboardPage() -> impl IntoView {
         view! {
         <Layout title="Admin".to_string()>
             <p class="mb-6 text-sm text-slate-400">
-                "Manage every user's global role and per-case permissions."
+                "Manage every user's global role and per-case capabilities."
             </p>
             <input
                 class="mb-4 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40"
@@ -210,13 +210,13 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
     });
 
     // Stable, Copy handle to the user id so the edit-mode handlers below can be
-    // `Copy` (and thus reused inside the reactive permissions section).
+    // `Copy` (and thus reused inside the reactive capabilities section).
     let user_sv = StoredValue::new(user_id.clone());
 
     // Component owner: draft rows create per-row `RwSignal`s inside the "Edit"
     // click handler, whose transient reactive scope is disposed as soon as it
     // returns. Creating them under the component owner instead keeps them alive
-    // for the lifetime of the card, so the reactive permissions section can read
+    // for the lifetime of the card, so the reactive capabilities section can read
     // them without hitting a "reactive value has been disposed" panic.
     let owner = StoredValue::new(Owner::current().expect("component owner"));
     let make_draft = move |case_id: String, name: String, caps: Vec<CaseCapability>| {
@@ -364,7 +364,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
         }
         saving.set(true);
         spawn_local(async move {
-            match crate::server_fns::users::save_case_permissions(user_id, changes).await {
+            match crate::server_fns::users::save_case_capabilities(user_id, changes).await {
                 Ok(()) => {
                     save_error.set(String::new());
                     editing.set(false);
@@ -427,12 +427,12 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
     let input_class =
         "rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100";
 
-    // The whole "Case permissions" block, rendered reactively so a single `Copy`
+    // The whole "Case capabilities" block, rendered reactively so a single `Copy`
     // closure can flip between read-only and edit modes. In view mode it lists
     // each assigned case with its granted capabilities as badges; in edit mode it
     // exposes per-case capability checkboxes, per-row removal, and a case picker
     // to add assignments — all applied at once via `save_edit`.
-    let permissions_section = move || {
+    let capabilities_section = move || {
         let header_buttons = if editing.get() {
             view! {
                 <button
@@ -593,7 +593,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
                         let caps = a.capabilities.clone();
                         let badges = if caps.is_empty() {
                             view! {
-                                <span class="text-xs text-slate-500">"No permissions"</span>
+                                <span class="text-xs text-slate-500">"No capabilities"</span>
                             }
                             .into_any()
                         } else {
@@ -625,7 +625,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
         view! {
             <div>
                 <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-semibold text-slate-200">"Case permissions"</h3>
+                    <h3 class="text-sm font-semibold text-slate-200">"Case capabilities"</h3>
                     <div class="flex items-center gap-2">{header_buttons}</div>
                 </div>
                 <Show when=move || !save_error.get().is_empty()>
@@ -680,7 +680,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
             </div>
 
             <div class="mt-4">
-                {permissions_section}
+                {capabilities_section}
             </div>
 
             <div class="mt-4">

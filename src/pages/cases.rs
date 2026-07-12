@@ -10,7 +10,7 @@ use crate::components::loading::Loading;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::cases::{self, Case, CaseStatus, CaseSummary};
 use crate::server_fns::err_text;
-use crate::server_fns::permissions::CaseCapability;
+use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::users::{search_users, UserSummary};
 use crate::state::AppState;
 

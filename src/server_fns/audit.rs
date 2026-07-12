@@ -46,7 +46,7 @@ pub async fn list_audit_page(
 ) -> Result<Page<ChangeLogEntry>, ServerFnError> {
     use crate::server::db::audit::{self, Entity};
     use crate::server::permissions::{require_admin, require_cap, require_user};
-    use crate::server_fns::permissions::CaseCapability;
+    use crate::server_fns::capabilities::CaseCapability;
 
     /// Hard cap on how many audit rows a single request may return, regardless
     /// of what the client asks for. The client paginates in small windows, but
