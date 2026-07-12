@@ -1,10 +1,11 @@
-//! Case server functions: creation, edits, notes, evidence, and the per-case
-//! chat. Each operation resolves the caller and checks the required capability
-//! before touching the database.
+//! Case server functions: creation, edits, notes, and the per-case chat. Each
+//! operation resolves the caller and checks the required capability before
+//! touching the database. (Evidence lives in [`crate::server_fns::evidence`].)
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::server_fns::evidence::Evidence;
 use crate::server_fns::message::Message;
 use crate::server_fns::pagination::Page;
 
@@ -56,22 +57,6 @@ pub struct CaseNote {
     pub author: String,
     pub body: String,
     pub created_at: String,
-}
-
-/// A piece of evidence attached to a case.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Evidence {
-    pub id: String,
-    pub name: String,
-    /// The case this evidence belongs to.
-    pub case_id: String,
-    /// Display name of the user who uploaded it.
-    pub uploaded_by: String,
-    /// Human-readable upload timestamp (mock).
-    pub uploaded_at: String,
-    /// Free-text extra information / description.
-    #[serde(default)]
-    pub description: String,
 }
 
 /// A named key/value property on a case (e.g. attorney names, court, docket).
@@ -296,45 +281,6 @@ pub async fn add_case_note(case_id: String, body: String) -> Result<(), ServerFn
     }
     require_cap(&user, &case_id, CaseCapability::AddNotes).await?;
     cases::add_note(&case_id, &user.full_name(), &body)
-        .await
-        .map_err(ServerFnError::new)
-}
-
-/// Attach an evidence entry to a case (requires the `UploadEvidence` capability).
-#[server(prefix = "/api")]
-pub async fn add_case_evidence(
-    case_id: String,
-    name: String,
-    description: String,
-) -> Result<(), ServerFnError> {
-    use crate::server::db::cases;
-    use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::capabilities::CaseCapability;
-
-    let user = require_user().await?;
-    let name = name.trim().to_string();
-    if name.is_empty() {
-        return Err(ServerFnError::new("Evidence name is required."));
-    }
-    require_cap(&user, &case_id, CaseCapability::UploadEvidence).await?;
-    cases::add_evidence(&case_id, &name, &user.full_name(), description.trim())
-        .await
-        .map_err(ServerFnError::new)
-}
-
-/// Remove an evidence entry (requires the `DeleteEvidence` capability).
-#[server(prefix = "/api")]
-pub async fn delete_case_evidence(
-    case_id: String,
-    evidence_id: String,
-) -> Result<(), ServerFnError> {
-    use crate::server::db::cases;
-    use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::capabilities::CaseCapability;
-
-    let user = require_user().await?;
-    require_cap(&user, &case_id, CaseCapability::DeleteEvidence).await?;
-    cases::delete_evidence(&case_id, &evidence_id)
         .await
         .map_err(ServerFnError::new)
 }

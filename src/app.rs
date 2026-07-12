@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
-use leptos_router::components::{Redirect, Route, Router, Routes};
+use leptos_router::components::{Redirect, Route, Router, Routes, A};
 use leptos_router::path;
 
 use crate::pages::{
@@ -46,6 +46,37 @@ fn HomeRedirect() -> impl IntoView {
     }
 }
 
+/// Friendly full-page 404 shown when no route matches.
+#[component]
+fn NotFoundPage() -> impl IntoView {
+    view! {
+        <div class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-4">
+            <div class="w-full max-w-md text-center">
+                <div class="mb-6 flex items-center justify-center gap-2">
+                    <span class="grid h-10 w-10 place-items-center rounded-xl bg-primary-500/20 text-2xl text-primary-400">
+                        "\u{2665}"
+                    </span>
+                    <span class="text-xl font-semibold tracking-tight">"Mommy's Heart"</span>
+                </div>
+
+                <div class="rounded-2xl border border-slate-800 bg-slate-900 p-8 shadow-xl shadow-black/30">
+                    <p class="text-6xl font-bold tracking-tight text-primary-400">"404"</p>
+                    <h1 class="mt-4 text-lg font-semibold text-slate-100">"Page not found"</h1>
+                    <p class="mt-2 text-sm text-slate-400">
+                        "The page you're looking for doesn't exist or may have moved."
+                    </p>
+                    <A
+                        href="/"
+                        attr:class="mt-6 inline-block rounded-lg border border-primary-500/40 bg-primary-500/10 px-4 py-2 text-sm font-medium text-primary-300 hover:bg-primary-500/20"
+                    >
+                        "Back to home"
+                    </A>
+                </div>
+            </div>
+        </div>
+    }
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     provide_meta_context();
@@ -57,9 +88,7 @@ pub fn App() -> impl IntoView {
         <Title text="Mommy's Heart CRM" />
 
         <Router>
-            <Routes fallback=|| {
-                view! { <p class="p-6 text-slate-300">"Page not found"</p> }
-            }>
+            <Routes fallback=|| view! { <NotFoundPage /> }>
                 <Route path=path!("/") view=HomeRedirect />
                 <Route path=path!("/login") view=LoginPage />
                 <Route path=path!("/register") view=RegisterPage />

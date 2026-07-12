@@ -1,7 +1,7 @@
 //! Cases and their sub-resources: notes, evidence, properties, and audit log.
 
-use crate::server::db::{audit, ids, now_stamp, pool, users};
-use crate::server_fns::cases::{Case, CaseNote, CaseProperty, CaseStatus, CaseSummary, Evidence};
+use crate::server::db::{audit, evidence, ids, now_stamp, pool, users};
+use crate::server_fns::cases::{Case, CaseNote, CaseProperty, CaseStatus, CaseSummary};
 use crate::server_fns::pagination::Page;
 use crate::server_fns::capabilities::CaseCapability;
 
@@ -19,16 +19,6 @@ struct NoteRow {
     author: String,
     body: String,
     created_at: String,
-}
-
-#[derive(sqlx::FromRow)]
-struct EvidenceRow {
-    id: String,
-    name: String,
-    case_id: String,
-    uploaded_by: String,
-    uploaded_at: String,
-    description: String,
 }
 
 /// Flat row shape for the sparse [`CaseSummary`] projection (header fields plus
@@ -252,24 +242,7 @@ pub async fn get(id: &str) -> Result<Option<Case>, sqlx::Error> {
         })
         .collect();
 
-    let evidence_rows = sqlx::query_as::<_, EvidenceRow>(
-        "SELECT id, name, case_id, uploaded_by, uploaded_at, description
-         FROM evidence WHERE case_id = $1 ORDER BY seq ASC",
-    )
-    .bind(id)
-    .fetch_all(pool())
-    .await?;
-    let evidence = evidence_rows
-        .into_iter()
-        .map(|r| Evidence {
-            id: r.id,
-            name: r.name,
-            case_id: r.case_id,
-            uploaded_by: r.uploaded_by,
-            uploaded_at: r.uploaded_at,
-            description: r.description,
-        })
-        .collect();
+    let evidence = evidence::get_case_evidence(id).await?;
 
     let property_rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT key, value FROM case_properties WHERE case_id = $1 ORDER BY ord ASC",
@@ -545,38 +518,5 @@ pub async fn add_note(case_id: &str, author: &str, body: &str) -> Result<(), sql
     .bind(now_stamp())
     .execute(pool())
     .await?;
-    Ok(())
-}
-
-/// Attach evidence to a case.
-pub async fn add_evidence(
-    case_id: &str,
-    name: &str,
-    uploaded_by: &str,
-    description: &str,
-) -> Result<(), sqlx::Error> {
-    let id = ids::next(pool(), "e").await?;
-    sqlx::query(
-        "INSERT INTO evidence (id, case_id, name, uploaded_by, uploaded_at, description)
-         VALUES ($1, $2, $3, $4, $5, $6)",
-    )
-    .bind(&id)
-    .bind(case_id)
-    .bind(name)
-    .bind(uploaded_by)
-    .bind(now_stamp())
-    .bind(description)
-    .execute(pool())
-    .await?;
-    Ok(())
-}
-
-/// Remove a piece of evidence from a case.
-pub async fn delete_evidence(case_id: &str, evidence_id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM evidence WHERE case_id = $1 AND id = $2")
-        .bind(case_id)
-        .bind(evidence_id)
-        .execute(pool())
-        .await?;
     Ok(())
 }

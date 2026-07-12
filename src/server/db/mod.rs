@@ -7,6 +7,7 @@
 
 pub mod audit;
 pub mod cases;
+pub mod evidence;
 pub mod grants;
 pub mod ids;
 pub mod messages;

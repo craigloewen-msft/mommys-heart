@@ -6,6 +6,7 @@ async fn main() {
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use mommys_heart_crm::app::{shell, App};
     use mommys_heart_crm::server::{api, rag, telemetry};
+    use mommys_heart_crm::server_fns;
     use tower_http::trace::TraceLayer;
 
     // Load local .env in development (Azure OpenAI keys, ALLOWED_ORIGINS, etc.).
@@ -34,6 +35,12 @@ async fn main() {
         panic!("failed to initialize database: {e}");
     }
 
+    // Configure Azure Blob Storage for evidence uploads. Missing configuration
+    // is not fatal — uploads degrade gracefully like the RAG pipeline does.
+    if let Err(e) = mommys_heart_crm::server::storage::init().await {
+        panic!("failed to initialize evidence storage: {e}");
+    }
+
     // Kick off document ingestion in the background so the server starts
     // serving immediately; the RAG store fills in once embeddings complete.
     rag::start_background_ingest();
@@ -53,7 +60,10 @@ async fn main() {
             move || shell(leptos_options.clone())
         })
         // The dedicated JSON API (+ CORS for the cross-origin Squarespace widget).
-        .merge(api::router::<LeptosOptions>().layer(api::cors_layer()))
+        .merge(api::router::<LeptosOptions>().layer(api::cors_layer()));
+
+    // Wire the evidence HTTP surface
+    let app = server_fns::evidence::install(app)
         .fallback(leptos_axum::file_and_error_handler(shell))
         // Log every incoming request (method, path, status, latency).
         .layer(TraceLayer::new_for_http())

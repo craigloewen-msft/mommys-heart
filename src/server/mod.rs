@@ -11,4 +11,5 @@ pub mod docs;
 pub mod permissions;
 pub mod rag;
 pub mod service;
+pub mod storage;
 pub mod telemetry;

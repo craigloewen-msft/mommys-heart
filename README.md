@@ -6,20 +6,30 @@ with server-side authentication (argon2 password hashing + session cookies).
 
 ## Local development
 
-1. **Start a local Postgres** (uses `wslc.exe`, the WSL container CLI):
+1. **Start the backing services** (Postgres + Azurite, both via `wslc.exe`, the
+   WSL container CLI). One script manages both containers — the CRM database and
+   the [Azurite](https://learn.microsoft.com/azure/storage/common/storage-use-azurite)
+   Azure Storage emulator that holds case evidence *files*:
 
    ```
-   etc/dev-db.sh up      # create + start the container (idempotent)
-   etc/dev-db.sh down    # stop + remove the container (keeps data)
-   etc/dev-db.sh reset   # remove the container AND its data volume
-   etc/dev-db.sh seed    # (re)populate the database with demo/test data
-   etc/dev-db.sh psql    # open a psql shell inside the container
+   etc/dev-db.sh up            # create + start both containers (idempotent)
+   etc/dev-db.sh down          # stop + remove both containers (keeps data)
+   etc/dev-db.sh reset         # remove both containers AND their data volumes
+   etc/dev-db.sh seed          # (re)populate the database with demo/test data
+   etc/dev-db.sh logs [db|storage]   # tail a container's logs (default: db)
+   etc/dev-db.sh psql          # open a psql shell inside the database container
    ```
+
+   The `evidence` blob container is created automatically on app startup. Only
+   the metadata (filename, type, size, SHA-256, blob path) is stored in Postgres;
+   the bytes live in Blob Storage.
 
 2. **Configure environment.** Copy `.env.example` to `.env` and adjust as
    needed. The key variables for the database are `DATABASE_URL`,
-   `SESSION_SECRET`, and `COOKIE_SECURE`. Logging verbosity is controlled by
-   `RUST_LOG` (see **Logging** below).
+   `SESSION_SECRET`, and `COOKIE_SECURE`. For evidence storage, the local
+   `AZURE_STORAGE_CONNECTION_STRING` (Azurite's well-known dev key, already filled
+   in) and `AZURE_STORAGE_CONTAINER` are all that's needed. Logging verbosity is
+   controlled by `RUST_LOG` (see **Logging** below).
 
 3. **Run the app.** On startup the server applies the migrations in
    `migrations/` and, if the database is empty, seeds it from the demo fixtures.

@@ -11,6 +11,7 @@ use crate::server_fns::audit::AuditScope;
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::cases::{self, Case, CaseStatus, CaseSummary};
 use crate::server_fns::err_text;
+use crate::server_fns::evidence;
 use crate::server_fns::users::{search_users, UserSummary};
 use crate::state::AppState;
 
@@ -28,6 +29,53 @@ struct PropRow {
 
 fn badge(classes: &str) -> String {
     format!("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {classes}")
+}
+
+/// Client-side (WASM) evidence upload: reads the chosen file from the `<input>`,
+/// performs a friendly size pre-check, and hands the multipart form to the
+/// [`upload_evidence`](crate::server_fns::evidence::upload_evidence) server
+/// function. The server re-validates every byte — the pre-check is purely for
+/// fast UX feedback.
+#[cfg(feature = "hydrate")]
+async fn upload_evidence_file(
+    case_id: &str,
+    file_ref: NodeRef<leptos::html::Input>,
+    description: &str,
+) -> Result<(), String> {
+    use crate::server_fns::evidence::upload_evidence;
+    use leptos::server_fn::codec::MultipartData;
+
+    const MAX_BYTES: f64 = 25.0 * 1024.0 * 1024.0;
+
+    let input = file_ref
+        .get_untracked()
+        .ok_or("The file picker is not ready yet.")?;
+    let files = input
+        .files()
+        .ok_or("Please choose a file to upload.")?;
+    let file = files
+        .get(0)
+        .ok_or("Please choose a file to upload.")?;
+
+    if file.size() > MAX_BYTES {
+        return Err("File is too large; the limit is 25 MB.".to_string());
+    }
+
+    let filename = file.name();
+    let form = web_sys::FormData::new().map_err(|_| "Could not prepare the upload.".to_string())?;
+    form.append_with_blob_and_filename("file", file.as_ref(), &filename)
+        .map_err(|_| "Could not attach the file.".to_string())?;
+    form.append_with_str("case_id", case_id)
+        .map_err(|_| "Could not prepare the upload.".to_string())?;
+    let description = description.trim();
+    if !description.is_empty() {
+        let _ = form.append_with_str("description", description);
+    }
+
+    upload_evidence(MultipartData::from(form))
+        .await
+        .map(|_id| ())
+        .map_err(crate::server_fns::err_text)
 }
 
 /// A short label summarizing a user's access to a case from their capabilities.
@@ -581,22 +629,41 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         }
     };
 
-    // --- evidence form ---
-    let evi_name = RwSignal::new(String::new());
+    // --- evidence upload ---
     let evi_desc = RwSignal::new(String::new());
+    let evi_error = RwSignal::new(String::new());
+    let evi_uploading = RwSignal::new(false);
+    let file_ref: NodeRef<leptos::html::Input> = NodeRef::new();
     let add_evidence = {
         let case_id = case_id.clone();
         move |_| {
             let case_id = case_id.clone();
-            let name = evi_name.get_untracked();
             let desc = evi_desc.get_untracked();
-            spawn_local(async move {
-                if cases::add_case_evidence(case_id, name, desc).await.is_ok() {
-                    evi_name.set(String::new());
-                    evi_desc.set(String::new());
-                    reload.update(|n| *n += 1);
+            evi_error.set(String::new());
+            #[cfg(feature = "hydrate")]
+            {
+                if evi_uploading.get_untracked() {
+                    return;
                 }
-            });
+                evi_uploading.set(true);
+                spawn_local(async move {
+                    match upload_evidence_file(&case_id, file_ref, &desc).await {
+                        Ok(()) => {
+                            evi_desc.set(String::new());
+                            if let Some(input) = file_ref.get_untracked() {
+                                input.set_value("");
+                            }
+                            reload.update(|n| *n += 1);
+                        }
+                        Err(msg) => evi_error.set(msg),
+                    }
+                    evi_uploading.set(false);
+                });
+            }
+            #[cfg(not(feature = "hydrate"))]
+            {
+                let _ = (&case_id, &desc, file_ref, evi_uploading);
+            }
         }
     };
 
@@ -642,7 +709,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                             let case_id = case_id.clone();
                             let evidence_id = evidence_id.clone();
                             spawn_local(async move {
-                                if cases::delete_case_evidence(case_id, evidence_id)
+                                if evidence::delete_case_evidence(case_id, evidence_id)
                                     .await
                                     .is_ok()
                                 {
@@ -664,6 +731,33 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                     } else {
                         ().into_any()
                     };
+                    let file_meta = if e.has_file {
+                        let download_url = format!(
+                            "/api/cases/{}/evidence/{}/download",
+                            e.case_id, e.id
+                        );
+                        let download_name = e.original_filename.clone();
+                        let details = format!(
+                            "{} · {}",
+                            e.content_type.clone(),
+                            evidence::human_size(e.size_bytes),
+                        );
+                        view! {
+                            <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                                <a
+                                    href=download_url
+                                    download=download_name
+                                    class="rounded-lg border border-primary-500/40 px-2 py-1 font-medium text-primary-300 hover:bg-primary-500/10"
+                                >
+                                    "Download"
+                                </a>
+                                <span>{details}</span>
+                            </div>
+                        }
+                        .into_any()
+                    } else {
+                        ().into_any()
+                    };
                     view! {
                         <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
                             <div class="flex items-start justify-between gap-2">
@@ -676,6 +770,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                             }>
                                 <p class="text-sm text-slate-400">{e.description.clone()}</p>
                             </Show>
+                            {file_meta}
                             <p class="mt-1 text-xs text-slate-500">
                                 "Uploaded by " {e.uploaded_by} " · " {e.uploaded_at}
                             </p>
@@ -1003,10 +1098,10 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                             view! {
                                 <div class="mt-3 space-y-2">
                                     <input
-                                        class=input_class
-                                        placeholder="Evidence name"
-                                        prop:value=move || evi_name.get()
-                                        on:input=move |ev| evi_name.set(event_target_value(&ev))
+                                        node_ref=file_ref
+                                        type="file"
+                                        accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+                                        class="block w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-200 hover:file:bg-slate-700"
                                     />
                                     <input
                                         class=input_class
@@ -1016,10 +1111,23 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                                     />
                                     <button
                                         on:click=add_evidence
-                                        class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600"
+                                        prop:disabled=move || evi_uploading.get()
+                                        class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
                                     >
-                                        "Add evidence"
+                                        {move || {
+                                            if evi_uploading.get() {
+                                                "Uploading…"
+                                            } else {
+                                                "Upload evidence"
+                                            }
+                                        }}
                                     </button>
+                                    <p class="text-xs text-slate-500">
+                                        "PDF, images, or Office documents · up to 25 MB"
+                                    </p>
+                                    <Show when=move || !evi_error.get().is_empty()>
+                                        <p class="text-xs text-rose-400">{move || evi_error.get()}</p>
+                                    </Show>
                                 </div>
                             }
                                 .into_any()
