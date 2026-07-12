@@ -2,7 +2,7 @@
 
 use crate::server::db::{audit, ids, pool};
 use crate::server_fns::pagination::Page;
-use crate::server_fns::permissions::{CaseAssignment, CaseCapability};
+use crate::server_fns::capabilities::{CaseAssignment, CaseCapability};
 use crate::server_fns::users::{AccountRole, User};
 use std::collections::BTreeMap;
 

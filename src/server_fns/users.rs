@@ -5,13 +5,13 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::server_fns::pagination::Page;
-use crate::server_fns::permissions::{CaseAssignment, CaseCapability};
+use crate::server_fns::capabilities::{CaseAssignment, CaseCapability};
 
 /// The global account type a user has. This controls app-level access (e.g.
 /// only an `Admin` reaches the Admin dashboard). It is intentionally separate
-/// from per-case permissions: all account types view and work cases the same
+/// from per-case capabilities: all account types view and work cases the same
 /// way; what differs per case is their set of
-/// [`CaseCapability`](crate::server_fns::permissions::CaseCapability)s.
+/// [`CaseCapability`](crate::server_fns::capabilities::CaseCapability)s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountRole {
@@ -19,7 +19,7 @@ pub enum AccountRole {
     Client,
     /// A volunteer working cases on behalf of clients.
     Volunteer,
-    /// An administrator who manages users and their permissions.
+    /// An administrator who manages users and their capabilities.
     Admin,
 }
 
@@ -83,7 +83,7 @@ pub struct User {
     /// Plaintext for the local demo only. Do not use this pattern for real auth.
     pub password: String,
     pub role: AccountRole,
-    /// Cases this user is assigned to, with their permission on each.
+    /// Cases this user is assigned to, with the capabilities they hold on each.
     #[serde(default)]
     pub assigned_cases: Vec<CaseAssignment>,
 }
@@ -205,12 +205,12 @@ pub async fn unassign_case(user_id: String, case_id: String) -> Result<(), Serve
         .map_err(ServerFnError::new)
 }
 
-/// Apply a batch of per-case permission changes for one user in a single
+/// Apply a batch of per-case capability changes for one user in a single
 /// request. Each change is either a new capability set for a case (`Some`) or a
 /// removal of the assignment (`None`). Backs the admin "Edit → Save" flow so a
 /// whole draft applies in one round-trip instead of one server call per checkbox.
 #[server(prefix = "/api")]
-pub async fn save_case_permissions(
+pub async fn save_case_capabilities(
     user_id: String,
     changes: Vec<(String, Option<Vec<CaseCapability>>)>,
 ) -> Result<(), ServerFnError> {

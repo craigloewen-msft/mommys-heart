@@ -13,7 +13,7 @@
 use crate::server_fns::cases::{Case, CaseProperty, CaseStatus};
 use crate::server_fns::grants::Grant;
 use crate::server_fns::message::Message;
-use crate::server_fns::permissions::{CaseAssignment, CasePreset};
+use crate::server_fns::capabilities::{CaseAssignment, CasePreset};
 use crate::server_fns::users::{AccountRole, User};
 
 /// Organization display name.

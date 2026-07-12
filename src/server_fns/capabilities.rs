@@ -1,4 +1,4 @@
-//! The per-case permission model shared by the client and the server.
+//! The per-case **capability** model shared by the client and the server.
 //!
 //! These types are the vocabulary of case-level authorization: the discrete
 //! [`CaseCapability`]s a user may hold, convenience [`CasePreset`]s that expand
@@ -8,8 +8,11 @@
 //! cases (each operation checks a capability), so they live in their own module
 //! rather than being owned by either side.
 //!
-//! Account-level access (who reaches the Admin dashboard) is a separate concern:
-//! see [`crate::server_fns::users::AccountRole`].
+//! This module is only the *vocabulary* (the nouns). The server-side *gate* that
+//! actually grants or denies access from these capabilities lives in
+//! [`crate::server::permissions`]. Account-level access (who reaches the Admin
+//! dashboard) is a separate concern: see
+//! [`crate::server_fns::users::AccountRole`].
 
 use serde::{Deserialize, Serialize};
 

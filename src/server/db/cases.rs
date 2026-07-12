@@ -3,7 +3,7 @@
 use crate::server::db::{audit, ids, now_stamp, pool, users};
 use crate::server_fns::cases::{Case, CaseNote, CaseProperty, CaseStatus, CaseSummary, Evidence};
 use crate::server_fns::pagination::Page;
-use crate::server_fns::permissions::CaseCapability;
+use crate::server_fns::capabilities::CaseCapability;
 
 #[derive(sqlx::FromRow)]
 struct CaseRow {
@@ -114,15 +114,21 @@ pub async fn get_summaries_for_user(
     };
 
     // `$1` is the (nullable) search pattern; the viewer id scopes the results to
-    // cases they hold capabilities on. Its bind position differs between the
-    // COUNT query (`$2`) and the page query (`$4`, after LIMIT/OFFSET).
+    // cases they can actually open — i.e. where they hold the `view_case`
+    // capability, matching what [`load_case`] enforces. Its bind position differs
+    // between the COUNT query (`$2`) and the page query (`$4`, after LIMIT/OFFSET).
+    // The capability slug is an internal constant (never user input), so
+    // interpolating it into the SQL is safe.
     const SEARCH: &str = "($1::text IS NULL OR c.id ILIKE $1 OR c.name ILIKE $1)";
-    const SCOPE: &str = "EXISTS \
-        (SELECT 1 FROM case_assignments a WHERE a.case_id = c.id AND a.user_id = $VIEWER)";
+    let scope = format!(
+        "EXISTS (SELECT 1 FROM case_assignments a \
+         WHERE a.case_id = c.id AND a.user_id = $VIEWER AND a.capability = '{}')",
+        CaseCapability::ViewCase.slug()
+    );
 
     let count_sql = format!(
         "SELECT count(*) FROM cases c WHERE {SEARCH} AND {}",
-        SCOPE.replace("$VIEWER", "$2")
+        scope.replace("$VIEWER", "$2")
     );
     let page_sql = format!(
         "SELECT c.id, c.name, c.status, c.owner_id,
@@ -132,7 +138,7 @@ pub async fn get_summaries_for_user(
          LEFT JOIN users u ON u.id = c.owner_id
          WHERE {SEARCH} AND {}
          ORDER BY c.id LIMIT $2 OFFSET $3",
-        SCOPE.replace("$VIEWER", "$4")
+        scope.replace("$VIEWER", "$4")
     );
 
     // The count and the page fetch are independent, so run them concurrently —
@@ -170,7 +176,7 @@ pub async fn get_summaries_for_user(
 
 /// Up to `limit` lightweight cases whose id or name matches `search`
 /// (case-insensitive, metacharacters escaped), ordered by id. Unscoped — used by
-/// the admin permission tool to find any case to grant access to. Empty search
+/// the admin capability tool to find any case to grant access to. Empty search
 /// returns the first `limit` cases.
 pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, sqlx::Error> {
     let limit = limit.clamp(1, 50);

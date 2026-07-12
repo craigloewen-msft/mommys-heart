@@ -17,11 +17,11 @@
 
 pub mod audit;
 pub mod auth;
+pub mod capabilities;
 pub mod cases;
 pub mod grants;
 pub mod message;
 pub mod pagination;
-pub mod permissions;
 pub mod users;
 
 use leptos::prelude::*;

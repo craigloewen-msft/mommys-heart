@@ -87,7 +87,8 @@ pub struct Case {
     pub id: String,
     pub name: String,
     pub status: CaseStatus,
-    /// The user who owns this case (implicitly has `Owner` permission).
+    /// The user who owns this case. Owners hold no implicit rights; they are
+    /// granted a full capability assignment explicitly when the case is created.
     pub owner_id: String,
     /// Case notes, newest last.
     #[serde(default)]
@@ -143,14 +144,14 @@ pub async fn load_case_summaries_for_user(
 pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::permissions::CaseCapability;
+    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::ViewCase).await?;
     cases::get(&case_id).await.map_err(ServerFnError::new)
 }
 
-/// Admin-only lightweight case search for the permission tool: find any case
+/// Admin-only lightweight case search for the capability tool: find any case
 /// (across the whole system) by id or name so an admin can assign a user to it.
 /// This is a management action, not a case view — it never hydrates or exposes
 /// case contents.
@@ -167,7 +168,7 @@ pub async fn admin_search_cases(query: String) -> Result<Vec<CaseSummary>, Serve
 }
 
 /// Admin-only lightweight resolution of specific case ids to names, so the
-/// permission tool can show which cases a user is already assigned to without
+/// capability tool can show which cases a user is already assigned to without
 /// loading every case.
 #[server(prefix = "/api")]
 pub async fn admin_cases_by_ids(ids: Vec<String>) -> Result<Vec<CaseSummary>, ServerFnError> {
@@ -214,7 +215,7 @@ pub async fn create_case(
 pub async fn set_case_status(case_id: String, status: CaseStatus) -> Result<(), ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::permissions::CaseCapability;
+    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
@@ -228,7 +229,7 @@ pub async fn set_case_status(case_id: String, status: CaseStatus) -> Result<(), 
 pub async fn set_case_name(case_id: String, name: String) -> Result<(), ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::permissions::CaseCapability;
+    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     let name = name.trim().to_string();
@@ -246,7 +247,7 @@ pub async fn set_case_name(case_id: String, name: String) -> Result<(), ServerFn
 pub async fn set_case_owner(case_id: String, owner_id: String) -> Result<(), ServerFnError> {
     use crate::server::db::{cases, users};
     use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::permissions::CaseCapability;
+    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
@@ -270,7 +271,7 @@ pub async fn set_case_properties(
 ) -> Result<(), ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::permissions::CaseCapability;
+    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
@@ -284,7 +285,7 @@ pub async fn set_case_properties(
 pub async fn add_case_note(case_id: String, body: String) -> Result<(), ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::permissions::CaseCapability;
+    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     let body = body.trim().to_string();
@@ -306,7 +307,7 @@ pub async fn add_case_evidence(
 ) -> Result<(), ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::permissions::CaseCapability;
+    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     let name = name.trim().to_string();
@@ -327,7 +328,7 @@ pub async fn delete_case_evidence(
 ) -> Result<(), ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::permissions::CaseCapability;
+    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::DeleteEvidence).await?;
@@ -346,7 +347,7 @@ pub async fn list_messages_page(
 ) -> Result<Page<Message>, ServerFnError> {
     use crate::server::db::messages;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::permissions::CaseCapability;
+    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::SendMessages).await?;
@@ -361,7 +362,7 @@ pub async fn list_messages_page(
 pub async fn send_message(case_id: String, body: String) -> Result<Message, ServerFnError> {
     use crate::server::db::messages;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::permissions::CaseCapability;
+    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     let body = body.trim().to_string();
