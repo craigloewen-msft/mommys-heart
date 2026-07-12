@@ -158,6 +158,20 @@ pub async fn search_user_summaries(
         .collect())
 }
 
+/// Whether a user currently has any capability assignment on a case. Used to
+/// distinguish a brand-new case assignment (worth an email) from an edit to an
+/// existing one.
+pub async fn is_assigned(user_id: &str, case_id: &str) -> Result<bool, sqlx::Error> {
+    let exists: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM case_assignments WHERE user_id = $1 AND case_id = $2 LIMIT 1",
+    )
+    .bind(user_id)
+    .bind(case_id)
+    .fetch_optional(pool())
+    .await?;
+    Ok(exists.is_some())
+}
+
 /// Change a user's global role, recording an audit entry when it changes.
 pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(), sqlx::Error> {
     let current: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")

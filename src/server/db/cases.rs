@@ -69,6 +69,15 @@ pub async fn owner_id(case_id: &str) -> Result<Option<String>, sqlx::Error> {
     Ok(owner)
 }
 
+/// The display name of a case, if it exists (cheap lookup for notifications).
+pub async fn name(case_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let name: Option<String> = sqlx::query_scalar("SELECT name FROM cases WHERE id = $1")
+        .bind(case_id)
+        .fetch_optional(pool())
+        .await?;
+    Ok(name)
+}
+
 /// One page of sparse cases visible to a user_id
 pub async fn get_summaries_for_user(
     offset: i64,

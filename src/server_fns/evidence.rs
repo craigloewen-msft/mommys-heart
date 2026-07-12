@@ -223,6 +223,13 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
         "evidence uploaded: case={case_id} id={evidence_id} file='{filename}' \
          type={content_type} size={size_bytes}"
     );
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::EvidenceChanged,
+        format!("added evidence \"{display_name}\""),
+    );
     Ok(evidence_id)
 }
 
@@ -251,6 +258,13 @@ pub async fn delete_case_evidence(
             tracing::warn!("failed to delete evidence blob '{blob_path}': {e}");
         }
     }
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::EvidenceChanged,
+        "removed a piece of evidence".to_string(),
+    );
     Ok(())
 }
 

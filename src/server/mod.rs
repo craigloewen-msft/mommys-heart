@@ -8,6 +8,8 @@ pub mod captcha;
 pub mod config;
 pub mod db;
 pub mod docs;
+pub mod email;
+pub mod notifications;
 pub mod permissions;
 pub mod rag;
 pub mod service;

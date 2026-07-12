@@ -13,6 +13,7 @@ pub mod ids;
 pub mod messages;
 pub mod seed;
 pub mod sessions;
+pub mod settings;
 pub mod users;
 
 use sqlx::postgres::PgPoolOptions;

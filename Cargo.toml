@@ -106,6 +106,7 @@ ssr = [
     "dep:base64",
     "dep:hmac",
     "dep:server_fn",
+
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",

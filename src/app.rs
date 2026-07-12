@@ -10,6 +10,7 @@ use crate::pages::{
     inbox::InboxPage,
     login::LoginPage,
     register::RegisterPage,
+    settings::SettingsPage,
 };
 use crate::state::AppState;
 
@@ -96,6 +97,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/cases/new") view=NewCasePage />
                 <Route path=path!("/inbox") view=InboxPage />
                 <Route path=path!("/grants") view=GrantHomePage />
+                <Route path=path!("/settings") view=SettingsPage />
                 <Route path=path!("/admin") view=AdminDashboardPage />
             </Routes>
         </Router>

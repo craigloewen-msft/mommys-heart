@@ -89,6 +89,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                             } else {
                                 ().into_any()
                             }}
+                            <NavLink href="/settings" label="Settings" />
                         </nav>
 
                         <div class="ml-auto flex items-center gap-3">
@@ -130,6 +131,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                         } else {
                             ().into_any()
                         }}
+                        <NavLink href="/settings" label="Settings" />
                     </nav>
                 </div>
             </header>

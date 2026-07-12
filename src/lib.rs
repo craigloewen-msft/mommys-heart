@@ -17,6 +17,7 @@ pub mod pages {
     pub mod inbox;
     pub mod login;
     pub mod register;
+    pub mod settings;
 }
 
 #[cfg(feature = "ssr")]

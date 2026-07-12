@@ -172,9 +172,20 @@ pub async fn assign_case(
     let actor = require_user().await?;
     require_admin(&actor)?;
     validate_capabilities(&capabilities).map_err(ServerFnError::new)?;
+    let was_assigned = users::is_assigned(&user_id, &case_id)
+        .await
+        .unwrap_or(true);
     users::assign_capabilities(&user_id, &case_id, &capabilities, &actor.full_name())
         .await
-        .map_err(ServerFnError::new)
+        .map_err(ServerFnError::new)?;
+    if !was_assigned && capabilities.contains(&CaseCapability::ViewCase) {
+        crate::server::notifications::notify_assignment(
+            user_id.clone(),
+            actor.full_name(),
+            case_id.clone(),
+        );
+    }
+    Ok(())
 }
 
 /// Toggle a single capability for a user on a case.
@@ -231,9 +242,21 @@ pub async fn save_case_capabilities(
     let actor_name = actor.full_name();
     for (case_id, caps) in changes {
         match caps {
-            Some(caps) => users::assign_capabilities(&user_id, &case_id, &caps, &actor_name)
-                .await
-                .map_err(ServerFnError::new)?,
+            Some(caps) => {
+                let was_assigned = users::is_assigned(&user_id, &case_id)
+                    .await
+                    .unwrap_or(true);
+                users::assign_capabilities(&user_id, &case_id, &caps, &actor_name)
+                    .await
+                    .map_err(ServerFnError::new)?;
+                if !was_assigned && caps.contains(&CaseCapability::ViewCase) {
+                    crate::server::notifications::notify_assignment(
+                        user_id.clone(),
+                        actor_name.clone(),
+                        case_id.clone(),
+                    );
+                }
+            }
             None => users::unassign(&user_id, &case_id, &actor_name)
                 .await
                 .map_err(ServerFnError::new)?,

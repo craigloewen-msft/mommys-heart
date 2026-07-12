@@ -23,6 +23,7 @@ pub mod evidence;
 pub mod grants;
 pub mod message;
 pub mod pagination;
+pub mod settings;
 pub mod users;
 
 use leptos::prelude::*;
