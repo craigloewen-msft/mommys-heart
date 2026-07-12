@@ -8,9 +8,9 @@ use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::server_fns::audit::AuditScope;
+use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::cases::{self, Case, CaseStatus, CaseSummary};
 use crate::server_fns::err_text;
-use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::users::{search_users, UserSummary};
 use crate::state::AppState;
 
@@ -424,7 +424,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         .map(|u| u.capabilities_for(&summary.id))
         .unwrap_or_default();
     let can_edit = caps.contains(&CaseCapability::EditCase);
-    let can_change_owner = state.is_admin();
+    let is_admin = state.is_admin();
     let can_note = caps.contains(&CaseCapability::AddNotes);
     let can_view_evidence = caps.contains(&CaseCapability::ViewEvidence);
     let can_upload_evidence = caps.contains(&CaseCapability::UploadEvidence);
@@ -549,7 +549,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                     return;
                 }
             }
-            if can_change_owner {
+            if is_admin {
                 if let Err(e) = cases::set_case_owner(case_id.clone(), owner).await {
                     edit_error.set(err_text(e));
                     return;
@@ -872,7 +872,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                             <label class="text-xs font-medium text-slate-400">
                                 "Owner (who filed it)"
                             </label>
-                            {if can_change_owner {
+                            {if is_admin {
                                 view! {
                                     <div class="relative">
                                         <input
@@ -1034,18 +1034,25 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
             }}
 
             // Audit log
-            <div class=section>
-                <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
-                    <button
-                        on:click=move |_| log_open.update(|o| *o = !*o)
-                        class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
-                    >
-                        {move || if log_open.get() { "Hide" } else { "Open change log" }}
-                    </button>
-                </div>
-                <div class="mt-3 space-y-1.5">{audit_view}</div>
-            </div>
+            {if is_admin {
+                view! {
+                    <div class=section>
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
+                            <button
+                                on:click=move |_| log_open.update(|o| *o = !*o)
+                                class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                            >
+                                {move || if log_open.get() { "Hide" } else { "Open change log" }}
+                            </button>
+                        </div>
+                        <div class="mt-3 space-y-1.5">{audit_view}</div>
+                    </div>
+                }
+                    .into_any()
+            } else {
+                view! {}.into_any()
+            }}
             </div>
         </div>
     }
