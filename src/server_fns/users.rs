@@ -80,8 +80,6 @@ pub struct User {
     pub email: String,
     pub phone: String,
     pub home_address: String,
-    /// Plaintext for the local demo only. Do not use this pattern for real auth.
-    pub password: String,
     pub role: AccountRole,
     /// Cases this user is assigned to, with the capabilities they hold on each.
     #[serde(default)]
@@ -111,13 +109,16 @@ impl User {
     }
 }
 
-/// Server-side typeahead search over users for the case owner-picker
+/// Server-side typeahead search over users for the case owner-picker. Admin
+/// only: it returns other users' names, which are confidential, and its sole
+/// consumer (owner reassignment) is itself admin-only.
 #[server(prefix = "/api")]
 pub async fn search_users(query: String) -> Result<Vec<UserSummary>, ServerFnError> {
     use crate::server::db::users;
-    use crate::server::permissions::require_user;
+    use crate::server::permissions::{require_admin, require_user};
 
-    require_user().await?;
+    let actor = require_user().await?;
+    require_admin(&actor)?;
     users::search_user_summaries(&query, 10)
         .await
         .map_err(ServerFnError::new)

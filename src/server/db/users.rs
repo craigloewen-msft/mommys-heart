@@ -26,9 +26,6 @@ impl UserRow {
             email: self.email,
             phone: self.phone,
             home_address: self.home_address,
-            // Passwords are never surfaced through the domain type anymore; the
-            // hash stays in the DB. Keep the field for API compatibility.
-            password: String::new(),
             role: AccountRole::from_slug(&self.role).unwrap_or(AccountRole::Client),
             assigned_cases,
         }

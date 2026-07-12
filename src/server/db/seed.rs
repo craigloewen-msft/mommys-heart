@@ -40,8 +40,8 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let pool = pool();
 
     // 1. Users (hash the plaintext demo passwords) + their per-user audit log.
-    for u in crate::mockdata::users() {
-        let password_hash = hash_password(&u.password)?;
+    for (u, password) in crate::mockdata::users() {
+        let password_hash = hash_password(&password)?;
         sqlx::query(
             "INSERT INTO users (id, first_name, last_name, email, phone, home_address, password_hash, role)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -124,7 +124,7 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // 4. Case assignments (after both users and cases exist).
-    for u in crate::mockdata::users() {
+    for (u, _) in crate::mockdata::users() {
         insert_assignments(&u).await?;
     }
 

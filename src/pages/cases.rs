@@ -424,6 +424,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         .map(|u| u.capabilities_for(&summary.id))
         .unwrap_or_default();
     let can_edit = caps.contains(&CaseCapability::EditCase);
+    let can_change_owner = state.is_admin();
     let can_note = caps.contains(&CaseCapability::AddNotes);
     let can_view_evidence = caps.contains(&CaseCapability::ViewEvidence);
     let can_upload_evidence = caps.contains(&CaseCapability::UploadEvidence);
@@ -548,9 +549,11 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                     return;
                 }
             }
-            if let Err(e) = cases::set_case_owner(case_id.clone(), owner).await {
-                edit_error.set(err_text(e));
-                return;
+            if can_change_owner {
+                if let Err(e) = cases::set_case_owner(case_id.clone(), owner).await {
+                    edit_error.set(err_text(e));
+                    return;
+                }
             }
             if let Err(e) = cases::set_case_properties(case_id.clone(), props).await {
                 edit_error.set(err_text(e));
@@ -869,28 +872,43 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                             <label class="text-xs font-medium text-slate-400">
                                 "Owner (who filed it)"
                             </label>
-                            <div class="relative">
-                                <input
-                                    class=input_class
-                                    placeholder="Search users by name or email\u{2026}"
-                                    prop:value=move || {
-                                        if owner_picker_open.get() {
-                                            owner_query.get()
-                                        } else {
-                                            owner_label.get()
-                                        }
-                                    }
-                                    on:focus=move |_| {
-                                        owner_query.set(String::new());
-                                        owner_picker_open.set(true);
-                                    }
-                                    on:input=move |ev| {
-                                        owner_picker_open.set(true);
-                                        owner_query.set(event_target_value(&ev));
-                                    }
-                                />
-                                {owner_result_list}
-                            </div>
+                            {if can_change_owner {
+                                view! {
+                                    <div class="relative">
+                                        <input
+                                            class=input_class
+                                            placeholder="Search users by name or email\u{2026}"
+                                            prop:value=move || {
+                                                if owner_picker_open.get() {
+                                                    owner_query.get()
+                                                } else {
+                                                    owner_label.get()
+                                                }
+                                            }
+                                            on:focus=move |_| {
+                                                owner_query.set(String::new());
+                                                owner_picker_open.set(true);
+                                            }
+                                            on:input=move |ev| {
+                                                owner_picker_open.set(true);
+                                                owner_query.set(event_target_value(&ev));
+                                            }
+                                        />
+                                        {owner_result_list}
+                                    </div>
+                                }
+                                    .into_any()
+                            } else {
+                                view! {
+                                    <input
+                                        class=input_class
+                                        prop:value=move || owner_label.get()
+                                        disabled=true
+                                        title="Only an administrator can change the owner."
+                                    />
+                                }
+                                    .into_any()
+                            }}
                         </div>
                     </div>
                     <div>

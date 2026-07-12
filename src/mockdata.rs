@@ -83,7 +83,10 @@ fn prop(key: &str, value: &str) -> CaseProperty {
 /// The users: user 0 is the admin, the next `VOLUNTEERS` are volunteers, the
 /// rest are clients. The first user of each role keeps a fixed, memorable
 /// email/password so the login page's "Demo autofill" buttons work.
-pub fn users() -> Vec<User> {
+/// Demo users paired with their plaintext demo password. The password is
+/// returned separately (not stored on [`User`]) so the seed can hash it before
+/// inserting; the domain type never carries a password.
+pub fn users() -> Vec<(User, String)> {
     (0..USERS)
         .map(|i| {
             let (role, demo) = if i == 0 {
@@ -117,14 +120,13 @@ pub fn users() -> Vec<User> {
                 ),
             };
 
-            User {
+            let user = User {
                 id: user_id(i),
                 first_name: first.into(),
                 last_name: last.into(),
                 email,
                 phone: format!("(555) {:03}-{:04}", (i * 13) % 1000, (i * 97) % 10000),
                 home_address: format!("{} {} Street, Springfield", 100 + i, last),
-                password,
                 role,
                 // Assign each user to a couple of cases (cycling presets) so
                 // assignments and case visibility have data too.
@@ -132,7 +134,8 @@ pub fn users() -> Vec<User> {
                     assign(i % CASES, CasePreset::ALL[i % 3]),
                     assign((i + CASES / 2) % CASES, CasePreset::ALL[(i + 1) % 3]),
                 ],
-            }
+            };
+            (user, password)
         })
         .collect()
 }

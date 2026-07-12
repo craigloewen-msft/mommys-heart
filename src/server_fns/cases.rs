@@ -242,15 +242,17 @@ pub async fn set_case_name(case_id: String, name: String) -> Result<(), ServerFn
         .map_err(ServerFnError::new)
 }
 
-/// Reassign a case's owner (requires the `EditCase` capability).
+/// Reassign a case's owner. Admin only: ownership decides whose personal
+/// information (e.g. other users' names, surfaced through the owner picker) a
+/// case exposes, so it is deliberately *not* covered by the per-case `EditCase`
+/// capability that a case owner themselves holds.
 #[server(prefix = "/api")]
 pub async fn set_case_owner(case_id: String, owner_id: String) -> Result<(), ServerFnError> {
     use crate::server::db::{cases, users};
-    use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::capabilities::CaseCapability;
+    use crate::server::permissions::{require_admin, require_user};
 
     let user = require_user().await?;
-    require_cap(&user, &case_id, CaseCapability::EditCase).await?;
+    require_admin(&user)?;
     if users::get(&owner_id)
         .await
         .map_err(ServerFnError::new)?
