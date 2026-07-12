@@ -1,21 +1,17 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::components::change_log::ChangeLog;
 use crate::components::guard::require_admin;
 use crate::components::layout::Layout;
-use crate::server_fns::audit::ChangeLogEntry;
+use crate::server_fns::audit::AuditScope;
 use crate::server_fns::cases::CaseSummary;
 use crate::server_fns::err_text;
 use crate::server_fns::permissions::{CaseCapability, CasePreset};
 use crate::server_fns::users::AccountRole;
 use crate::server_fns::users::User;
-use crate::state::{today, AppState};
+use crate::state::AppState;
 
-/// Cap on how many change-log rows are rendered at once (guards against huge
-/// result sets).
-const MAX_LOG_ROWS: usize = 100;
-/// Widest date range the change-log filter will accept, in days.
-const MAX_RANGE_DAYS: i64 = 366;
 /// How many users the admin list loads per "page" (each "Load more" click grows
 /// the visible window by this much).
 const PAGE_SIZE: i64 = 10;
@@ -39,51 +35,6 @@ fn same_caps(a: &[CaseCapability], b: &[CaseCapability]) -> bool {
 
 fn badge(classes: &str) -> String {
     format!("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {classes}")
-}
-
-/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = (if y >= 0 { y } else { y - 399 }) / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
-}
-
-/// Inverse of [`days_from_civil`].
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719468;
-    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-/// Parse the `YYYY-MM-DD` prefix of a timestamp into a day ordinal.
-fn date_ordinal(s: &str) -> Option<i64> {
-    let d = s.get(..10).unwrap_or(s);
-    let mut it = d.split('-');
-    let y = it.next()?.parse().ok()?;
-    let m = it.next()?.parse().ok()?;
-    let d = it.next()?.parse().ok()?;
-    Some(days_from_civil(y, m, d))
-}
-
-/// Shift a `YYYY-MM-DD` date by a number of days.
-fn shift_days(date: &str, delta: i64) -> String {
-    match date_ordinal(date) {
-        Some(o) => {
-            let (y, m, d) = civil_from_days(o + delta);
-            format!("{y:04}-{m:02}-{d:02}")
-        }
-        None => date.to_string(),
-    }
 }
 
 /// Admin dashboard: browse users (server-side paginated + searchable) and manage
@@ -316,7 +267,6 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
     let current_role = user.role;
     let full_name = user.full_name();
     let email = user.email.clone();
-    let audit_data: Vec<ChangeLogEntry> = Vec::new();
 
     let originals = StoredValue::new(user.assigned_cases.clone());
     let editing = RwSignal::new(false);
@@ -689,154 +639,17 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
         .into_any()
     };
 
-    // --- change log: collapsed by default, filtered to a date range ---
+    // --- change log: its own data source, fetched on demand ---
+    // Collapsed by default; opening it mounts the `ChangeLog` component, which
+    // fetches independently (with its own loading state), paginates, and filters
+    // by a start/end date range. Rendered reactively so it is `Fn`.
     let log_open = RwSignal::new(false);
-    let default_to = today();
-    let default_from = shift_days(&default_to, -14);
-    let from = RwSignal::new(default_from);
-    let to = RwSignal::new(default_to);
-
-    // The whole expandable region: date pickers + validated, capped results.
-    // Collapsed by default; rendered reactively so it is `Fn` (works with the
-    // reactive `{...}` slot instead of a `<Show>` that would move it out).
-    let log_section = {
-        move || {
-            if !log_open.get() {
-                return ().into_any();
-            }
-            let date_input =
-                "mt-1 block rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100";
-            let controls = view! {
-                <div class="flex flex-wrap items-end gap-3">
-                    <label class="text-xs text-slate-400">
-                        "From"
-                        <input
-                            type="date"
-                            class=date_input
-                            prop:value=move || from.get()
-                            on:change=move |ev| from.set(event_target_value(&ev))
-                        />
-                    </label>
-                    <label class="text-xs text-slate-400">
-                        "To"
-                        <input
-                            type="date"
-                            class=date_input
-                            prop:value=move || to.get()
-                            on:change=move |ev| to.set(event_target_value(&ev))
-                        />
-                    </label>
-                    <button
-                        on:click=move |_| {
-                            let t = today();
-                            from.set(shift_days(&t, -14));
-                            to.set(t);
-                        }
-                        class="rounded-lg border border-slate-700 px-2 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
-                    >
-                        "Last 2 weeks"
-                    </button>
-                </div>
-            };
-
-            let body = {
-                let (fo, to_o) = match (date_ordinal(&from.get()), date_ordinal(&to.get())) {
-                    (Some(a), Some(b)) => (a, b),
-                    _ => {
-                        return view! {
-                            <div class="mt-3 space-y-3">
-                                {controls}
-                                <p class="text-xs text-rose-300">
-                                    "Enter a valid From and To date."
-                                </p>
-                            </div>
-                        }
-                        .into_any();
-                    }
-                };
-                if fo > to_o {
-                    return view! {
-                        <div class="mt-3 space-y-3">
-                            {controls}
-                            <p class="text-xs text-rose-300">
-                                "From date must be on or before the To date."
-                            </p>
-                        </div>
-                    }
-                    .into_any();
-                }
-                if to_o - fo > MAX_RANGE_DAYS {
-                    return view! {
-                        <div class="mt-3 space-y-3">
-                            {controls}
-                            <p class="text-xs text-rose-300">
-                                "Date range is too large — choose at most " {MAX_RANGE_DAYS}
-                                " days."
-                            </p>
-                        </div>
-                    }
-                    .into_any();
-                }
-                let matched: Vec<ChangeLogEntry> = audit_data
-                    .clone()
-                    .into_iter()
-                    .filter(|e| {
-                        date_ordinal(&e.at)
-                            .map(|o| o >= fo && o <= to_o)
-                            .unwrap_or(false)
-                    })
-                    .collect();
-                let total = matched.len();
-                if total == 0 {
-                    return view! {
-                        <p class="text-xs text-slate-500">"No changes in this date range."</p>
-                    }
-                    .into_any();
-                }
-                let capped = total > MAX_LOG_ROWS;
-                let list = matched
-                    .into_iter()
-                    .take(MAX_LOG_ROWS)
-                    .map(|e| {
-                        view! {
-                            <div class="text-xs text-slate-400">
-                                <span class="text-slate-300">{e.actor}</span> " changed "
-                                <span class="text-slate-300">{e.field}</span> " from \""
-                                {e.old_value} "\" to \"" {e.new_value} "\" · " {e.at}
-                            </div>
-                        }
-                        .into_any()
-                    })
-                    .collect_view();
-                let note = if capped {
-                    view! {
-                        <p class="text-xs text-amber-300">
-                            "Showing the first " {MAX_LOG_ROWS} " of " {total}
-                            " changes — narrow the range to see the rest."
-                        </p>
-                    }
-                    .into_any()
-                } else {
-                    view! {
-                        <p class="text-xs text-slate-500">{total} " change(s) in range"</p>
-                    }
-                    .into_any()
-                };
-                view! {
-                    <div class="space-y-1">{list}</div>
-                    {note}
-                }
-                .into_any()
-            };
-
-            view! {
-                <div class="mt-3 space-y-3">
-                    {controls}
-                    {body}
-                </div>
-            }
-            .into_any()
+    let log_user_id = StoredValue::new(user_id.clone());
+    let log_section = move || {
+        if !log_open.get() {
+            return ().into_any();
         }
+        view! { <ChangeLog scope=AuditScope::User entity_id=log_user_id.get_value() /> }.into_any()
     };
 
     view! {
@@ -877,7 +690,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
                         on:click=move |_| log_open.update(|o| *o = !*o)
                         class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
                     >
-                        {move || if log_open.get() { "Hide" } else { "Show" }}
+                        {move || if log_open.get() { "Hide" } else { "Open change log" }}
                     </button>
                 </div>
                 {log_section}

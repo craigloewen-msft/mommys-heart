@@ -2,8 +2,7 @@
 
 use crate::server::db::{ids, now_stamp, pool};
 use crate::server_fns::audit::ChangeLogEntry;
-use sqlx::PgExecutor;
-use std::collections::HashMap;
+use crate::server_fns::pagination::Page;
 
 /// How long audit entries are retained before the background task prunes them.
 const RETENTION_MONTHS: i64 = 12;
@@ -50,77 +49,52 @@ impl From<AuditRow> for ChangeLogEntry {
     }
 }
 
-/// Load an entity's audit log, newest first.
-pub async fn for_entity<'e, E>(
-    executor: E,
+pub async fn page(
     entity: Entity,
     entity_id: &str,
-) -> Result<Vec<ChangeLogEntry>, sqlx::Error>
-where
-    E: PgExecutor<'e>,
-{
+    start: &str,
+    end: &str,
+    offset: i64,
+    limit: i64,
+) -> Result<Page<ChangeLogEntry>, sqlx::Error> {
+    let pool = pool();
+
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM audit_log
+         WHERE entity_type = $1 AND entity_id = $2
+           AND ($3 = '' OR left(at, 10) >= $3)
+           AND ($4 = '' OR left(at, 10) <= $4)",
+    )
+    .bind(entity.as_str())
+    .bind(entity_id)
+    .bind(start)
+    .bind(end)
+    .fetch_one(pool)
+    .await?;
+
     let rows = sqlx::query_as::<_, AuditRow>(
         "SELECT id, actor, field, old_value, new_value, at
          FROM audit_log
          WHERE entity_type = $1 AND entity_id = $2
-         ORDER BY seq DESC",
+           AND ($3 = '' OR left(at, 10) >= $3)
+           AND ($4 = '' OR left(at, 10) <= $4)
+         ORDER BY seq DESC
+         LIMIT $5 OFFSET $6",
     )
     .bind(entity.as_str())
     .bind(entity_id)
-    .fetch_all(executor)
-    .await?;
-    Ok(rows.into_iter().map(Into::into).collect())
-}
-
-/// Load the audit logs for many entities of the same type in a single query,
-/// grouped by entity id (each list newest-first). Used by the paged list views
-/// to avoid running one audit query per row (an N+1 pattern).
-pub async fn for_entities<'e, E>(
-    executor: E,
-    entity: Entity,
-    entity_ids: &[String],
-) -> Result<HashMap<String, Vec<ChangeLogEntry>>, sqlx::Error>
-where
-    E: PgExecutor<'e>,
-{
-    if entity_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    #[derive(sqlx::FromRow)]
-    struct Row {
-        entity_id: String,
-        id: String,
-        actor: String,
-        field: String,
-        old_value: String,
-        new_value: String,
-        at: String,
-    }
-
-    let rows = sqlx::query_as::<_, Row>(
-        "SELECT entity_id, id, actor, field, old_value, new_value, at
-         FROM audit_log
-         WHERE entity_type = $1 AND entity_id = ANY($2)
-         ORDER BY entity_id, seq DESC",
-    )
-    .bind(entity.as_str())
-    .bind(entity_ids)
-    .fetch_all(executor)
+    .bind(start)
+    .bind(end)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
     .await?;
 
-    let mut map: HashMap<String, Vec<ChangeLogEntry>> = HashMap::new();
-    for r in rows {
-        map.entry(r.entity_id).or_default().push(ChangeLogEntry {
-            id: r.id,
-            actor: r.actor,
-            field: r.field,
-            old_value: r.old_value,
-            new_value: r.new_value,
-            at: r.at,
-        });
-    }
-    Ok(map)
+    Ok(Page {
+        items: rows.into_iter().map(Into::into).collect(),
+        total,
+    })
 }
 
 /// Append a new audit entry, allocating its id. `actor` is the display name of

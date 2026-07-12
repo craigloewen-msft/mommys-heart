@@ -3,9 +3,11 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 
+use crate::components::change_log::ChangeLog;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
+use crate::server_fns::audit::AuditScope;
 use crate::server_fns::cases::{self, Case, CaseStatus, CaseSummary};
 use crate::server_fns::err_text;
 use crate::server_fns::permissions::CaseCapability;
@@ -706,27 +708,13 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         }
     };
 
-    let audit_view = {
-        move || {
-            let log: Vec<crate::server_fns::audit::ChangeLogEntry> = Vec::new();
-            if log.is_empty() {
-                return view! { <p class="text-sm text-slate-500">"No changes recorded."</p> }
-                    .into_any();
-            }
-            log.into_iter()
-                .map(|e| {
-                    view! {
-                        <div class="text-xs text-slate-400">
-                            <span class="text-slate-300">{e.actor}</span>
-                            " changed " <span class="text-slate-300">{e.field}</span>
-                            " from \"" {e.old_value} "\" to \"" {e.new_value} "\" · " {e.at}
-                        </div>
-                    }
-                    .into_any()
-                })
-                .collect_view()
-                .into_any()
+    let log_open = RwSignal::new(false);
+    let log_case_id = StoredValue::new(case_id.clone());
+    let audit_view = move || {
+        if !log_open.get() {
+            return ().into_any();
         }
+        view! { <ChangeLog scope=AuditScope::Case entity_id=log_case_id.get_value() /> }.into_any()
     };
 
     let section = "rounded-xl border border-slate-800 bg-slate-900 p-4";
@@ -1029,7 +1017,15 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
 
             // Audit log
             <div class=section>
-                <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
+                <div class="flex items-center justify-between">
+                    <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
+                    <button
+                        on:click=move |_| log_open.update(|o| *o = !*o)
+                        class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                    >
+                        {move || if log_open.get() { "Hide" } else { "Open change log" }}
+                    </button>
+                </div>
                 <div class="mt-3 space-y-1.5">{audit_view}</div>
             </div>
             </div>

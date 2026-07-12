@@ -4,6 +4,7 @@ pub mod server_fns;
 pub mod state;
 
 pub mod components {
+    pub mod change_log;
     pub mod guard;
     pub mod layout;
     pub mod loading;
