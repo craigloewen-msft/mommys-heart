@@ -206,7 +206,15 @@ pub async fn set_case_status(case_id: String, status: CaseStatus) -> Result<(), 
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
     cases::set_status(&case_id, status, &user.full_name())
         .await
-        .map_err(ServerFnError::new)
+        .map_err(ServerFnError::new)?;
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::CaseData,
+        format!("changed the status to \"{}\"", status.label()),
+    );
+    Ok(())
 }
 
 /// Rename a case (requires the `EditCase` capability).
@@ -224,7 +232,15 @@ pub async fn set_case_name(case_id: String, name: String) -> Result<(), ServerFn
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
     cases::set_name(&case_id, &name, &user.full_name())
         .await
-        .map_err(ServerFnError::new)
+        .map_err(ServerFnError::new)?;
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::CaseData,
+        format!("renamed the case to \"{name}\""),
+    );
+    Ok(())
 }
 
 /// Reassign a case's owner. Admin only: ownership decides whose personal
@@ -247,7 +263,15 @@ pub async fn set_case_owner(case_id: String, owner_id: String) -> Result<(), Ser
     }
     cases::set_owner(&case_id, &owner_id, &user.full_name())
         .await
-        .map_err(ServerFnError::new)
+        .map_err(ServerFnError::new)?;
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::CaseData,
+        "changed the case owner".to_string(),
+    );
+    Ok(())
 }
 
 /// Replace a case's free-form properties (requires the `EditCase` capability).
@@ -264,7 +288,15 @@ pub async fn set_case_properties(
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
     cases::replace_properties(&case_id, properties, &user.full_name())
         .await
-        .map_err(ServerFnError::new)
+        .map_err(ServerFnError::new)?;
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::CaseData,
+        "updated the case properties".to_string(),
+    );
+    Ok(())
 }
 
 /// Add a note to a case (requires the `AddNotes` capability).
@@ -282,7 +314,15 @@ pub async fn add_case_note(case_id: String, body: String) -> Result<(), ServerFn
     require_cap(&user, &case_id, CaseCapability::AddNotes).await?;
     cases::add_note(&case_id, &user.full_name(), &body)
         .await
-        .map_err(ServerFnError::new)
+        .map_err(ServerFnError::new)?;
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::NoteAdded,
+        "added a note".to_string(),
+    );
+    Ok(())
 }
 
 /// One page of a case's chat: the most recent `limit` messages (oldest-first)
@@ -317,7 +357,21 @@ pub async fn send_message(case_id: String, body: String) -> Result<Message, Serv
         return Err(ServerFnError::new("Message cannot be empty."));
     }
     require_cap(&user, &case_id, CaseCapability::SendMessages).await?;
-    messages::create(&case_id, &user.id, &user.full_name(), &body)
+    let message = messages::create(&case_id, &user.id, &user.full_name(), &body)
         .await
-        .map_err(ServerFnError::new)
+        .map_err(ServerFnError::new)?;
+    let preview: String = body.chars().take(80).collect();
+    let detail = if body.chars().count() > 80 {
+        format!("posted a new message: \"{preview}…\"")
+    } else {
+        format!("posted a new message: \"{preview}\"")
+    };
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::NewMessage,
+        detail,
+    );
+    Ok(message)
 }
