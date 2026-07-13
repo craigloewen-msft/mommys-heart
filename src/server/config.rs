@@ -77,6 +77,35 @@ impl EmailConfig {
     }
 }
 
+/// Branding + linking values shared by every email template, so the product
+/// name and the links in a message are defined once and stay consistent across
+/// all notifications. Read from the environment, with sensible defaults so
+/// emails render correctly even when nothing is configured.
+#[derive(Clone, Debug)]
+pub struct Brand {
+    /// Short product name shown in headers and signatures, e.g. `Mommy's Heart`.
+    pub name: String,
+    /// The public base URL of the CRM (no trailing slash), used to build the
+    /// call-to-action and settings links in emails. Empty when unset, in which
+    /// case templates omit the buttons and render plain guidance instead.
+    pub app_url: String,
+    /// Support / "reply to" address surfaced in the footer so recipients know
+    /// who to contact. Empty when unset.
+    pub support_email: String,
+}
+
+impl Brand {
+    /// Read branding from the environment. `APP_URL` and `SUPPORT_EMAIL` are
+    /// optional; `BRAND_NAME` defaults to the product name.
+    pub fn from_env() -> Self {
+        Self {
+            name: env("BRAND_NAME", "Mommy's Heart"),
+            app_url: env("APP_URL", "https://crm.example.org").trim_end_matches('/').to_string(),
+            support_email: env("SUPPORT_EMAIL", "support@example.org"),
+        }
+    }
+}
+
 fn env(key: &str, default: &str) -> String {
     std::env::var(key)
         .ok()

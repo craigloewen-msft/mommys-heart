@@ -10,9 +10,10 @@
 //! When ACS Email is not configured (see [`EmailConfig::is_configured`]), every
 //! helper is a silent no-op.
 
-use crate::server::config::EmailConfig;
+use crate::server::config::{Brand, EmailConfig};
 use crate::server::db::settings::{self, Recipient};
 use crate::server::db::cases;
+use crate::server::email::templates::{self, RenderedEmail};
 use crate::server::email::{send_email, EmailMessage};
 use crate::server_fns::settings::NotificationKind;
 
@@ -51,9 +52,8 @@ pub fn notify_case(
             return;
         }
         let case = case_name(&case_id).await;
-        let subject = format!("[Mommy's Heart] {case}: {}", kind.label());
-        let (html, text) = body(&case, &actor_name, &detail);
-        dispatch(&cfg, recipients, kind, &subject, &html, &text).await;
+        let email = templates::case_event(&Brand::from_env(), kind, &case, &actor_name, &detail);
+        dispatch(&cfg, recipients, kind, &email).await;
     });
 }
 
@@ -76,16 +76,12 @@ pub fn notify_assignment(user_id: String, actor_name: String, case_id: String) {
             return;
         }
         let case = case_name(&case_id).await;
-        let subject = format!("[Mommy's Heart] You've been given access to {case}");
-        let detail = format!("gave you access to the case \"{case}\"");
-        let (html, text) = body(&case, &actor_name, &detail);
+        let email = templates::assignment(&Brand::from_env(), &case, &actor_name);
         dispatch(
             &cfg,
             vec![recipient],
             NotificationKind::Assigned,
-            &subject,
-            &html,
-            &text,
+            &email,
         )
         .await;
     });
@@ -97,9 +93,7 @@ async fn dispatch(
     cfg: &EmailConfig,
     recipients: Vec<Recipient>,
     kind: NotificationKind,
-    subject: &str,
-    html: &str,
-    text: &str,
+    email: &RenderedEmail,
 ) {
     for r in recipients {
         if !r.settings.wants(kind) {
@@ -107,7 +101,8 @@ async fn dispatch(
         }
         if cfg.dry_run {
             tracing::info!(
-                "[email dry-run] would send \"{subject}\" to {} (set EMAIL_DRY_RUN=false to send)",
+                "[email dry-run] would send \"{}\" to {} (set EMAIL_DRY_RUN=false to send)",
+                email.subject,
                 r.email
             );
             continue;
@@ -115,9 +110,9 @@ async fn dispatch(
         let msg = EmailMessage {
             to_address: r.email.clone(),
             to_name: r.name.clone(),
-            subject: subject.to_string(),
-            html: html.to_string(),
-            plain_text: text.to_string(),
+            subject: email.subject.clone(),
+            html: email.html.clone(),
+            plain_text: email.plain_text.clone(),
         };
         match send_email(cfg, &msg).await {
             Ok(()) => tracing::info!("notification email accepted for {}", r.email),
@@ -133,36 +128,4 @@ async fn case_name(case_id: &str) -> String {
         .ok()
         .flatten()
         .unwrap_or_else(|| case_id.to_string())
-}
-
-/// Build the (HTML, plain-text) email body from the event pieces.
-fn body(case: &str, actor_name: &str, detail: &str) -> (String, String) {
-    let actor = if actor_name.trim().is_empty() {
-        "Someone"
-    } else {
-        actor_name.trim()
-    };
-    let text = format!(
-        "{actor} {detail} on the case \"{case}\".\n\n\
-         Sign in to the Mommy's Heart CRM to see the details.\n\n\
-         You are receiving this because of your notification settings. \
-         You can change them on your Settings page."
-    );
-    let html = format!(
-        "<p>{} {} on the case <strong>{}</strong>.</p>\
-         <p>Sign in to the Mommy's Heart CRM to see the details.</p>\
-         <p style=\"color:#64748b;font-size:12px\">You are receiving this because of your \
-         notification settings. You can change them on your Settings page.</p>",
-        escape(actor),
-        escape(detail),
-        escape(case),
-    );
-    (html, text)
-}
-
-/// Minimal HTML escaping for the small set of interpolated values.
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }

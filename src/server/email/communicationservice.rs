@@ -1,4 +1,4 @@
-//! Azure Communication Services (ACS) Email integration (SSR only).
+//! Azure Communication Services (ACS) Email REST transport (SSR only).
 //!
 //! Like [`crate::server::rag::azure`], this talks to Azure directly over REST
 //! with `reqwest` — there is no official ACS Email SDK for Rust. Requests are

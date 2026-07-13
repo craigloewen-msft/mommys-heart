@@ -29,6 +29,24 @@ async fn main() {
         return;
     }
 
+    // `mommys-heart-crm preview-emails [out-dir]` — render every notification
+    // email template with placeholder data to standalone HTML files (default
+    // `target/email-preview/`) and exit, without a database, email service, or
+    // web server. Open the printed `index.html` in a browser to iterate on the
+    // look. See `EMAIL_DRY_RUN` in .env.example for the runtime dry-run flag.
+    if std::env::args().nth(1).as_deref() == Some("preview-emails") {
+        use std::path::PathBuf;
+        let out_dir = std::env::args()
+            .nth(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("target/email-preview"));
+        match mommys_heart_crm::server::email::preview::write_gallery(&out_dir) {
+            Ok(index) => tracing::info!("email preview written — open {}", index.display()),
+            Err(e) => panic!("failed to write email preview: {e}"),
+        }
+        return;
+    }
+
     // Connect to PostgreSQL, run migrations, and seed on first run. Fail fast if
     // the database is unreachable — the CRM cannot function without it.
     if let Err(e) = mommys_heart_crm::server::db::init().await {
