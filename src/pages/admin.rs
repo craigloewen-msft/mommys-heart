@@ -465,7 +465,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
         let body = if editing.get() {
             let add_control = view! {
                 <div class="mt-3 flex flex-wrap items-end gap-2">
-                    <div class="relative min-w-[16rem] flex-1">
+                    <div class="relative w-full flex-1 sm:min-w-[16rem]">
                         <input
                             class=input_class
                             class:w-full=true

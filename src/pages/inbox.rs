@@ -21,6 +21,9 @@ pub fn InboxPage() -> impl IntoView {
     let load_error = RwSignal::new(None::<String>);
 
     let selected = RwSignal::new(None::<String>);
+    // Mobile only: whether the user has opened a chat (collapses the list and
+    // shows the thread full-screen). Desktop always shows both panes.
+    let viewing = RwSignal::new(false);
     let search = RwSignal::new(String::new());
     let debounced_search = RwSignal::new(String::new());
     // How many rows the current window requests; grows on "Load more".
@@ -92,7 +95,10 @@ pub fn InboxPage() -> impl IntoView {
                     let name = title_for(&c);
                     let select = {
                         let case_id = case_id.clone();
-                        move |_| selected.set(Some(case_id.clone()))
+                        move |_| {
+                            selected.set(Some(case_id.clone()));
+                            viewing.set(true);
+                        }
                     };
                     view! {
                         <button
@@ -107,8 +113,8 @@ pub fn InboxPage() -> impl IntoView {
                             }
                         >
                             <div class="flex items-center justify-between gap-2">
-                                <span class="text-sm font-medium text-slate-200">{name}</span>
-                                <span class="text-xs text-slate-500">{count} " msgs"</span>
+                                <span class="min-w-0 truncate text-sm font-medium text-slate-200">{name}</span>
+                                <span class="shrink-0 text-xs text-slate-500">{count} " msgs"</span>
                             </div>
                         </button>
                     }
@@ -171,7 +177,7 @@ pub fn InboxPage() -> impl IntoView {
         view! {
             <Layout title="Case Chat".to_string()>
                 <div class="grid gap-6 lg:grid-cols-[22rem_1fr]">
-                    <div class="space-y-2">
+                    <div class="space-y-2 lg:block" class:hidden=move || viewing.get()>
                         <input
                             class=input_class
                             placeholder="Search cases…"
@@ -185,7 +191,17 @@ pub fn InboxPage() -> impl IntoView {
                         {case_list}
                         {footer}
                     </div>
-                    <div>{thread}</div>
+                    <div class="lg:block" class:hidden=move || !viewing.get()>
+                        <Show when=move || viewing.get()>
+                            <button
+                                on:click=move |_| viewing.set(false)
+                                class="mb-4 inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800 lg:hidden"
+                            >
+                                "\u{2190} Back to chats"
+                            </button>
+                        </Show>
+                        {thread}
+                    </div>
                 </div>
             </Layout>
         }
@@ -358,9 +374,9 @@ fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
     let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
 
     view! {
-        <div class="flex h-[calc(100vh-12rem)] flex-col rounded-xl border border-slate-800 bg-slate-900">
+        <div class="flex h-[70dvh] flex-col rounded-xl border border-slate-800 bg-slate-900 lg:h-[calc(100dvh-12rem)]">
             <div class="border-b border-slate-800 p-4">
-                <h2 class="text-lg font-semibold">{case_name}</h2>
+                <h2 class="truncate text-lg font-semibold">{case_name}</h2>
                 <p class="text-xs text-slate-500">"Case chat"</p>
             </div>
             <div node_ref=scroll_ref class="flex-1 space-y-3 overflow-y-auto p-4">

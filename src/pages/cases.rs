@@ -205,10 +205,10 @@ pub fn CaseHomePage() -> impl IntoView {
                         }
                     >
                         <div class="flex items-center justify-between gap-2">
-                            <span class="font-medium">{name}</span>
+                            <span class="min-w-0 truncate font-medium">{name}</span>
                             <span class=badge(status.badge_classes())>{status.label()}</span>
                         </div>
-                        <div class="mt-2 flex items-center gap-2 text-xs text-slate-400">
+                        <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
                             <span>"Owner: " {owner}</span>
                             {access_badge}
                         </div>
@@ -276,7 +276,10 @@ pub fn CaseHomePage() -> impl IntoView {
         view! {
         <Layout title="Cases".to_string()>
             <div class="grid gap-6 lg:grid-cols-[22rem_1fr]">
-                <div class="space-y-4">
+                <div
+                    class="space-y-4 lg:block"
+                    class:hidden=move || selected.get().is_some()
+                >
                     <A
                         href="/cases/new"
                         attr:class="flex items-center justify-center rounded-xl border border-primary-500/40 bg-primary-500/10 px-4 py-3 text-sm font-semibold text-primary-200 hover:bg-primary-500/20"
@@ -296,7 +299,17 @@ pub fn CaseHomePage() -> impl IntoView {
                     <div class="space-y-3">{cases_list}</div>
                     {footer}
                 </div>
-                <div>{detail}</div>
+                <div class="lg:block" class:hidden=move || selected.get().is_none()>
+                    <Show when=move || selected.get().is_some()>
+                        <button
+                            on:click=move |_| selected.set(None)
+                            class="mb-4 inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800 lg:hidden"
+                        >
+                            "\u{2190} Back to cases"
+                        </button>
+                    </Show>
+                    {detail}
+                </div>
             </div>
         </Layout>
     }
@@ -840,11 +853,11 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
             return view! {
                 <div class=section>
                     <div class="flex items-start justify-between gap-3">
-                        <div>
+                        <div class="min-w-0">
                             <h2 class="text-lg font-semibold">{c.name.clone()}</h2>
                             <p class="mt-1 text-sm text-slate-400">"Filed by " {owner_name}</p>
                         </div>
-                        <div class="flex items-center gap-2">
+                        <div class="flex shrink-0 items-center gap-2">
                             <span class=badge(status.badge_classes())>{status.label()}</span>
                             {edit_btn}
                         </div>
@@ -1010,7 +1023,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                         <label class="text-xs font-medium text-slate-400">"Properties"</label>
                         <div class="mt-2 space-y-2">
                             <For each=move || edit_props.get() key=|r| r.id let:row>
-                                <div class="flex gap-2">
+                                <div class="flex flex-col gap-2 sm:flex-row">
                                     <input
                                         class=input_class
                                         placeholder="Name (e.g. Attorney)"
