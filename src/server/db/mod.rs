@@ -16,6 +16,7 @@ pub mod password_reset;
 pub mod seed;
 pub mod sessions;
 pub mod settings;
+pub mod throttle;
 pub mod trusted_devices;
 pub mod users;
 

@@ -47,17 +47,43 @@ pub async fn login(email: String, password: String) -> Result<LoginOutcome, Serv
         build_mfa_cookie, build_session_cookie, generate_code, generate_token, verify_password,
         TRUSTED_DEVICE_COOKIE_NAME,
     };
-    use crate::server::db::{mfa, sessions, trusted_devices, users};
+    use crate::server::db::{mfa, sessions, throttle, trusted_devices, users};
     use crate::server::email::auth_notifications as auth_email;
 
     let email = email.trim();
-    let (user, hash) = users::authenticate(email)
+
+    // Brute-force gate: reject up front while the account is locked, *before*
+    // hitting the (deliberately expensive) argon2 verify or sending any OTP mail.
+    if let Some(secs) = throttle::seconds_locked(throttle::Action::Login, email)
         .await
         .map_err(ServerFnError::new)?
-        .ok_or_else(|| ServerFnError::new("Invalid email or password."))?;
+    {
+        let minutes = throttle::minutes_remaining(secs);
+        return Err(ServerFnError::new(format!(
+            "Too many failed attempts. Please try again in about {minutes} minute{}.",
+            if minutes == 1 { "" } else { "s" }
+        )));
+    }
+
+    let auth = users::authenticate(email)
+        .await
+        .map_err(ServerFnError::new)?;
+    let (user, hash) = match auth {
+        Some(pair) => pair,
+        None => {
+            // Record failures for unknown emails too, so the throttle behaves
+            // identically whether or not the account exists (no enumeration).
+            let _ = throttle::record_failure(throttle::Action::Login, email).await;
+            return Err(ServerFnError::new("Invalid email or password."));
+        }
+    };
     if !verify_password(&password, &hash) {
+        let _ = throttle::record_failure(throttle::Action::Login, email).await;
         return Err(ServerFnError::new("Invalid email or password."));
     }
+
+    // Correct password: reset the failure counter for this account.
+    let _ = throttle::clear(throttle::Action::Login, email).await;
 
     // Skip the second factor when this browser is a live trusted device for
     // *this* user (the "remember this device" grant).
@@ -236,13 +262,29 @@ pub async fn register(
 pub async fn request_password_reset(email: String) -> Result<(), ServerFnError> {
     use crate::server::auth::generate_token;
     use crate::server::config::Brand;
-    use crate::server::db::{password_reset, users};
+    use crate::server::db::{password_reset, throttle, users};
     use crate::server::email::auth_notifications as auth_email;
 
     let email = email.trim();
     if email.is_empty() {
         return Err(ServerFnError::new("Please enter your email address."));
     }
+
+    // Rate-limit reset requests per email so this endpoint cannot be used to
+    // email-bomb a victim. The check runs before the account lookup, so the
+    // response never reveals whether the account exists.
+    if let Some(secs) = throttle::seconds_locked(throttle::Action::PasswordReset, email)
+        .await
+        .map_err(ServerFnError::new)?
+    {
+        let minutes = throttle::minutes_remaining(secs);
+        return Err(ServerFnError::new(format!(
+            "Too many reset requests. Please try again in about {minutes} minute{}.",
+            if minutes == 1 { "" } else { "s" }
+        )));
+    }
+    // Every request counts toward the limit (there is no "success" to reset it).
+    let _ = throttle::record_failure(throttle::Action::PasswordReset, email).await;
 
     // Look the account up, but never surface whether it exists.
     if let Ok(Some((user, _))) = users::authenticate(email).await {
