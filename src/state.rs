@@ -10,6 +10,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::server_fns::users::{AccountRole, User};
+use crate::server_fns::auth::LoginOutcome;
 use crate::server_fns::{auth, err_text};
 
 /// Current local date-time as `YYYY-MM-DD HH:MM`, read from the browser clock.
@@ -73,8 +74,22 @@ impl AppState {
         self.role().map(|r| r.is_admin()).unwrap_or(false)
     }
 
-    pub async fn login(self, email: &str, password: &str) -> Result<(), String> {
-        let user = auth::login(email.trim().to_string(), password.to_string())
+    /// Attempt a sign-in.
+    pub async fn login(self, email: &str, password: &str) -> Result<LoginOutcome, String> {
+        let outcome = auth::login(email.trim().to_string(), password.to_string())
+            .await
+            .map_err(err_text)?;
+        if let LoginOutcome::Authenticated(user) = &outcome {
+            self.current_user.set(Some(user.clone()));
+        }
+        Ok(outcome)
+    }
+
+    /// Finish a login by submitting the emailed one-time code. When
+    /// `remember_device` is set, this browser is trusted for 30 days and can
+    /// skip MFA on future logins.
+    pub async fn verify_mfa(self, code: &str, remember_device: bool) -> Result<(), String> {
+        let user = auth::verify_mfa(code.trim().to_string(), remember_device)
             .await
             .map_err(err_text)?;
         self.current_user.set(Some(user));

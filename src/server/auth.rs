@@ -19,6 +19,14 @@ use crate::server_fns::users::User;
 /// Name of the session cookie.
 pub const COOKIE_NAME: &str = "session";
 
+/// Name of the short-lived cookie that carries a pending MFA challenge token
+/// between the password step and the code-verification step.
+pub const MFA_COOKIE_NAME: &str = "mfa";
+
+/// Name of the long-lived "remember this device" cookie that lets a trusted
+/// browser skip the OTP step on future logins.
+pub const TRUSTED_DEVICE_COOKIE_NAME: &str = "trusted_device";
+
 /// Hash a plaintext password with argon2 (PHC string form).
 pub fn hash_password(password: &str) -> Result<String, String> {
     let salt = SaltString::generate(&mut OsRng);
@@ -65,6 +73,58 @@ pub fn clear_session_cookie() -> Cookie<'static> {
         .secure(cookie_secure())
         .max_age(time::Duration::seconds(0))
         .build()
+}
+
+/// Build the short-lived `Set-Cookie` holding a pending MFA challenge token. It
+/// only needs to outlive the code entry, so its lifetime matches the challenge
+/// TTL rather than the session.
+pub fn build_mfa_cookie(raw_token: String) -> Cookie<'static> {
+    Cookie::build((MFA_COOKIE_NAME, raw_token))
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(cookie_secure())
+        .max_age(time::Duration::minutes(10))
+        .build()
+}
+
+/// Build a cookie that clears the pending MFA challenge on the client.
+pub fn clear_mfa_cookie() -> Cookie<'static> {
+    Cookie::build((MFA_COOKIE_NAME, ""))
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(cookie_secure())
+        .max_age(time::Duration::seconds(0))
+        .build()
+}
+
+/// Build the long-lived "remember this device" cookie carrying a trusted-device
+/// token. Valid for 30 days, matching the stored grant.
+pub fn build_trusted_device_cookie(raw_token: String) -> Cookie<'static> {
+    Cookie::build((TRUSTED_DEVICE_COOKIE_NAME, raw_token))
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(cookie_secure())
+        .max_age(time::Duration::days(30))
+        .build()
+}
+
+/// Generate a fresh opaque token (256 bits, hex-encoded) for MFA challenges,
+/// trusted devices, and password-reset links.
+pub fn generate_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+/// Generate a random 6-digit numeric one-time code (zero-padded, e.g. `"048213"`).
+pub fn generate_code() -> String {
+    use rand::Rng;
+    let n: u32 = rand::thread_rng().gen_range(0..1_000_000);
+    format!("{n:06}")
 }
 
 /// Extractor that resolves the session cookie to the signed-in [`User`],

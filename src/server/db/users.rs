@@ -55,6 +55,17 @@ pub async fn email_exists(email: &str) -> Result<bool, sqlx::Error> {
     Ok(exists.is_some())
 }
 
+/// Overwrite a user's password hash. Used by the self-service password-reset
+/// flow after a valid reset token is consumed.
+pub async fn set_password_hash(user_id: &str, password_hash: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+        .bind(password_hash)
+        .bind(user_id)
+        .execute(pool())
+        .await?;
+    Ok(())
+}
+
 /// Insert a user with a pre-computed password hash. Used by registration and by
 /// the initial seed. The caller supplies the id (or use [`next_id`]).
 #[allow(clippy::too_many_arguments)]

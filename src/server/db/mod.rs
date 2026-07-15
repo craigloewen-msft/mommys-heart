@@ -11,9 +11,12 @@ pub mod evidence;
 pub mod grants;
 pub mod ids;
 pub mod messages;
+pub mod mfa;
+pub mod password_reset;
 pub mod seed;
 pub mod sessions;
 pub mod settings;
+pub mod trusted_devices;
 pub mod users;
 
 use sqlx::postgres::PgPoolOptions;

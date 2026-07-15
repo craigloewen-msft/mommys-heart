@@ -10,6 +10,7 @@
 //! The delivery entry point [`send_email`] and its [`EmailMessage`] input are
 //! re-exported here so callers use `crate::server::email::{send_email, EmailMessage}`.
 
+pub mod auth_notifications;
 pub mod communicationservice;
 pub mod palette;
 pub mod preview;

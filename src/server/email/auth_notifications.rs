@@ -1,0 +1,65 @@
+//! Delivery of transactional authentication emails (SSR only): the MFA one-time
+//! code and the password-reset link.
+//!
+//! Unlike [`crate::server::notifications`] (best-effort, background, honoring
+//! per-user notification settings), these are foreground and their outcome
+//! matters — a user cannot finish signing in without the code. When ACS Email is
+//! not configured, or `EMAIL_DRY_RUN` is set, the secret is written to the log
+//! instead so local development and the demo accounts still work.
+
+use crate::server::config::{Brand, EmailConfig};
+use crate::server::email::templates::{self, RenderedEmail};
+use crate::server::email::{send_email, EmailMessage};
+
+/// Email a user their one-time MFA code. Returns `Err` only when ACS is
+/// configured and the send itself fails.
+pub async fn send_mfa_code(to_email: &str, to_name: &str, code: &str) -> Result<(), String> {
+    let brand = Brand::from_env();
+    let rendered = templates::auth_code(&brand, code);
+    deliver(to_email, to_name, &rendered, &format!("verification code {code}")).await
+}
+
+/// Email a user their password-reset link (`reset_url` is the full tokenized
+/// URL). Returns `Err` only when ACS is configured and the send itself fails.
+pub async fn send_password_reset(
+    to_email: &str,
+    to_name: &str,
+    reset_url: &str,
+) -> Result<(), String> {
+    let brand = Brand::from_env();
+    let rendered = templates::password_reset(&brand, reset_url);
+    deliver(
+        to_email,
+        to_name,
+        &rendered,
+        &format!("password-reset link {reset_url}"),
+    )
+    .await
+}
+
+/// Send a rendered auth email, or — when ACS Email is unconfigured or
+/// `EMAIL_DRY_RUN` is set — log the sensitive `dev_detail` so the flow can still
+/// be completed in local development without a live email service.
+async fn deliver(
+    to_email: &str,
+    to_name: &str,
+    email: &RenderedEmail,
+    dev_detail: &str,
+) -> Result<(), String> {
+    let cfg = EmailConfig::from_env();
+    if !cfg.is_configured() || cfg.dry_run {
+        tracing::warn!(
+            "[auth email dev fallback] not emailing {to_email}: {dev_detail} \
+             (configure ACS Email and unset EMAIL_DRY_RUN to deliver for real)"
+        );
+        return Ok(());
+    }
+    let msg = EmailMessage {
+        to_address: to_email.to_string(),
+        to_name: to_name.to_string(),
+        subject: email.subject.clone(),
+        html: email.html.clone(),
+        plain_text: email.plain_text.clone(),
+    };
+    send_email(&cfg, &msg).await
+}

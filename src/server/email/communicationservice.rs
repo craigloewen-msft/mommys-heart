@@ -88,6 +88,11 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
         let detail = resp.text().await.unwrap_or_default();
         return Err(format!("email HTTP {status}: {detail}"));
     }
+    tracing::info!(
+        "email \"{}\" sent to {}",
+        msg.subject,
+        msg.to_address
+    );
     Ok(())
 }
 

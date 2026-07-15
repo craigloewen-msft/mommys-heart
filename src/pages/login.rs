@@ -3,6 +3,7 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 
+use crate::server_fns::auth::LoginOutcome;
 use crate::state::AppState;
 
 /// Standalone (no navbar) sign-in screen with demo autofill helpers.
@@ -23,9 +24,13 @@ pub fn LoginPage() -> impl IntoView {
             let password = password.get_untracked();
             spawn_local(async move {
                 match state.login(&email, &password).await {
-                    Ok(_) => {
+                    Ok(LoginOutcome::Authenticated(_)) => {
                         error.set(String::new());
                         navigate("/cases", Default::default());
+                    }
+                    Ok(LoginOutcome::MfaRequired) => {
+                        error.set(String::new());
+                        navigate("/mfa", Default::default());
                     }
                     Err(e) => error.set(e),
                 }
@@ -88,6 +93,14 @@ pub fn LoginPage() -> impl IntoView {
                                 prop:value=move || password.get()
                                 on:input=move |ev| password.set(event_target_value(&ev))
                             />
+                            <div class="mt-1.5 text-right">
+                                <A
+                                    href="/forgot-password"
+                                    attr:class="text-xs font-medium text-primary-400 hover:text-primary-300"
+                                >
+                                    "Forgot password?"
+                                </A>
+                            </div>
                         </div>
 
                         <Show when=move || !error.get().is_empty()>

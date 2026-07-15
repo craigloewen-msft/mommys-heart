@@ -67,6 +67,8 @@ pub fn case_event(
         detail = escape(detail),
         case = escape(case_name),
     );
+    let cta_href = cta_url(brand, "/cases");
+    let footer = notification_footer(brand);
     let html = layout(
         brand,
         &theme,
@@ -75,8 +77,9 @@ pub fn case_event(
             eyebrow: kind.label(),
             heading: &format!("Update on {}", case_name),
             callout_html: &callout,
-            cta_label: "Open the case",
-            cta_path: "/cases",
+            cta: cta_href.as_deref().map(|u| (u, "Open the case")),
+            body_note: &format!("Sign in to the {} CRM to see the full details.", brand.name),
+            footer_html: &footer,
         },
     );
     let plain = plain(
@@ -101,6 +104,8 @@ pub fn assignment(brand: &Brand, case_name: &str, actor_name: &str) -> RenderedE
         actor = escape(actor),
         case = escape(case_name),
     );
+    let cta_href = cta_url(brand, "/cases");
+    let footer = notification_footer(brand);
     let html = layout(
         brand,
         &theme,
@@ -109,8 +114,9 @@ pub fn assignment(brand: &Brand, case_name: &str, actor_name: &str) -> RenderedE
             eyebrow: "New case access",
             heading: &format!("You've been added to {}", case_name),
             callout_html: &callout,
-            cta_label: "View the case",
-            cta_path: "/cases",
+            cta: cta_href.as_deref().map(|u| (u, "View the case")),
+            body_note: &format!("Sign in to the {} CRM to see the full details.", brand.name),
+            footer_html: &footer,
         },
     );
     let plain = plain(
@@ -122,20 +128,118 @@ pub fn assignment(brand: &Brand, case_name: &str, actor_name: &str) -> RenderedE
     RenderedEmail { subject, html, plain_text: plain }
 }
 
+/// The full CTA url for an in-app path, or `None` when no public app URL is
+/// configured (so the layout renders no button).
+fn cta_url(brand: &Brand, path: &str) -> Option<String> {
+    (!brand.app_url.is_empty()).then(|| format!("{}{}", brand.app_url, path))
+}
+
+/// The shared notification-email footer: the "manage your settings" sentence,
+/// with a real Settings link when the app URL is known.
+fn notification_footer(brand: &Brand) -> String {
+    let settings = if brand.app_url.is_empty() {
+        "your Settings page".to_string()
+    } else {
+        format!(
+            "<a href=\"{url}/settings\" style=\"color:{muted};text-decoration:underline;\">your Settings page</a>",
+            url = brand.app_url,
+            muted = palette::muted(),
+        )
+    };
+    format!(
+        "You're receiving this because of your notification settings. Change what {brand} emails you about on {settings}.",
+        brand = escape(&brand.name),
+        settings = settings,
+    )
+}
+
+/// Build the MFA one-time-code email. Transactional (no notification-settings
+/// footer): the recipient is finishing a sign-in they just started.
+pub fn auth_code(brand: &Brand, code: &str) -> RenderedEmail {
+    let theme = Theme { accent: palette::color("primary-500"), emoji: "\u{1F510}" }; // 🔐
+    let subject = format!("[{}] Your sign-in verification code", brand.name);
+
+    let callout = format!(
+        "Use this one-time code to finish signing in. It expires in 10 minutes.\
+         <div style=\"margin-top:14px;font-size:32px;font-weight:700;letter-spacing:0.35em;\
+         font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;color:{text};\">{code}</div>",
+        text = palette::text(),
+        code = escape(code),
+    );
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: "Your verification code (expires in 10 minutes).",
+            eyebrow: "Security",
+            heading: "Verify it's you",
+            callout_html: &callout,
+            cta: None,
+            body_note: "",
+            footer_html: "If you didn't try to sign in, you can safely ignore this email \u{2014} your account is still secure.",
+        },
+    );
+    let plain = format!(
+        "Your {brand} verification code is: {code}\n\n\
+         It expires in 10 minutes.\n\n\
+         If you didn't try to sign in, you can ignore this email.",
+        brand = brand.name,
+        code = code,
+    );
+    RenderedEmail { subject, html, plain_text: plain }
+}
+
+/// Build the password-reset email. `reset_url` is the full, tokenized link the
+/// recipient follows to choose a new password.
+pub fn password_reset(brand: &Brand, reset_url: &str) -> RenderedEmail {
+    let theme = Theme { accent: palette::color("primary-500"), emoji: "\u{1F511}" }; // 🔑
+    let subject = format!("[{}] Reset your password", brand.name);
+
+    let callout = format!(
+        "We received a request to reset your {brand} password. \
+         Choose a new one using the button below. This link expires in 1 hour.",
+        brand = escape(&brand.name),
+    );
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: "Reset your password (link expires in 1 hour).",
+            eyebrow: "Security",
+            heading: "Reset your password",
+            callout_html: &callout,
+            cta: Some((reset_url, "Reset password")),
+            body_note: &format!(
+                "If the button doesn't work, paste this link into your browser: {reset_url}"
+            ),
+            footer_html: "If you didn't request a password reset, you can ignore this email \u{2014} your password won't change.",
+        },
+    );
+    let plain = format!(
+        "Reset your {brand} password by opening this link (expires in 1 hour):\n{url}\n\n\
+         If you didn't request this, you can ignore this email \u{2014} your password won't change.",
+        brand = brand.name,
+        url = reset_url,
+    );
+    RenderedEmail { subject, html, plain_text: plain }
+}
+
 /// The pieces that vary between templates; everything else is shared chrome.
 struct LayoutParts<'a> {
     /// Hidden preview text shown by inboxes next to the subject.
     preheader: &'a str,
-    /// Small uppercase label above the heading (the notification category).
+    /// Small uppercase label above the heading (the category or "Security").
     eyebrow: &'a str,
     /// The prominent heading.
     heading: &'a str,
-    /// Pre-escaped HTML for the highlighted event sentence.
+    /// Pre-escaped HTML for the highlighted callout block.
     callout_html: &'a str,
-    /// Call-to-action button label.
-    cta_label: &'a str,
-    /// Path (relative to the app URL) the CTA links to.
-    cta_path: &'a str,
+    /// Optional call-to-action button as `(full_url, label)`. `None` omits it.
+    cta: Option<(&'a str, &'a str)>,
+    /// A muted sentence shown under the CTA (escaped by the layout). Empty to omit.
+    body_note: &'a str,
+    /// Pre-rendered footer inner HTML (may contain links). Empty to omit.
+    footer_html: &'a str,
 }
 
 /// Assemble the full, email-client-safe HTML document around the varying parts.
@@ -144,28 +248,34 @@ fn layout(brand: &Brand, theme: &Theme, parts: &LayoutParts) -> String {
     let (canvas, card, text, callout_bg) =
         (palette::canvas(), palette::card(), palette::text(), palette::callout_bg());
 
-    let cta = brand
-        .app_url
-        .is_empty()
-        .then(String::new)
-        .unwrap_or_else(|| {
-            button(
-                &format!("{}{}", brand.app_url, parts.cta_path),
-                parts.cta_label,
-                primary,
-            )
-        });
+    let cta = match parts.cta {
+        Some((url, label)) => button(url, label, primary),
+        None => String::new(),
+    };
 
-    // The settings link becomes a real link when we know the app URL, otherwise
-    // plain guidance so the sentence still reads correctly.
-    let settings = if brand.app_url.is_empty() {
-        "your Settings page".to_string()
+    let body_note = if parts.body_note.is_empty() {
+        String::new()
     } else {
         format!(
-            "<a href=\"{url}/settings\" style=\"color:{muted};text-decoration:underline;\">\
-             your Settings page</a>",
-            url = brand.app_url,
+            r#"<tr><td style="padding:8px 32px 32px 32px;font-size:14px;line-height:1.6;color:{muted};">
+{note}
+</td></tr>"#,
             muted = muted,
+            note = escape(parts.body_note),
+        )
+    };
+
+    let footer = if parts.footer_html.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<tr><td style="padding:20px 32px;border-top:1px solid {border};font-size:12px;line-height:1.6;color:{muted};background-color:{callout_bg};">
+{footer}
+</td></tr>"#,
+            border = border,
+            muted = muted,
+            callout_bg = callout_bg,
+            footer = parts.footer_html,
         )
     };
 
@@ -197,12 +307,8 @@ fn layout(brand: &Brand, theme: &Theme, parts: &LayoutParts) -> String {
 </table>
 </td></tr>
 {cta}
-<tr><td style="padding:8px 32px 32px 32px;font-size:14px;line-height:1.6;color:{muted};">
-Sign in to the {brand_name} CRM to see the full details.
-</td></tr>
-<tr><td style="padding:20px 32px;border-top:1px solid {border};font-size:12px;line-height:1.6;color:{muted};background-color:{callout_bg};">
-You're receiving this because of your notification settings. Change what {brand_name} emails you about on {settings}.
-</td></tr>
+{body_note}
+{footer}
 </table>
 </td></tr>
 </table>
@@ -214,7 +320,6 @@ You're receiving this because of your notification settings. Change what {brand_
         border = border,
         primary = primary,
         text = text,
-        muted = muted,
         callout_bg = callout_bg,
         accent = theme.accent,
         emoji = theme.emoji,
@@ -223,7 +328,8 @@ You're receiving this because of your notification settings. Change what {brand_
         heading = escape(parts.heading),
         callout = parts.callout_html,
         cta = cta,
-        settings = settings,
+        body_note = body_note,
+        footer = footer,
     )
 }
 
@@ -321,6 +427,26 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
         key: NotificationKind::Assigned.slug().to_string(),
         label: NotificationKind::Assigned.label().to_string(),
         email: assignment(brand, case, actor),
+    });
+
+    // Transactional auth emails (not tied to a NotificationKind).
+    samples.push(Sample {
+        key: "auth_code".to_string(),
+        label: "MFA sign-in code".to_string(),
+        email: auth_code(brand, "048213"),
+    });
+    let reset_base = if brand.app_url.is_empty() {
+        "https://crm.example.org"
+    } else {
+        brand.app_url.as_str()
+    };
+    samples.push(Sample {
+        key: "password_reset".to_string(),
+        label: "Password reset".to_string(),
+        email: password_reset(
+            brand,
+            &format!("{reset_base}/reset-password?token=example-reset-token"),
+        ),
     });
     samples
 }

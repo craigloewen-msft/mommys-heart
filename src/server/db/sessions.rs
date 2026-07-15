@@ -40,3 +40,13 @@ pub async fn delete(raw: &str) -> Result<(), sqlx::Error> {
         .await?;
     Ok(())
 }
+
+/// Invalidate *every* session for a user (e.g. after a password reset, so any
+/// other signed-in browsers are logged out).
+pub async fn delete_all_for_user(user_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(user_id)
+        .execute(pool())
+        .await?;
+    Ok(())
+}

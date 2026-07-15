@@ -6,10 +6,13 @@ use leptos_router::path;
 use crate::pages::{
     admin::AdminDashboardPage,
     cases::{CaseHomePage, NewCasePage},
+    forgot_password::ForgotPasswordPage,
     grants::GrantHomePage,
     inbox::InboxPage,
     login::LoginPage,
+    mfa::MfaVerifyPage,
     register::RegisterPage,
+    reset_password::ResetPasswordPage,
     settings::SettingsPage,
 };
 use crate::state::AppState;
@@ -92,6 +95,9 @@ pub fn App() -> impl IntoView {
             <Routes fallback=|| view! { <NotFoundPage /> }>
                 <Route path=path!("/") view=HomeRedirect />
                 <Route path=path!("/login") view=LoginPage />
+                <Route path=path!("/mfa") view=MfaVerifyPage />
+                <Route path=path!("/forgot-password") view=ForgotPasswordPage />
+                <Route path=path!("/reset-password") view=ResetPasswordPage />
                 <Route path=path!("/register") view=RegisterPage />
                 <Route path=path!("/cases") view=CaseHomePage />
                 <Route path=path!("/cases/new") view=NewCasePage />

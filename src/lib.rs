@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod app;
 pub mod mockdata;
 pub mod server_fns;
@@ -13,10 +15,13 @@ pub mod components {
 pub mod pages {
     pub mod admin;
     pub mod cases;
+    pub mod forgot_password;
     pub mod grants;
     pub mod inbox;
     pub mod login;
+    pub mod mfa;
     pub mod register;
+    pub mod reset_password;
     pub mod settings;
 }
 
