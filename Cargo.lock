@@ -1965,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "mommys-heart-crm"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "argon2",
  "axum",
