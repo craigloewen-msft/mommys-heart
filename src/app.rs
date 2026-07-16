@@ -14,6 +14,7 @@ use crate::pages::{
     register::RegisterPage,
     reset_password::ResetPasswordPage,
     settings::SettingsPage,
+    verify_email::VerifyEmailPage,
 };
 use crate::state::AppState;
 
@@ -99,6 +100,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/forgot-password") view=ForgotPasswordPage />
                 <Route path=path!("/reset-password") view=ResetPasswordPage />
                 <Route path=path!("/register") view=RegisterPage />
+                <Route path=path!("/verify-email") view=VerifyEmailPage />
                 <Route path=path!("/cases") view=CaseHomePage />
                 <Route path=path!("/cases/new") view=NewCasePage />
                 <Route path=path!("/inbox") view=InboxPage />

@@ -27,6 +27,10 @@ pub const MFA_COOKIE_NAME: &str = "mfa";
 /// browser skip the OTP step on future logins.
 pub const TRUSTED_DEVICE_COOKIE_NAME: &str = "trusted_device";
 
+/// Name of the short-lived cookie that carries a pending *registration*
+/// email-verification challenge between the sign-up form and the code step.
+pub const REGISTER_COOKIE_NAME: &str = "register";
+
 /// Hash a plaintext password with argon2 (PHC string form).
 pub fn hash_password(password: &str) -> Result<String, String> {
     let salt = SaltString::generate(&mut OsRng);
@@ -108,6 +112,30 @@ pub fn build_trusted_device_cookie(raw_token: String) -> Cookie<'static> {
         .same_site(SameSite::Lax)
         .secure(cookie_secure())
         .max_age(time::Duration::days(30))
+        .build()
+}
+
+/// Build the short-lived `Set-Cookie` holding a pending registration
+/// email-verification challenge token. Like the MFA cookie, it only needs to
+/// outlive the code entry, so its lifetime matches the challenge TTL.
+pub fn build_register_cookie(raw_token: String) -> Cookie<'static> {
+    Cookie::build((REGISTER_COOKIE_NAME, raw_token))
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(cookie_secure())
+        .max_age(time::Duration::minutes(10))
+        .build()
+}
+
+/// Build a cookie that clears the pending registration challenge on the client.
+pub fn clear_register_cookie() -> Cookie<'static> {
+    Cookie::build((REGISTER_COOKIE_NAME, ""))
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(cookie_secure())
+        .max_age(time::Duration::seconds(0))
         .build()
 }
 

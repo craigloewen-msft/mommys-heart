@@ -23,6 +23,7 @@ pub mod pages {
     pub mod register;
     pub mod reset_password;
     pub mod settings;
+    pub mod verify_email;
 }
 
 #[cfg(feature = "ssr")]

@@ -96,6 +96,10 @@ impl AppState {
         Ok(())
     }
 
+    /// Begin a self-service registration. This does **not** create the account
+    /// or sign the user in; it emails a verification code and starts the
+    /// email-OTP challenge. The client should route to the verification screen
+    /// and call [`verify_registration`](Self::verify_registration).
     pub async fn register(
         self,
         first_name: &str,
@@ -103,7 +107,7 @@ impl AppState {
         email: &str,
         password: &str,
     ) -> Result<(), String> {
-        let user = auth::register(
+        auth::register(
             first_name.trim().to_string(),
             last_name.trim().to_string(),
             email.trim().to_string(),
@@ -111,6 +115,15 @@ impl AppState {
         )
         .await
         .map_err(err_text)?;
+        Ok(())
+    }
+
+    /// Finish a registration by submitting the emailed one-time code. On success
+    /// the account is created and this browser is signed in.
+    pub async fn verify_registration(self, code: &str) -> Result<(), String> {
+        let user = auth::verify_registration(code.trim().to_string())
+            .await
+            .map_err(err_text)?;
         self.current_user.set(Some(user));
         Ok(())
     }

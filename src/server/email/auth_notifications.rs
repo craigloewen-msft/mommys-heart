@@ -19,6 +19,23 @@ pub async fn send_mfa_code(to_email: &str, to_name: &str, code: &str) -> Result<
     deliver(to_email, to_name, &rendered, &format!("verification code {code}")).await
 }
 
+/// Email a new registrant their one-time email-verification code
+pub async fn send_email_verification(
+    to_email: &str,
+    to_name: &str,
+    code: &str,
+) -> Result<(), String> {
+    let brand = Brand::from_env();
+    let rendered = templates::verify_email(&brand, code);
+    deliver(
+        to_email,
+        to_name,
+        &rendered,
+        &format!("email verification code {code}"),
+    )
+    .await
+}
+
 /// Email a user their password-reset link (`reset_url` is the full tokenized
 /// URL). Returns `Err` only when ACS is configured and the send itself fails.
 pub async fn send_password_reset(

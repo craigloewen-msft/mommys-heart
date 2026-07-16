@@ -1,5 +1,5 @@
-//! Authentication server functions: register, login, MFA verification, logout,
-//! and self-service password reset.
+//! Authentication server functions: register (with email-OTP verification),
+//! login, MFA verification, logout, and self-service password reset.
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -204,17 +204,22 @@ pub async fn resend_mfa() -> Result<(), ServerFnError> {
     Ok(())
 }
 
-/// Register a new client account, immediately sign it in, and return the user.
+/// Begin registering a new client account. Rather than creating the account
+/// immediately, this validates the input, emails a 6-digit verification code to
+/// the address, and stashes the pending signup behind a short-lived `register`
+/// cookie. The account is only created once the code is confirmed via
+/// [`verify_registration`], so an unverified email never becomes a real account.
 #[server(prefix = "/api")]
 pub async fn register(
     first_name: String,
     last_name: String,
     email: String,
     password: String,
-) -> Result<User, ServerFnError> {
-    use crate::server::auth::{build_session_cookie, hash_password};
-    use crate::server::db::{sessions, users};
-    use crate::server_fns::users::AccountRole;
+) -> Result<(), ServerFnError> {
+    use crate::server::auth::{build_register_cookie, generate_code, generate_token, hash_password};
+    use crate::server::db::pending_registrations::{self, PendingAccount};
+    use crate::server::db::{throttle, users};
+    use crate::server::email::auth_notifications as auth_email;
 
     let first_name = first_name.trim().to_string();
     let last_name = last_name.trim().to_string();
@@ -224,6 +229,21 @@ pub async fn register(
             "Please fill in first name, email, and password.",
         ));
     }
+
+    // Rate-limit sign-up attempts per email so this endpoint cannot be used to
+    // email-bomb a victim with verification codes.
+    if let Some(secs) = throttle::seconds_locked(throttle::Action::Register, &email)
+        .await
+        .map_err(ServerFnError::new)?
+    {
+        let minutes = throttle::minutes_remaining(secs);
+        return Err(ServerFnError::new(format!(
+            "Too many sign-up attempts. Please try again in about {minutes} minute{}.",
+            if minutes == 1 { "" } else { "s" }
+        )));
+    }
+    let _ = throttle::record_failure(throttle::Action::Register, &email).await;
+
     if users::email_exists(&email)
         .await
         .map_err(ServerFnError::new)?
@@ -233,16 +253,82 @@ pub async fn register(
         ));
     }
 
-    let id = users::next_id().await.map_err(ServerFnError::new)?;
     let password_hash = hash_password(&password).map_err(ServerFnError::new)?;
+    let challenge = generate_token();
+    let code = generate_code();
+    let account = PendingAccount {
+        first_name,
+        last_name,
+        email: email.clone(),
+        password_hash,
+    };
+    pending_registrations::create(&challenge, &account, &code)
+        .await
+        .map_err(ServerFnError::new)?;
+    auth_email::send_email_verification(&email, &account.full_name(), &code)
+        .await
+        .map_err(|e| {
+            tracing::warn!("failed to send verification code to {email}: {e}");
+            ServerFnError::new("We couldn't send your verification code. Please try again.")
+        })?;
+    append_cookie(build_register_cookie(challenge))?;
+    Ok(())
+}
+
+/// Complete a registration by verifying the emailed one-time `code`. On success
+/// the account is created, immediately signed in, and returned.
+#[server(prefix = "/api")]
+pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
+    use crate::server::auth::{
+        build_session_cookie, clear_register_cookie, REGISTER_COOKIE_NAME,
+    };
+    use crate::server::db::pending_registrations::{self, Verify};
+    use crate::server::db::{sessions, throttle, users};
+    use crate::server_fns::users::AccountRole;
+
+    let code = code.trim();
+    let challenge = request_cookie(REGISTER_COOKIE_NAME).await.ok_or_else(|| {
+        ServerFnError::new("Your sign-up session expired. Please register again.")
+    })?;
+
+    let account = match pending_registrations::verify(&challenge, code)
+        .await
+        .map_err(ServerFnError::new)?
+    {
+        Verify::Ok(account) => account,
+        Verify::WrongCode => {
+            return Err(ServerFnError::new("That code is incorrect. Please try again."));
+        }
+        Verify::Expired => {
+            append_cookie(clear_register_cookie())?;
+            return Err(ServerFnError::new(
+                "Your code has expired. Please register again.",
+            ));
+        }
+    };
+
+    // Guard against the email having been claimed while the code was in flight.
+    if users::email_exists(&account.email)
+        .await
+        .map_err(ServerFnError::new)?
+    {
+        append_cookie(clear_register_cookie())?;
+        return Err(ServerFnError::new(
+            "An account with that email already exists.",
+        ));
+    }
+
+    // The password was already hashed at sign-up time and stored on the pending
+    // row, so it is reused as-is when materializing the account.
+    let id = users::next_id().await.map_err(ServerFnError::new)?;
     users::insert(
         &id,
-        &first_name,
-        &last_name,
-        &email,
+        &account.first_name,
+        &account.last_name,
+        &account.email,
         "",
         "",
-        &password_hash,
+        &account.password_hash,
         AccountRole::Client,
     )
     .await
@@ -252,9 +338,45 @@ pub async fn register(
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("User disappeared after insert."))?;
+
+    // Verified sign-up succeeded: clear the abuse counter for this email.
+    let _ = throttle::clear(throttle::Action::Register, &account.email).await;
+
     let raw = sessions::create(&id).await.map_err(ServerFnError::new)?;
     append_cookie(build_session_cookie(raw))?;
+    append_cookie(clear_register_cookie())?;
     Ok(user)
+}
+
+/// Re-send a fresh verification code for the in-progress registration (same
+/// challenge cookie, new code, reset attempt counter and expiry).
+#[server(prefix = "/api")]
+pub async fn resend_registration_code() -> Result<(), ServerFnError> {
+    use crate::server::auth::{generate_code, REGISTER_COOKIE_NAME};
+    use crate::server::db::pending_registrations;
+    use crate::server::email::auth_notifications as auth_email;
+
+    let challenge = request_cookie(REGISTER_COOKIE_NAME).await.ok_or_else(|| {
+        ServerFnError::new("Your sign-up session expired. Please register again.")
+    })?;
+    let account = pending_registrations::account_for(&challenge)
+        .await
+        .map_err(ServerFnError::new)?
+        .ok_or_else(|| {
+            ServerFnError::new("Your sign-up session expired. Please register again.")
+        })?;
+
+    let code = generate_code();
+    pending_registrations::create(&challenge, &account, &code)
+        .await
+        .map_err(ServerFnError::new)?;
+    auth_email::send_email_verification(&account.email, &account.full_name(), &code)
+        .await
+        .map_err(|e| {
+            tracing::warn!("failed to resend verification code to {}: {e}", account.email);
+            ServerFnError::new("We couldn't resend your code. Please try again.")
+        })?;
+    Ok(())
 }
 
 /// Request a password-reset link by email

@@ -16,6 +16,7 @@ pub fn RegisterPage() -> impl IntoView {
     let last_name = RwSignal::new(String::new());
     let email = RwSignal::new(String::new());
     let password = RwSignal::new(String::new());
+    let confirm_password = RwSignal::new(String::new());
     let error = RwSignal::new(String::new());
 
     let submit = {
@@ -26,14 +27,19 @@ pub fn RegisterPage() -> impl IntoView {
             let last_name = last_name.get_untracked();
             let email = email.get_untracked();
             let password = password.get_untracked();
+            let confirm_password = confirm_password.get_untracked();
+            if password != confirm_password {
+                error.set("Passwords do not match.".to_string());
+                return;
+            }
             spawn_local(async move {
                 match state
                     .register(&first_name, &last_name, &email, &password)
                     .await
                 {
-                    Ok(_) => {
+                    Ok(()) => {
                         error.set(String::new());
-                        navigate("/cases", Default::default());
+                        navigate("/verify-email", Default::default());
                     }
                     Err(e) => error.set(e),
                 }
@@ -104,6 +110,16 @@ pub fn RegisterPage() -> impl IntoView {
                                 placeholder="Choose a password"
                                 prop:value=move || password.get()
                                 on:input=move |ev| password.set(event_target_value(&ev))
+                            />
+                        </div>
+                        <div>
+                            <label class="mb-1 block text-sm text-slate-300">"Re-enter password"</label>
+                            <input
+                                class=input_class
+                                r#type="password"
+                                placeholder="Re-enter your password"
+                                prop:value=move || confirm_password.get()
+                                on:input=move |ev| confirm_password.set(event_target_value(&ev))
                             />
                         </div>
 

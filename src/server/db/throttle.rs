@@ -28,6 +28,8 @@ pub enum Action {
     Login,
     /// Requesting a password-reset email.
     PasswordReset,
+    /// Submitting the sign-up form (which emails a verification code).
+    Register,
 }
 
 impl Action {
@@ -36,6 +38,7 @@ impl Action {
         match self {
             Action::Login => "login",
             Action::PasswordReset => "password_reset",
+            Action::Register => "register",
         }
     }
 }

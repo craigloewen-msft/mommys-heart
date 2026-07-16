@@ -38,19 +38,6 @@ pub fn LoginPage() -> impl IntoView {
         }
     };
 
-    let fill_admin = move |_| {
-        email.set("admin@mommysheart.org".into());
-        password.set("admin123".into());
-    };
-    let fill_volunteer = move |_| {
-        email.set("dana@mommysheart.org".into());
-        password.set("volunteer123".into());
-    };
-    let fill_client = move |_| {
-        email.set("jamie@example.com".into());
-        password.set("client123".into());
-    };
-
     let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
 
     view! {
@@ -116,35 +103,6 @@ pub fn LoginPage() -> impl IntoView {
                             "Sign in"
                         </button>
                     </form>
-
-                    <div class="mt-5 rounded-xl border border-dashed border-slate-700 bg-slate-950/50 p-4">
-                        <p class="text-xs font-medium uppercase tracking-wide text-slate-400">
-                            "Demo autofill"
-                        </p>
-                        <div class="mt-3 grid grid-cols-3 gap-2">
-                            <button
-                                r#type="button"
-                                on:click=fill_admin
-                                class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
-                            >
-                                "Admin"
-                            </button>
-                            <button
-                                r#type="button"
-                                on:click=fill_volunteer
-                                class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
-                            >
-                                "Volunteer"
-                            </button>
-                            <button
-                                r#type="button"
-                                on:click=fill_client
-                                class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
-                            >
-                                "Client"
-                            </button>
-                        </div>
-                    </div>
 
                     <p class="mt-5 text-center text-sm text-slate-400">
                         "No account? "

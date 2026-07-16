@@ -189,6 +189,45 @@ pub fn auth_code(brand: &Brand, code: &str) -> RenderedEmail {
     RenderedEmail { subject, html, plain_text: plain }
 }
 
+/// Build the registration email-verification code email. Transactional (no
+/// notification-settings footer): the recipient is finishing a sign-up they just
+/// started, and the account is not created until this code is entered.
+pub fn verify_email(brand: &Brand, code: &str) -> RenderedEmail {
+    let theme = Theme { accent: palette::color("primary-500"), emoji: "\u{2709}\u{FE0F}" }; // ✉️
+    let subject = format!("[{}] Verify your email address", brand.name);
+
+    let callout = format!(
+        "Welcome! Use this one-time code to verify your email and finish creating your \
+         {brand} account. It expires in 10 minutes.\
+         <div style=\"margin-top:14px;font-size:32px;font-weight:700;letter-spacing:0.35em;\
+         font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;color:{text};\">{code}</div>",
+        brand = escape(&brand.name),
+        text = palette::text(),
+        code = escape(code),
+    );
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: "Your email verification code (expires in 10 minutes).",
+            eyebrow: "Verify your email",
+            heading: "Confirm your email address",
+            callout_html: &callout,
+            cta: None,
+            body_note: "",
+            footer_html: "If you didn't try to create an account, you can safely ignore this email \u{2014} no account will be created.",
+        },
+    );
+    let plain = format!(
+        "Welcome to {brand}! Your email verification code is: {code}\n\n\
+         Enter it to finish creating your account. It expires in 10 minutes.\n\n\
+         If you didn't try to create an account, you can ignore this email.",
+        brand = brand.name,
+        code = code,
+    );
+    RenderedEmail { subject, html, plain_text: plain }
+}
+
 /// Build the password-reset email. `reset_url` is the full, tokenized link the
 /// recipient follows to choose a new password.
 pub fn password_reset(brand: &Brand, reset_url: &str) -> RenderedEmail {
@@ -434,6 +473,11 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
         key: "auth_code".to_string(),
         label: "MFA sign-in code".to_string(),
         email: auth_code(brand, "048213"),
+    });
+    samples.push(Sample {
+        key: "verify_email".to_string(),
+        label: "Registration email verification".to_string(),
+        email: verify_email(brand, "048213"),
     });
     let reset_base = if brand.app_url.is_empty() {
         "https://crm.example.org"

@@ -13,6 +13,7 @@ pub mod ids;
 pub mod messages;
 pub mod mfa;
 pub mod password_reset;
+pub mod pending_registrations;
 pub mod seed;
 pub mod sessions;
 pub mod settings;
