@@ -143,7 +143,7 @@ pub async fn get_summaries_for_user(
     // batched query, then build each summary complete with its rights attached —
     // so the client can gate actions straight from the case data.
     let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-    let mut by_case = if ids.is_empty() {
+    let mut capabilities_by_case = if ids.is_empty() {
         Default::default()
     } else {
         capabilities::get_multi_case(user_id, &ids).await?
@@ -151,7 +151,7 @@ pub async fn get_summaries_for_user(
     let items = rows
         .into_iter()
         .map(|r| {
-            let caps = by_case.remove(&r.id).unwrap_or_default();
+            let caps = capabilities_by_case.remove(&r.id).unwrap_or_default();
             r.into_summary(caps)
         })
         .collect::<Vec<_>>();
