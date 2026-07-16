@@ -9,7 +9,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::server_fns::users::{AccountRole, User};
+use crate::server_fns::users::{AccountRole, UserSummary};
 use crate::server_fns::auth::LoginOutcome;
 use crate::server_fns::{auth, err_text};
 
@@ -44,7 +44,7 @@ pub fn today() -> String {
 /// is cheap to copy and can be pulled from context anywhere.
 #[derive(Clone, Copy)]
 pub struct AppState {
-    pub current_user: RwSignal<Option<User>>,
+    pub current_user_summary: RwSignal<Option<UserSummary>>,
 }
 
 impl Default for AppState {
@@ -56,18 +56,18 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         Self {
-            current_user: RwSignal::new(None),
+            current_user_summary: RwSignal::new(None),
         }
     }
 
     // --- auth ---------------------------------------------------------------
 
     pub fn is_authenticated(&self) -> bool {
-        self.current_user.get().is_some()
+        self.current_user_summary.get().is_some()
     }
 
     pub fn role(&self) -> Option<AccountRole> {
-        self.current_user.get().map(|u| u.role)
+        self.current_user_summary.get().map(|u| u.role)
     }
 
     pub fn is_admin(&self) -> bool {
@@ -80,7 +80,7 @@ impl AppState {
             .await
             .map_err(err_text)?;
         if let LoginOutcome::Authenticated(user) = &outcome {
-            self.current_user.set(Some(user.clone()));
+            self.current_user_summary.set(Some(user.clone().into()));
         }
         Ok(outcome)
     }
@@ -92,7 +92,7 @@ impl AppState {
         let user = auth::verify_mfa(code.trim().to_string(), remember_device)
             .await
             .map_err(err_text)?;
-        self.current_user.set(Some(user));
+        self.current_user_summary.set(Some(user.into()));
         Ok(())
     }
 
@@ -124,12 +124,12 @@ impl AppState {
         let user = auth::verify_registration(code.trim().to_string())
             .await
             .map_err(err_text)?;
-        self.current_user.set(Some(user));
+        self.current_user_summary.set(Some(user.into()));
         Ok(())
     }
 
     pub fn logout(self) {
-        self.current_user.set(None);
+        self.current_user_summary.set(None);
         spawn_local(async move {
             let _ = auth::logout().await;
         });

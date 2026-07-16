@@ -68,7 +68,18 @@ impl AccountRole {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UserSummary {
     pub id: String,
-    pub name: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub role: AccountRole,
+}
+
+impl UserSummary {
+    /// Convenience: the user's full display name.
+    pub fn full_name(&self) -> String {
+        format!("{} {}", self.first_name, self.last_name)
+            .trim()
+            .to_string()
+    }
 }
 
 /// An application user account
@@ -106,6 +117,17 @@ impl User {
     /// Whether this user is assigned to the given case at all.
     pub fn is_assigned_to(&self, case_id: &str) -> bool {
         self.assigned_cases.iter().any(|a| a.case_id == case_id)
+    }
+}
+
+impl From<User> for UserSummary {
+    fn from(user: User) -> Self {
+        Self {
+            id: user.id,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            role: user.role,
+        }
     }
 }
 
@@ -223,7 +245,7 @@ pub async fn unassign_case(user_id: String, case_id: String) -> Result<(), Serve
 /// request. Each change is either a new capability set for a case (`Some`) or a
 /// removal of the assignment (`None`). Backs the admin "Edit → Save" flow so a
 /// whole draft applies in one round-trip instead of one server call per checkbox.
-#[server(prefix = "/api")]
+#[server(prefix = "/api", input = leptos::server_fn::codec::Json)]
 pub async fn save_case_capabilities(
     user_id: String,
     changes: Vec<(String, Option<Vec<CaseCapability>>)>,

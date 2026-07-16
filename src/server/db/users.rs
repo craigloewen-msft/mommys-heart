@@ -103,9 +103,8 @@ pub async fn summary(
 ) -> Result<Option<crate::server_fns::users::UserSummary>, sqlx::Error> {
     use crate::server_fns::users::UserSummary;
 
-    let row: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT id,
-                NULLIF(TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')), '') AS name
+    let row: Option<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
+        "SELECT id, first_name, last_name, role
          FROM users
          WHERE id = $1",
     )
@@ -113,9 +112,18 @@ pub async fn summary(
     .fetch_optional(pool())
     .await?;
 
-    Ok(row.map(|(id, name)| UserSummary {
-        name: name.unwrap_or_else(|| id.clone()),
+    let Some((id, first_name, last_name, role)) = row else {
+        return Ok(None);
+    };
+    let role = AccountRole::from_slug(&role).ok_or_else(|| {
+        sqlx::Error::Decode(format!("invalid account role slug: {role:?}").into())
+    })?;
+
+    Ok(Some(UserSummary {
+        first_name: first_name.unwrap_or_else(|| id.clone()),
+        last_name: last_name.unwrap_or_else(|| id.clone()),
         id,
+        role,
     }))
 }
 
@@ -142,9 +150,8 @@ pub async fn search_user_summaries(
         ))
     };
 
-    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT id,
-                NULLIF(TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')), '') AS name
+    let rows: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
+        "SELECT id, first_name, last_name, role
          FROM users
          WHERE $1::text IS NULL
             OR id ILIKE $1
@@ -152,7 +159,7 @@ pub async fn search_user_summaries(
             OR last_name ILIKE $1
             OR (first_name || ' ' || last_name) ILIKE $1
             OR email ILIKE $1
-         ORDER BY name NULLS LAST, id
+         ORDER BY first_name NULLS LAST, id
          LIMIT $2",
     )
     .bind(&pattern)
@@ -160,13 +167,20 @@ pub async fn search_user_summaries(
     .fetch_all(pool())
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|(id, name)| UserSummary {
-            name: name.unwrap_or_else(|| id.clone()),
-            id,
+    rows.into_iter()
+        .map(|(id, first_name, last_name, role)| {
+            let role = AccountRole::from_slug(&role).ok_or_else(|| {
+                sqlx::Error::Decode(format!("invalid account role slug: {role:?}").into())
+            })?;
+
+            Ok(UserSummary {
+                first_name: first_name.unwrap_or_else(|| id.clone()),
+                last_name: last_name.unwrap_or_else(|| id.clone()),
+                id,
+                role,
+            })
         })
-        .collect())
+        .collect()
 }
 
 /// Whether a user currently has any capability assignment on a case. Used to

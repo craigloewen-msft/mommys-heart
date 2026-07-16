@@ -5,6 +5,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::evidence::Evidence;
 use crate::server_fns::message::Message;
 use crate::server_fns::pagination::Page;
@@ -87,6 +88,11 @@ pub struct Case {
     /// Count only of messages
     #[serde(default)]
     pub message_count: usize,
+    /// The signed-in viewer's capabilities on this case, resolved server-side
+    /// per request. The source of truth for what the current user may do here —
+    /// read it directly rather than caching per-case rights in client state.
+    #[serde(default)]
+    pub capabilities: Vec<CaseCapability>,
 }
 
 /// A sparse view of a case for list/directory screens: the header fields only
@@ -100,8 +106,26 @@ pub struct CaseSummary {
     pub name: String,
     pub status: CaseStatus,
     pub owner_id: String,
-    pub owner_name: String,
+    pub owner_first_name: String,
+    pub owner_last_name: String,
     pub message_count: usize,
+    #[serde(default)]
+    pub capabilities: Vec<CaseCapability>,
+}
+
+impl CaseSummary {
+    /// The owner's display name (first + last), falling back to the owner id
+    /// when the owner user is missing or unnamed.
+    pub fn owner_full_name(&self) -> String {
+        let name = format!("{} {}", self.owner_first_name, self.owner_last_name)
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            self.owner_id.clone()
+        } else {
+            name
+        }
+    }
 }
 
 /// One page of summarized cases the caller owns or is assigned to, ordered by
@@ -129,11 +153,12 @@ pub async fn load_case_summaries_for_user(
 pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::ViewCase).await?;
-    cases::get(&case_id).await.map_err(ServerFnError::new)
+    cases::get(&case_id, &user.id)
+        .await
+        .map_err(ServerFnError::new)
 }
 
 /// Admin-only lightweight case search for the capability tool: find any case

@@ -63,7 +63,7 @@ pub fn InboxPage() -> impl IntoView {
         }
 
         // Display title for a case: the case name with its owner appended.
-        let title_for = move |c: &CaseSummary| format!("{} · {}", c.name, c.owner_name);
+        let title_for = move |c: &CaseSummary| format!("{} · {}", c.name, c.owner_full_name());
 
         let case_list = move || {
             if let Some(msg) = load_error.get() {
@@ -159,7 +159,8 @@ pub fn InboxPage() -> impl IntoView {
                 Some(id) => match cases.get().into_iter().find(|c| c.id == id) {
                     Some(c) => {
                         let title = title_for(&c);
-                        view! { <CaseChat case_id=c.id case_name=title /> }.into_any()
+                        let can_send = c.capabilities.contains(&CaseCapability::SendMessages);
+                        view! { <CaseChat case_id=c.id case_name=title can_send=can_send /> }.into_any()
                     }
                     None => {
                         view! { <p class="text-sm text-slate-400">"Case not found."</p> }.into_any()
@@ -215,22 +216,13 @@ pub fn InboxPage() -> impl IntoView {
 /// message and a "Load earlier messages" button at the top pages older messages
 /// in on demand, so a long conversation never loads all at once.
 #[component]
-fn CaseChat(case_id: String, case_name: String) -> impl IntoView {
+fn CaseChat(case_id: String, case_name: String, can_send: bool) -> impl IntoView {
     let state = expect_context::<AppState>();
     let me = state
-        .current_user
+        .current_user_summary
         .get_untracked()
         .map(|u| u.id)
         .unwrap_or_default();
-
-    let can_send = state
-        .current_user
-        .get_untracked()
-        .map(|u| {
-            u.capabilities_for(&case_id)
-                .contains(&CaseCapability::SendMessages)
-        })
-        .unwrap_or(false);
 
     // This case's chat messages live here — loaded on demand for the open case.
     let messages = RwSignal::new(Vec::<Message>::new());

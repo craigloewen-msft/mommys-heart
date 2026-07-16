@@ -1,6 +1,6 @@
 //! Cases and their sub-resources: notes, evidence, properties, and audit log.
 
-use crate::server::db::{audit, evidence, ids, now_stamp, pool, users};
+use crate::server::db::{audit, capabilities, evidence, ids, now_stamp, pool, users};
 use crate::server_fns::cases::{Case, CaseNote, CaseProperty, CaseStatus, CaseSummary};
 use crate::server_fns::pagination::Page;
 use crate::server_fns::capabilities::CaseCapability;
@@ -29,33 +29,32 @@ struct SummaryRow {
     name: String,
     status: String,
     owner_id: String,
-    owner_name: String,
+    owner_first_name: String,
+    owner_last_name: String,
     message_count: i64,
 }
 
 impl SummaryRow {
-    fn into_summary(self) -> CaseSummary {
+    fn into_summary(self, capabilities: Vec<CaseCapability>) -> CaseSummary {
         CaseSummary {
-            // Fall back to the owner id if the user row is missing or unnamed.
-            owner_name: if self.owner_name.trim().is_empty() {
-                self.owner_id.clone()
-            } else {
-                self.owner_name
-            },
             id: self.id,
             name: self.name,
             status: CaseStatus::from_slug(&self.status).unwrap_or(CaseStatus::Open),
             owner_id: self.owner_id,
+            owner_first_name: self.owner_first_name,
+            owner_last_name: self.owner_last_name,
             message_count: self.message_count.max(0) as usize,
+            capabilities,
         }
     }
 }
 
 /// The `SELECT` list that projects a `cases` row (aliased `c`) into a
-/// [`SummaryRow`]: header fields, the owner's resolved display name, and the
-/// case's message count. Callers append their own `WHERE`/`ORDER`/`LIMIT`.
+/// [`SummaryRow`]: header fields, the owner's first/last name, and the case's
+/// message count. Callers append their own `WHERE`/`ORDER`/`LIMIT`.
 const SUMMARY_SELECT: &str = "SELECT c.id, c.name, c.status, c.owner_id,
-        TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS owner_name,
+        u.first_name AS owner_first_name,
+        u.last_name AS owner_last_name,
         (SELECT COUNT(*) FROM messages m WHERE m.case_id = c.id) AS message_count
  FROM cases c
  LEFT JOIN users u ON u.id = c.owner_id";
@@ -85,16 +84,6 @@ pub async fn get_summaries_for_user(
     search: &str,
     user_id: &str,
 ) -> Result<Page<CaseSummary>, sqlx::Error> {
-    #[derive(sqlx::FromRow)]
-    struct DirRow {
-        id: String,
-        name: String,
-        status: String,
-        owner_id: String,
-        owner_name: String,
-        message_count: i64,
-    }
-
     let limit = limit.clamp(1, 100);
     let offset = offset.max(0);
 
@@ -130,11 +119,7 @@ pub async fn get_summaries_for_user(
         scope.replace("$VIEWER", "$2")
     );
     let page_sql = format!(
-        "SELECT c.id, c.name, c.status, c.owner_id,
-                TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS owner_name,
-                (SELECT COUNT(*) FROM messages m WHERE m.case_id = c.id) AS message_count
-         FROM cases c
-         LEFT JOIN users u ON u.id = c.owner_id
+        "{SUMMARY_SELECT}
          WHERE {SEARCH} AND {}
          ORDER BY c.id LIMIT $2 OFFSET $3",
         scope.replace("$VIEWER", "$4")
@@ -146,7 +131,7 @@ pub async fn get_summaries_for_user(
         .bind(&pattern)
         .bind(user_id)
         .fetch_one(pool());
-    let rows_fut = sqlx::query_as::<_, DirRow>(&page_sql)
+    let rows_fut = sqlx::query_as::<_, SummaryRow>(&page_sql)
         .bind(&pattern)
         .bind(limit)
         .bind(offset)
@@ -154,22 +139,22 @@ pub async fn get_summaries_for_user(
         .fetch_all(pool());
     let (total, rows) = tokio::try_join!(count_fut, rows_fut)?;
 
+    // Resolve the requesting user's capabilities on this page of cases in one
+    // batched query, then build each summary complete with its rights attached —
+    // so the client can gate actions straight from the case data.
+    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+    let mut by_case = if ids.is_empty() {
+        Default::default()
+    } else {
+        capabilities::get_multi_case(user_id, &ids).await?
+    };
     let items = rows
         .into_iter()
-        .map(|r| CaseSummary {
-            // Fall back to the owner id if the user row is missing or unnamed.
-            owner_name: if r.owner_name.is_empty() {
-                r.owner_id.clone()
-            } else {
-                r.owner_name
-            },
-            id: r.id,
-            name: r.name,
-            status: CaseStatus::from_slug(&r.status).unwrap_or(CaseStatus::Open),
-            owner_id: r.owner_id,
-            message_count: r.message_count.max(0) as usize,
+        .map(|r| {
+            let caps = by_case.remove(&r.id).unwrap_or_default();
+            r.into_summary(caps)
         })
-        .collect();
+        .collect::<Vec<_>>();
     Ok(Page { items, total })
 }
 
@@ -199,7 +184,10 @@ pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, s
     .bind(limit)
     .fetch_all(pool())
     .await?;
-    Ok(rows.into_iter().map(SummaryRow::into_summary).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| r.into_summary(Vec::new()))
+        .collect())
 }
 
 /// Lightweight [`CaseSummary`]s for a specific set of ids, ordered by id. Used to
@@ -215,12 +203,16 @@ pub async fn get_summaries_by_ids(ids: &[String]) -> Result<Vec<CaseSummary>, sq
     .bind(ids)
     .fetch_all(pool())
     .await?;
-    Ok(rows.into_iter().map(SummaryRow::into_summary).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| r.into_summary(Vec::new()))
+        .collect())
 }
 
 /// A single case by id, fully hydrated (properties, evidence, and its newest
-/// notes), or `None` if no such case exists.
-pub async fn get(id: &str) -> Result<Option<Case>, sqlx::Error> {
+/// notes) including the capabilities `user_id` holds on it, or `None` if no
+/// such case exists.
+pub async fn get(id: &str, user_id: &str) -> Result<Option<Case>, sqlx::Error> {
     let Some(row) =
         sqlx::query_as::<_, CaseRow>("SELECT id, name, status, owner_id FROM cases WHERE id = $1")
             .bind(id)
@@ -273,6 +265,7 @@ pub async fn get(id: &str) -> Result<Option<Case>, sqlx::Error> {
         evidence,
         properties,
         message_count: 0,
+        capabilities: capabilities::get_single_case(user_id, id).await?,
     }))
 }
 
