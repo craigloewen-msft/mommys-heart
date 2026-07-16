@@ -6,6 +6,7 @@
 //! Axum state handle to thread a pool through).
 
 pub mod audit;
+pub mod capabilities;
 pub mod cases;
 pub mod evidence;
 pub mod grants;

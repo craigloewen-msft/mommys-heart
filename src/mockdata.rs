@@ -364,6 +364,7 @@ pub fn cases() -> Vec<Case> {
                     prop("Docket", sc.docket),
                 ],
                 message_count: MESSAGES.iter().filter(|(case, ..)| *case == n).count(),
+                capabilities: Vec::new(),
             }
         })
         .collect()

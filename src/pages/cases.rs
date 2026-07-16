@@ -175,11 +175,7 @@ pub fn CaseHomePage() -> impl IntoView {
                         let case_id = case_id.clone();
                         move || selected.get().as_deref() == Some(case_id.as_str())
                     };
-                    let caps = state
-                        .current_user
-                        .get()
-                        .map(|u| u.capabilities_for(&c.id))
-                        .unwrap_or_default();
+                    let caps = c.capabilities.clone();
                     let access_badge = access_label(&caps)
                         .map(|(label, classes)| {
                             view! { <span class=badge(classes)>{label}</span> }.into_any()
@@ -187,7 +183,7 @@ pub fn CaseHomePage() -> impl IntoView {
                         .unwrap_or_else(|| ().into_any());
                     let status = c.status;
                     let name = c.name.clone();
-                    let owner = c.owner_name.clone();
+                    let owner = c.owner_full_name();
                     let select = {
                         let case_id = case_id.clone();
                         move |_| selected.set(Some(case_id.clone()))
@@ -477,13 +473,9 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
 
     let owner = StoredValue::new(Owner::current().expect("component owner"));
 
-    // Capability gates for this case, derived from the signed-in user's
-    // assignment. No implicit grants for owners or admins.
-    let caps = state
-        .current_user
-        .get()
-        .map(|u| u.capabilities_for(&summary.id))
-        .unwrap_or_default();
+    // Capability gates for this case, resolved server-side and delivered with
+    // the case summary. No implicit grants for owners or admins.
+    let caps = summary.capabilities.clone();
     let can_edit = caps.contains(&CaseCapability::EditCase);
     let is_admin = state.is_admin();
     let can_note = caps.contains(&CaseCapability::AddNotes);
@@ -512,7 +504,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         });
     }
 
-    let owner_name = StoredValue::new(summary.owner_name.clone());
+    let owner_name = StoredValue::new(summary.owner_full_name());
 
     // Owner picker (edit mode only)
     let owner_query = RwSignal::new(String::new());
@@ -895,8 +887,8 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                 .into_iter()
                 .map(|u| {
                     let id = u.id.clone();
-                    let name = u.name.clone();
-                    let label = format!("{} ({})", u.name, u.id);
+                    let name = u.full_name();
+                    let label = format!("{} ({})", u.full_name(), u.id);
                     let select = move |_| {
                         edit_owner.set(id.clone());
                         owner_label.set(name.clone());

@@ -41,7 +41,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let state = expect_context::<AppState>();
     let navigate = use_navigate();
 
-    let user = state.current_user.get_untracked();
+    let user = state.current_user_summary.get_untracked();
     if user.is_none() {
         return view! { <Redirect path="/login" /> }.into_any();
     }
