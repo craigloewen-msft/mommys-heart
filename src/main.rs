@@ -69,6 +69,10 @@ async fn main() {
     // then daily.
     mommys_heart_crm::server::db::audit::start_retention_task();
 
+    // Same for the durable email-delivery-failure log surfaced in the admin
+    // dashboard.
+    mommys_heart_crm::server::db::email_failures::start_retention_task();
+
     let conf = get_configuration(None).unwrap();
     let leptos_options = conf.leptos_options;
     let addr = leptos_options.site_addr;

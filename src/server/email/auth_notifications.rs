@@ -4,8 +4,9 @@
 //! Unlike [`crate::server::notifications`] (best-effort, background, honoring
 //! per-user notification settings), these are foreground and their outcome
 //! matters — a user cannot finish signing in without the code. When ACS Email is
-//! not configured, or `EMAIL_DRY_RUN` is set, the secret is written to the log
-//! instead so local development and the demo accounts still work.
+//! not configured, `EMAIL_DRY_RUN` is set, or the server is a debug build, the
+//! secret is written to the log so local development and the demo accounts still
+//! work even without a live inbox. See [`deliver`] for the exact rules.
 
 use crate::server::config::{Brand, EmailConfig};
 use crate::server::email::templates::{self, RenderedEmail};
@@ -54,9 +55,7 @@ pub async fn send_password_reset(
     .await
 }
 
-/// Send a rendered auth email, or — when ACS Email is unconfigured or
-/// `EMAIL_DRY_RUN` is set — log the sensitive `dev_detail` so the flow can still
-/// be completed in local development without a live email service.
+/// Send a rendered auth email.
 async fn deliver(
     to_email: &str,
     to_name: &str,
@@ -64,13 +63,21 @@ async fn deliver(
     dev_detail: &str,
 ) -> Result<(), String> {
     let cfg = EmailConfig::from_env();
-    if !cfg.is_configured() || cfg.dry_run {
+
+    let will_send = cfg.is_configured() && !cfg.dry_run;
+
+    if !will_send || cfg!(debug_assertions) {
         tracing::warn!(
-            "[auth email dev fallback] not emailing {to_email}: {dev_detail} \
-             (configure ACS Email and unset EMAIL_DRY_RUN to deliver for real)"
+            "[auth email dev] {to_email}: {dev_detail} \
+             (logged for local development; configure ACS Email and unset \
+             EMAIL_DRY_RUN in a release build to deliver for real only)"
         );
+    }
+
+    if !will_send {
         return Ok(());
     }
+
     let msg = EmailMessage {
         to_address: to_email.to_string(),
         to_name: to_name.to_string(),
@@ -78,5 +85,15 @@ async fn deliver(
         html: email.html.clone(),
         plain_text: email.plain_text.clone(),
     };
-    send_email(&cfg, &msg).await
+    if let Err(e) = send_email(&cfg, &msg).await {
+        crate::server::db::email_failures::record(
+            to_email,
+            &email.subject,
+            "Authentication email",
+            &e,
+        )
+        .await;
+        return Err(e);
+    }
+    Ok(())
 }

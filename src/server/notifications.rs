@@ -116,7 +116,16 @@ async fn dispatch(
         };
         match send_email(cfg, &msg).await {
             Ok(()) => tracing::info!("notification email accepted for {}", r.email),
-            Err(e) => tracing::warn!("notification email to {} failed: {e}", r.email),
+            Err(e) => {
+                tracing::warn!("notification email to {} failed: {e}", r.email);
+                crate::server::db::email_failures::record(
+                    &r.email,
+                    &email.subject,
+                    "Case notification",
+                    &e,
+                )
+                .await;
+            }
         }
     }
 }

@@ -7,6 +7,7 @@ pub mod state;
 
 pub mod components {
     pub mod change_log;
+    pub mod email_failures;
     pub mod guard;
     pub mod layout;
     pub mod loading;

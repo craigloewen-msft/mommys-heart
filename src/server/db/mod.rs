@@ -8,6 +8,7 @@
 pub mod audit;
 pub mod capabilities;
 pub mod cases;
+pub mod email_failures;
 pub mod evidence;
 pub mod grants;
 pub mod ids;

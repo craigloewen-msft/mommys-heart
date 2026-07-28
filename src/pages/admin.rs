@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::components::change_log::ChangeLog;
+use crate::components::email_failures::EmailFailureLog;
 use crate::components::guard::require_admin;
 use crate::components::layout::Layout;
 use crate::server_fns::audit::AuditScope;
@@ -55,6 +56,9 @@ pub fn AdminDashboardPage() -> impl IntoView {
     let load_error = RwSignal::new(None::<String>);
     // Bumped after a mutation to force the current window to reload.
     let reload = RwSignal::new(0u32);
+    // Whether the collapsible "Email delivery failures" panel is open. Mounting
+    // the viewer only on open defers its fetch until the admin asks for it.
+    let failures_open = RwSignal::new(false);
 
     // (Re)load the window whenever the debounced query, window size, or reload
     // tick changes — but only once a session is confirmed (server functions run
@@ -153,6 +157,27 @@ pub fn AdminDashboardPage() -> impl IntoView {
             />
             <div class="space-y-4">{list}</div>
             {footer}
+            <div class="mb-6 rounded-xl border border-slate-800 bg-slate-900 p-5">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-sm font-semibold text-slate-200">
+                            "Email delivery failures"
+                        </h2>
+                        <p class="mt-0.5 text-xs text-slate-500">
+                            "Outbound emails that failed to send, newest first \u{2014} check here instead of the server logs."
+                        </p>
+                    </div>
+                    <button
+                        on:click=move |_| failures_open.update(|o| *o = !*o)
+                        class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                    >
+                        {move || if failures_open.get() { "Hide" } else { "Show" }}
+                    </button>
+                </div>
+                <Show when=move || failures_open.get()>
+                    <EmailFailureLog />
+                </Show>
+            </div>
         </Layout>
     }
     .into_any()
