@@ -155,6 +155,12 @@ pub fn generate_code() -> String {
     format!("{n:06}")
 }
 
+/// Whether to skip the emailed one-time code and sign in on the password alone.
+/// This is ONLY done during debug builds
+pub fn skip_mfa() -> bool {
+    cfg!(debug_assertions) || !crate::server::config::EmailConfig::from_env().is_configured()
+}
+
 /// Extractor that resolves the session cookie to the signed-in [`User`],
 /// rejecting with `401 Unauthorized` when there is no valid session.
 pub struct AuthUser(pub User);

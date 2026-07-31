@@ -45,6 +45,7 @@ pub fn today() -> String {
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub current_user_summary: RwSignal<Option<UserSummary>>,
+    pub auth_resolved: RwSignal<bool>,
 }
 
 impl Default for AppState {
@@ -57,10 +58,33 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             current_user_summary: RwSignal::new(None),
+            auth_resolved: RwSignal::new(false),
         }
     }
 
     // --- auth ---------------------------------------------------------------
+
+    /// Ask the server who the session cookie belongs to and record the answer.
+    ///
+    /// Called once when the app boots. The session lives in an `HttpOnly`
+    /// cookie that script cannot read, so this round-trip is the only way the
+    /// client learns it is already signed in after a page load.
+    ///
+    /// Browser-only: there is no local task executor during server rendering
+    /// (`spawn_local` panics there), and the server-rendered pass has nothing
+    /// to restore anyway — it emits the loading state, and the client resolves
+    /// the session as soon as it hydrates.
+    pub fn restore_session(self) {
+        if !cfg!(feature = "hydrate") {
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(Some(user)) = auth::current_user().await {
+                self.current_user_summary.set(Some(user));
+            }
+            self.auth_resolved.set(true);
+        });
+    }
 
     pub fn is_authenticated(&self) -> bool {
         self.current_user_summary.get().is_some()

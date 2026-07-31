@@ -108,8 +108,21 @@ const USERS: [SeedUser; 8] = [
     },
 ];
 
-fn user_id(i: usize) -> String {
-    format!("u-{}", i + 1)
+/// The id of the `i`th demo user.
+///
+/// Real accounts get a cryptographically random id (see
+/// [`crate::server::db::users::next_id`]); these mirror that *shape* so the
+/// demo behaves like production, but are derived deterministically from the
+/// index (SplitMix64) so re-seeding reproduces the same object graph and the
+/// fixed cross-references below keep pointing at the right rows.
+pub fn user_id(i: usize) -> String {
+    let mut z = (i as u64)
+        .wrapping_add(1)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    format!("u-{z:016x}")
 }
 
 fn case_id(n: u32) -> String {

@@ -4,7 +4,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::server_fns::users::User;
+use crate::server_fns::users::{User, UserSummary};
 
 /// The result of a successful password check
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,8 +44,8 @@ async fn request_cookie(name: &str) -> Option<String> {
 #[server(prefix = "/api")]
 pub async fn login(email: String, password: String) -> Result<LoginOutcome, ServerFnError> {
     use crate::server::auth::{
-        build_mfa_cookie, build_session_cookie, generate_code, generate_token, verify_password,
-        TRUSTED_DEVICE_COOKIE_NAME,
+        build_mfa_cookie, build_session_cookie, generate_code, generate_token, skip_mfa,
+        verify_password, TRUSTED_DEVICE_COOKIE_NAME,
     };
     use crate::server::db::{mfa, sessions, throttle, trusted_devices, users};
     use crate::server::email::auth_notifications as auth_email;
@@ -100,7 +100,20 @@ pub async fn login(email: String, password: String) -> Result<LoginOutcome, Serv
         }
     }
 
-    // Otherwise start an email one-time-code challenge.
+    if skip_mfa() {
+        tracing::warn!(
+            "WARN: skipping MFA for {} — no deliverable email or debug build. \
+             Signed in on the password alone; never run production this way.",
+            user.email
+        );
+        let raw = sessions::create(&user.id)
+            .await
+            .map_err(ServerFnError::new)?;
+        append_cookie(build_session_cookie(raw))?;
+        return Ok(LoginOutcome::Authenticated(user));
+    }
+
+    // Otherwise start an email one-time-code challenge
     let challenge = generate_token();
     let code = generate_code();
     mfa::create(&user.id, &challenge, &code)
@@ -320,7 +333,7 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
 
     // The password was already hashed at sign-up time and stored on the pending
     // row, so it is reused as-is when materializing the account.
-    let id = users::next_id().await.map_err(ServerFnError::new)?;
+    let id = users::next_id();
     users::insert(
         &id,
         &account.first_name,
@@ -458,6 +471,30 @@ pub async fn reset_password(token: String, new_password: String) -> Result<(), S
         tracing::warn!("failed to clear sessions after reset for {user_id}: {e}");
     }
     Ok(())
+}
+
+/// Resolve the signed-in user from the session cookie, or `None` when there is
+/// no live session.
+///
+/// The browser holds the session in an `HttpOnly` cookie, which script cannot
+/// read, so after a full page load the client has no idea who it is until it
+/// asks. Every protected route depends on this: without it a refresh (or
+/// opening a link in a new tab) looks exactly like being signed out. Returns
+/// `None` rather than an error, since "not signed in" is an ordinary answer
+/// here and not a failure.
+///
+/// Deliberately returns a [`UserSummary`] rather than the full [`User`]: this
+/// runs on every page load, and the summary is all the client keeps, so there
+/// is no reason to ship the visitor's address and case assignments along with
+/// it.
+#[server(prefix = "/api")]
+pub async fn current_user() -> Result<Option<UserSummary>, ServerFnError> {
+    use crate::server::auth::AuthUser;
+
+    Ok(leptos_axum::extract::<AuthUser>()
+        .await
+        .ok()
+        .map(|AuthUser(user)| user.into()))
 }
 
 /// Sign out: delete the current session (best effort) and clear the cookie.

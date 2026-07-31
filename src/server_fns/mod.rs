@@ -24,6 +24,7 @@ pub mod evidence;
 pub mod grants;
 pub mod message;
 pub mod pagination;
+pub mod profile;
 pub mod settings;
 pub mod users;
 

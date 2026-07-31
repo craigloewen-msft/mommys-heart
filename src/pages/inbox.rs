@@ -4,6 +4,7 @@ use leptos::task::spawn_local;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
+use crate::components::profile_link::ProfileLink;
 use crate::server_fns::cases::{load_case_summaries_for_user, CaseSummary};
 use crate::server_fns::err_text;
 use crate::server_fns::message::Message;
@@ -345,7 +346,13 @@ fn CaseChat(case_id: String, case_name: String, can_send: bool) -> impl IntoView
                         <div class=row>
                             <div class=bubble>
                                 <p class="text-xs font-medium text-slate-400">
-                                    {m.author} " · " {m.sent_at}
+                                    <ProfileLink
+                                        user_id=m.author_id.clone()
+                                        name=m.author.clone()
+                                        class="text-xs"
+                                    />
+                                    " \u{00b7} "
+                                    {m.sent_at}
                                 </p>
                                 <p class="mt-0.5 whitespace-pre-wrap">{m.body}</p>
                             </div>

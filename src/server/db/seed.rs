@@ -165,10 +165,13 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 /// Set `app_id_seq` above the largest numeric suffix of any seeded id so that
 /// `ids::next` never reissues an id that already exists.
+///
+/// `users` is deliberately absent: user ids are random hex from `ids::opaque`,
+/// not sequence-derived, so their suffix is not a number to compare against
+/// (and casting one to `bigint` would error).
 async fn advance_id_sequence() -> Result<(), sqlx::Error> {
     sqlx::query(
         "SELECT setval('app_id_seq', GREATEST(
-             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM users),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM grants),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM cases),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM case_notes),
@@ -219,6 +222,16 @@ async fn seed_audit_fixtures() -> Result<(), sqlx::Error> {
 
     for f in fixtures {
         let id = ids::next(pool, "cl").await?;
+        // User fixtures name their subject positionally ("u-2" = the second
+        // seeded user); resolve that to the generated opaque id.
+        let entity_id = match f
+            .entity_id
+            .strip_prefix("u-")
+            .and_then(|n| n.parse::<usize>().ok())
+        {
+            Some(n) if f.entity_type == "user" => crate::mockdata::user_id(n - 1),
+            _ => f.entity_id.to_string(),
+        };
         let at = (chrono::Local::now() - chrono::Duration::days(f.days_ago))
             .format("%Y-%m-%d %H:%M")
             .to_string();
@@ -229,7 +242,7 @@ async fn seed_audit_fixtures() -> Result<(), sqlx::Error> {
         )
         .bind(&id)
         .bind(f.entity_type)
-        .bind(f.entity_id)
+        .bind(&entity_id)
         .bind(f.actor)
         .bind(f.field)
         .bind(f.old_value)

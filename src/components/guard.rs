@@ -1,10 +1,12 @@
 //! Reusable, reactive route guards.
 //!
-//! Session resolution now happens asynchronously in the browser (the client
-//! fetches `/api/auth/me` after hydration), so guards must react to
-//! [`AuthPhase`] rather than reading the user once. While the session is still
-//! resolving they show a lightweight loading screen; only once we know the
-//! visitor is signed out do we redirect.
+//! Session resolution happens asynchronously in the browser (the client asks
+//! the server who the `HttpOnly` session cookie belongs to after hydration —
+//! see [`AppState::restore_session`]), so guards must react to that phase
+//! rather than reading the user once. While the session is still resolving they
+//! show a lightweight loading screen; only once we know the visitor is signed
+//! out do we redirect. Redirecting eagerly would bounce every signed-in visitor
+//! to `/login` on a page refresh.
 //!
 //! Usage: a protected page builds its signals as usual, then returns
 //! `require_login(state, move || <content>.into_any())` (or `require_admin`).
@@ -13,6 +15,7 @@
 use leptos::prelude::*;
 use leptos_router::components::Redirect;
 
+use crate::components::loading::Loading;
 use crate::state::AppState;
 
 /// Show `content` only to authenticated visitors; redirect signed-out visitors
@@ -24,6 +27,8 @@ where
     (move || {
         if state.is_authenticated() {
             content()
+        } else if !state.auth_resolved.get() {
+            view! { <Loading label="Loading\u{2026}" /> }.into_any()
         } else {
             view! { <Redirect path="/login" /> }.into_any()
         }
@@ -44,6 +49,8 @@ where
             } else {
                 view! { <Redirect path="/cases" /> }.into_any()
             }
+        } else if !state.auth_resolved.get() {
+            view! { <Loading label="Loading\u{2026}" /> }.into_any()
         } else {
             view! { <Redirect path="/login" /> }.into_any()
         }

@@ -7,6 +7,7 @@ use crate::components::change_log::ChangeLog;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
+use crate::components::profile_link::ProfileLink;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::cases::{self, Case, CaseStatus, CaseSummary};
@@ -847,7 +848,10 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                     <div class="flex items-start justify-between gap-3">
                         <div class="min-w-0">
                             <h2 class="text-lg font-semibold">{c.name.clone()}</h2>
-                            <p class="mt-1 text-sm text-slate-400">"Filed by " {owner_name}</p>
+                            <p class="mt-1 text-sm text-slate-400">
+                                "Filed by "
+                                <ProfileLink user_id=c.owner_id.clone() name=owner_name />
+                            </p>
                         </div>
                         <div class="flex shrink-0 items-center gap-2">
                             <span class=badge(status.badge_classes())>{status.label()}</span>

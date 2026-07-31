@@ -6,14 +6,15 @@ use crate::state::AppState;
 
 /// A top-navbar link that highlights when its route is active.
 #[component]
-fn NavLink(href: &'static str, label: &'static str) -> impl IntoView {
+fn NavLink(#[prop(into)] href: String, label: &'static str) -> impl IntoView {
     let location = use_location();
+    let match_on = href.clone();
     let active = move || {
         let path = location.pathname.get();
-        if href == "/" {
+        if match_on == "/" {
             path == "/"
         } else {
-            path.starts_with(href)
+            path.starts_with(&match_on)
         }
     };
 
@@ -48,6 +49,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let user = user.unwrap();
     let role = user.role;
     let user_name = user.full_name();
+    let my_profile_href = format!("/profile/{}", user.id);
     let role_label = role.label();
     let role_badge = format!(
         "rounded-full px-2 py-0.5 text-xs font-medium {}",
@@ -97,6 +99,12 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                                 <span class="text-sm font-medium">{user_name}</span>
                                 <span class=role_badge>{role_label}</span>
                             </div>
+                            <A
+                                href=my_profile_href.clone()
+                                attr:class="hidden sm:inline-flex rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
+                            >
+                                "My Profile"
+                            </A>
                             <button
                                 on:click=logout
                                 class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
@@ -132,6 +140,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                             ().into_any()
                         }}
                         <NavLink href="/settings" label="Settings" />
+                        <NavLink href=my_profile_href label="My Profile" />
                     </nav>
                 </div>
             </header>

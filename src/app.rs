@@ -11,6 +11,7 @@ use crate::pages::{
     inbox::InboxPage,
     login::LoginPage,
     mfa::MfaVerifyPage,
+    profile::ProfilePage,
     register::RegisterPage,
     reset_password::ResetPasswordPage,
     settings::SettingsPage,
@@ -45,6 +46,9 @@ fn HomeRedirect() -> impl IntoView {
     move || {
         if state.is_authenticated() {
             view! { <Redirect path="/cases" /> }.into_any()
+        } else if !state.auth_resolved.get() {
+            // Render nothing while page loads
+            ().into_any()
         } else {
             view! { <Redirect path="/login" /> }.into_any()
         }
@@ -87,6 +91,7 @@ pub fn App() -> impl IntoView {
     provide_meta_context();
     let state = AppState::new();
     provide_context(state);
+    state.restore_session();
 
     view! {
         <Stylesheet id="leptos" href="/pkg/mommys-heart-crm.css" />
@@ -106,6 +111,8 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/inbox") view=InboxPage />
                 <Route path=path!("/grants") view=GrantHomePage />
                 <Route path=path!("/settings") view=SettingsPage />
+                <Route path=path!("/profile") view=ProfilePage />
+                <Route path=path!("/profile/:id") view=ProfilePage />
                 <Route path=path!("/admin") view=AdminDashboardPage />
             </Routes>
         </Router>

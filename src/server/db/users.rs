@@ -3,6 +3,7 @@
 use crate::server::db::{audit, ids, pool};
 use crate::server_fns::pagination::Page;
 use crate::server_fns::capabilities::{CaseAssignment, CaseCapability};
+use crate::server_fns::profile::ProfileEdit;
 use crate::server_fns::users::{AccountRole, User};
 use std::collections::BTreeMap;
 
@@ -40,9 +41,14 @@ pub async fn count() -> Result<i64, sqlx::Error> {
     Ok(n)
 }
 
-/// Allocate a fresh user id (`u-<n>`).
-pub async fn next_id() -> Result<String, sqlx::Error> {
-    ids::next(pool(), "u").await
+/// Allocate a fresh user id.
+///
+/// Unlike most records, a user id is addressable in a URL (`/profile/<id>`), so
+/// it is drawn from the CSPRNG rather than the shared sequence: a sequential
+/// `u-5` would let anyone walk the whole user table and read off how many
+/// accounts exist and the order they signed up in.
+pub fn next_id() -> String {
+    ids::opaque("u")
 }
 
 /// Whether a user with this email (case-insensitive) already exists.
@@ -333,6 +339,85 @@ pub async fn assign_capabilities(
     .await
 }
 
+/// Whether `viewer_id` and `other_id` work at least one case together — the
+/// basis for profile visibility. A user counts as being on a case when they
+/// hold the `view_case` capability on it or own it. Stops at the first match
+/// rather than listing the cases, since only the yes/no answer is needed.
+pub async fn shares_case(viewer_id: &str, other_id: &str) -> Result<bool, sqlx::Error> {
+    // The capability slug is an internal constant (never user input), so
+    // interpolating it into the SQL is safe.
+    let on_case = format!(
+        "(c.owner_id = $ID OR EXISTS (SELECT 1 FROM case_assignments a \
+          WHERE a.case_id = c.id AND a.user_id = $ID AND a.capability = '{}'))",
+        CaseCapability::ViewCase.slug()
+    );
+    let sql = format!(
+        "SELECT 1 FROM cases c WHERE {} AND {} LIMIT 1",
+        on_case.replace("$ID", "$1"),
+        on_case.replace("$ID", "$2"),
+    );
+
+    let found: Option<i32> = sqlx::query_scalar(&sql)
+        .bind(viewer_id)
+        .bind(other_id)
+        .fetch_optional(pool())
+        .await?;
+    Ok(found.is_some())
+}
+
+/// Overwrite a user's own profile details, recording one audit entry per field
+/// that actually changed. No-ops for a user id that does not exist.
+pub async fn update_profile(
+    user_id: &str,
+    edit: &ProfileEdit,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let current: Option<(String, String, String, String)> = sqlx::query_as(
+        "SELECT first_name, last_name, phone, home_address FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool())
+    .await?;
+    let Some((first_name, last_name, phone, home_address)) = current else {
+        return Ok(());
+    };
+
+    sqlx::query(
+        "UPDATE users
+         SET first_name = $1, last_name = $2, phone = $3, home_address = $4
+         WHERE id = $5",
+    )
+    .bind(&edit.first_name)
+    .bind(&edit.last_name)
+    .bind(&edit.phone)
+    .bind(&edit.home_address)
+    .bind(user_id)
+    .execute(pool())
+    .await?;
+
+    let changes = [
+        ("first_name", first_name, &edit.first_name),
+        ("last_name", last_name, &edit.last_name),
+        ("phone", phone, &edit.phone),
+        ("home_address", home_address, &edit.home_address),
+    ];
+    for (field, old, new) in changes {
+        if &old != new {
+            audit::record(
+                pool(),
+                audit::Entity::User,
+                user_id,
+                actor,
+                field,
+                &old,
+                new,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 /// A single user by id, with their per-case capability assignments.
 pub async fn get(id: &str) -> Result<Option<User>, sqlx::Error> {
     let row = sqlx::query_as::<_, UserRow>(
@@ -519,7 +604,7 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
     let count_sql = format!("SELECT count(*) FROM users {FILTER}");
     let page_sql = format!(
         "SELECT id, first_name, last_name, email, phone, home_address, role
-         FROM users {FILTER} ORDER BY id LIMIT $2 OFFSET $3"
+         FROM users {FILTER} ORDER BY last_name, first_name, id LIMIT $2 OFFSET $3"
     );
 
     let total_fut = sqlx::query_scalar::<_, i64>(&count_sql)

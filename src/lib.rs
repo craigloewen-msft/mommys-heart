@@ -11,6 +11,7 @@ pub mod components {
     pub mod guard;
     pub mod layout;
     pub mod loading;
+    pub mod profile_link;
 }
 
 pub mod pages {
@@ -21,6 +22,7 @@ pub mod pages {
     pub mod inbox;
     pub mod login;
     pub mod mfa;
+    pub mod profile;
     pub mod register;
     pub mod reset_password;
     pub mod settings;
