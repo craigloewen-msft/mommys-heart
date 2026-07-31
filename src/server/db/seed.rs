@@ -3,8 +3,9 @@
 //! logins keep working. Runs only when the database is empty.
 
 use crate::server::auth::hash_password;
-use crate::server::db::{ids, pool, users};
+use crate::server::db::{channels, ids, messages, pool, users};
 use crate::server_fns::audit::ChangeLogEntry;
+use crate::server_fns::channels::{ChannelKind, DEFAULT_CHANNEL_NAME, VOLUNTEER_CHANNEL_NAME};
 use crate::server_fns::users::User;
 
 /// Seed the database from the mock fixtures, but only if there are no users yet.
@@ -27,7 +28,7 @@ pub async fn reseed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // resets the audit_log sequence so ids are reproducible across reseeds.
     sqlx::query(
         "TRUNCATE users, sessions, grants, cases, case_properties, case_notes,
-                  evidence, messages, case_assignments, audit_log
+                  evidence, case_channels, messages, case_assignments, audit_log
          RESTART IDENTITY CASCADE",
     )
     .execute(pool())
@@ -69,7 +70,8 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await?;
     }
 
-    // 3. Cases + notes, evidence, properties, and case audit log.
+    // 3. Cases + their default chat channels, notes, evidence, properties, and
+    //    case audit log.
     for c in crate::mockdata::cases() {
         sqlx::query("INSERT INTO cases (id, name, status, owner_id) VALUES ($1, $2, $3, $4)")
             .bind(&c.id)
@@ -78,6 +80,12 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .bind(&c.owner_id)
             .execute(pool)
             .await?;
+
+        // Same two channels every runtime-created case gets: the permanent
+        // volunteer-only back-channel plus "General".
+        let mut conn = pool.acquire().await?;
+        channels::create_defaults(&mut conn, &c.id).await?;
+        drop(conn);
 
         for (ord, p) in c.properties.iter().enumerate() {
             sqlx::query(
@@ -128,19 +136,35 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         insert_assignments(&u).await?;
     }
 
-    // 5. Case chat messages.
-    for m in crate::mockdata::messages() {
-        sqlx::query(
-            "INSERT INTO messages (id, case_id, author_id, author, body, sent_at)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+    // 5. Case chat messages, routed into the channel each one belongs to.
+    let mut channel_ids: std::collections::HashMap<(String, &'static str), String> =
+        std::collections::HashMap::new();
+    for sm in crate::mockdata::messages() {
+        let m = &sm.message;
+        let name = match sm.channel {
+            ChannelKind::Standard => DEFAULT_CHANNEL_NAME,
+            ChannelKind::VolunteerOnly => VOLUNTEER_CHANNEL_NAME,
+        };
+        let key = (m.case_id.clone(), name);
+        let channel_id = match channel_ids.get(&key) {
+            Some(id) => id.clone(),
+            None => {
+                let id = channels::id_for(&m.case_id, name)
+                    .await?
+                    .ok_or_else(|| format!("seed: case {} has no \"{name}\" channel", m.case_id))?;
+                channel_ids.insert(key, id.clone());
+                id
+            }
+        };
+        messages::insert(
+            &m.id,
+            &m.case_id,
+            &channel_id,
+            &m.author_id,
+            &m.author,
+            &m.body,
+            &m.sent_at,
         )
-        .bind(&m.id)
-        .bind(&m.case_id)
-        .bind(&m.author_id)
-        .bind(&m.author)
-        .bind(&m.body)
-        .bind(&m.sent_at)
-        .execute(pool)
         .await?;
     }
 
@@ -176,6 +200,7 @@ async fn advance_id_sequence() -> Result<(), sqlx::Error> {
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM cases),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM case_notes),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM evidence),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM case_channels),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM messages),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM audit_log)
          ) + 1, false)",

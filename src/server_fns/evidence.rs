@@ -229,6 +229,7 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
         user.full_name(),
         crate::server_fns::settings::NotificationKind::EvidenceChanged,
         format!("added evidence \"{display_name}\""),
+        crate::server::notifications::Audience::Everyone,
     );
     Ok(evidence_id)
 }
@@ -264,6 +265,7 @@ pub async fn delete_case_evidence(
         user.full_name(),
         crate::server_fns::settings::NotificationKind::EvidenceChanged,
         "removed a piece of evidence".to_string(),
+        crate::server::notifications::Audience::Everyone,
     );
     Ok(())
 }

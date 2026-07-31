@@ -1,9 +1,11 @@
 //! Cases and their sub-resources: notes, evidence, properties, and audit log.
 
-use crate::server::db::{audit, capabilities, evidence, ids, now_stamp, pool, users};
+use crate::server::db::{audit, capabilities, channels, evidence, ids, now_stamp, pool, users};
 use crate::server_fns::cases::{Case, CaseNote, CaseProperty, CaseStatus, CaseSummary};
+use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::pagination::Page;
 use crate::server_fns::capabilities::CaseCapability;
+use crate::server_fns::users::AccountRole;
 
 #[derive(sqlx::FromRow)]
 struct CaseRow {
@@ -52,12 +54,27 @@ impl SummaryRow {
 /// The `SELECT` list that projects a `cases` row (aliased `c`) into a
 /// [`SummaryRow`]: header fields, the owner's first/last name, and the case's
 /// message count. Callers append their own `WHERE`/`ORDER`/`LIMIT`.
-const SUMMARY_SELECT: &str = "SELECT c.id, c.name, c.status, c.owner_id,
+///
+/// `message_count_scope` is an SQL boolean spliced into the count subquery that
+/// decides whether the volunteer-only channel's messages are included. Passing
+/// `"true"` counts everything (admin-only lookups that never surface to a
+/// client); a viewer-scoped query passes a role test so a client's case list
+/// does not even leak *how many* private staff messages exist. It is always an
+/// internal constant or a bind-parameter reference, never user input.
+fn summary_select(message_count_scope: &str) -> String {
+    format!(
+        "SELECT c.id, c.name, c.status, c.owner_id,
         u.first_name AS owner_first_name,
         u.last_name AS owner_last_name,
-        (SELECT COUNT(*) FROM messages m WHERE m.case_id = c.id) AS message_count
+        (SELECT COUNT(*) FROM messages m
+          JOIN case_channels ch ON ch.id = m.channel_id
+          WHERE m.case_id = c.id
+            AND (({message_count_scope}) OR ch.kind <> '{restricted}')) AS message_count
  FROM cases c
- LEFT JOIN users u ON u.id = c.owner_id";
+ LEFT JOIN users u ON u.id = c.owner_id",
+        restricted = ChannelKind::VolunteerOnly.slug()
+    )
+}
 
 /// The owner id of a case, if it exists (cheap authorization lookup).
 pub async fn owner_id(case_id: &str) -> Result<Option<String>, sqlx::Error> {
@@ -118,10 +135,16 @@ pub async fn get_summaries_for_user(
         "SELECT count(*) FROM cases c WHERE {SEARCH} AND {}",
         scope.replace("$VIEWER", "$2")
     );
+    // The viewer's own account role decides whether the volunteer-only channel
+    // counts toward the message total they see; clients are never told it exists.
     let page_sql = format!(
-        "{SUMMARY_SELECT}
+        "{}
          WHERE {SEARCH} AND {}
          ORDER BY c.id LIMIT $2 OFFSET $3",
+        summary_select(&format!(
+            "(SELECT v.role FROM users v WHERE v.id = $4) <> '{}'",
+            AccountRole::Client.slug()
+        )),
         scope.replace("$VIEWER", "$4")
     );
 
@@ -176,9 +199,10 @@ pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, s
         ))
     };
     let rows = sqlx::query_as::<_, SummaryRow>(&format!(
-        "{SUMMARY_SELECT}
+        "{}
          WHERE $1::text IS NULL OR c.id ILIKE $1 OR c.name ILIKE $1
-         ORDER BY c.id LIMIT $2"
+         ORDER BY c.id LIMIT $2",
+        summary_select("true")
     ))
     .bind(&pattern)
     .bind(limit)
@@ -198,7 +222,8 @@ pub async fn get_summaries_by_ids(ids: &[String]) -> Result<Vec<CaseSummary>, sq
         return Ok(Vec::new());
     }
     let rows = sqlx::query_as::<_, SummaryRow>(&format!(
-        "{SUMMARY_SELECT} WHERE c.id = ANY($1) ORDER BY c.id"
+        "{} WHERE c.id = ANY($1) ORDER BY c.id",
+        summary_select("true")
     ))
     .bind(ids)
     .fetch_all(pool())
@@ -290,6 +315,11 @@ pub async fn create(
         .bind(owner_id)
         .execute(&mut *tx)
         .await?;
+
+    // Every case starts with its permanent volunteer-only back-channel and a
+    // "General" channel, created in the same transaction so a case can never
+    // exist without somewhere to chat.
+    channels::create_defaults(&mut *tx, &id).await?;
 
     let mut ord: i32 = 0;
     for (k, v) in properties {

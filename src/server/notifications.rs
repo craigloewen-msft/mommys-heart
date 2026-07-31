@@ -24,6 +24,13 @@ fn configured_email() -> Option<EmailConfig> {
     cfg.is_configured().then_some(cfg)
 }
 
+/// Who a case notification should reach.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Audience {
+    Everyone,
+    StaffOnly,
+}
+
 /// Fire a best-effort case notification to everyone assigned to the case (with
 /// `view_case`) except the actor, honoring each recipient's settings.
 ///
@@ -36,12 +43,15 @@ pub fn notify_case(
     actor_name: String,
     kind: NotificationKind,
     detail: String,
+    audience: Audience,
 ) {
     let Some(cfg) = configured_email() else {
         return;
     };
     tokio::spawn(async move {
-        let recipients = match settings::recipients_for_case(&case_id, &actor_id).await {
+        let staff_only = audience == Audience::StaffOnly;
+        let recipients = match settings::recipients_for_case(&case_id, &actor_id, staff_only).await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("notify_case: recipient lookup failed for {case_id}: {e}");

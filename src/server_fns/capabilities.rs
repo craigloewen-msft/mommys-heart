@@ -25,22 +25,17 @@ use serde::{Deserialize, Serialize};
 pub enum CaseCapability {
     /// See the case at all (list it, open it).
     ViewCase,
-    /// Change case status and properties.
     EditCase,
-    /// Add case notes.
     AddNotes,
-    /// See the case's evidence.
     ViewEvidence,
-    /// Add new evidence.
     UploadEvidence,
-    /// Remove evidence.
     DeleteEvidence,
-    /// Read and post in the case chat.
     SendMessages,
+    ManageChannels,
 }
 
 impl CaseCapability {
-    pub const ALL: [CaseCapability; 7] = [
+    pub const ALL: [CaseCapability; 8] = [
         CaseCapability::ViewCase,
         CaseCapability::EditCase,
         CaseCapability::AddNotes,
@@ -48,6 +43,7 @@ impl CaseCapability {
         CaseCapability::UploadEvidence,
         CaseCapability::DeleteEvidence,
         CaseCapability::SendMessages,
+        CaseCapability::ManageChannels,
     ];
 
     pub fn label(self) -> &'static str {
@@ -59,6 +55,7 @@ impl CaseCapability {
             CaseCapability::UploadEvidence => "Upload evidence",
             CaseCapability::DeleteEvidence => "Delete evidence",
             CaseCapability::SendMessages => "Send messages",
+            CaseCapability::ManageChannels => "Manage message channels",
         }
     }
 
@@ -71,6 +68,7 @@ impl CaseCapability {
             CaseCapability::UploadEvidence => "upload_evidence",
             CaseCapability::DeleteEvidence => "delete_evidence",
             CaseCapability::SendMessages => "send_messages",
+            CaseCapability::ManageChannels => "manage_channels",
         }
     }
 
@@ -85,6 +83,7 @@ impl CaseCapability {
     ///
     /// [`ViewCase`]: CaseCapability::ViewCase
     /// [`ViewEvidence`]: CaseCapability::ViewEvidence
+    /// [`ManageChannels`]: CaseCapability::ManageChannels
     pub fn requires(self) -> &'static [CaseCapability] {
         use CaseCapability::*;
         match self {
@@ -95,6 +94,11 @@ impl CaseCapability {
             UploadEvidence => &[ViewCase, ViewEvidence],
             DeleteEvidence => &[ViewCase, ViewEvidence, UploadEvidence],
             SendMessages => &[ViewCase],
+            ManageChannels => &[
+                ViewCase,
+                EditCase,
+                SendMessages,
+            ],
         }
     }
 }
@@ -128,7 +132,8 @@ pub enum CasePreset {
     Viewer,
     /// Day-to-day worker: view, notes, evidence upload, and chat (no delete/edit).
     Contributor,
-    /// Full control of the case.
+    /// Full control of the case — the "Full access" set, and the only preset
+    /// that carries [`CaseCapability::ManageChannels`].
     Manager,
 }
 

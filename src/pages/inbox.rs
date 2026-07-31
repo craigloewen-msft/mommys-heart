@@ -6,6 +6,9 @@ use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::components::profile_link::ProfileLink;
 use crate::server_fns::cases::{load_case_summaries_for_user, CaseSummary};
+use crate::server_fns::channels::{
+    create_channel, delete_channel, list_channels, normalize_channel_name, Channel,
+};
 use crate::server_fns::err_text;
 use crate::server_fns::message::Message;
 use crate::server_fns::capabilities::CaseCapability;
@@ -32,6 +35,22 @@ pub fn InboxPage() -> impl IntoView {
     let window = RwSignal::new(PAGE);
     let loading = RwSignal::new(false);
 
+    // Channels of whichever case is selected. They render as sub-items of that
+    // case in the list on the left, so the state lives here rather than in the
+    // chat pane.
+    let channels = RwSignal::new(Vec::<Channel>::new());
+    let active = RwSignal::new(None::<String>);
+    let loading_channels = RwSignal::new(false);
+    let channel_error = RwSignal::new(String::new());
+    // Bumped after saving channel edits to refetch the list.
+    let reload = RwSignal::new(0u32);
+    // Edit mode: staged additions/removals that only hit the server on "Save".
+    let editing = RwSignal::new(false);
+    let pending_adds = RwSignal::new(Vec::<String>::new());
+    let pending_deletes = RwSignal::new(Vec::<String>::new());
+    let draft = RwSignal::new(String::new());
+    let busy = RwSignal::new(false);
+
     let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
 
     // (Re)load the window whenever the debounced search or window size changes
@@ -53,6 +72,53 @@ pub fn InboxPage() -> impl IntoView {
             }
             loading.set(false);
         });
+    });
+
+    // Load the selected case's channels. Also runs when `reload` is bumped after
+    // saving channel edits. Switching cases drops any in-progress edit.
+    Effect::new(move |prev: Option<Option<String>>| {
+        reload.track();
+        let sel = selected.get();
+        let case_changed = prev.as_ref() != Some(&sel);
+        if case_changed {
+            editing.set(false);
+            pending_adds.set(Vec::new());
+            pending_deletes.set(Vec::new());
+            draft.set(String::new());
+            channel_error.set(String::new());
+            // Drop the previous case's channels so its list never shows up
+            // under a different case while the new one loads.
+            channels.set(Vec::new());
+            active.set(None);
+        }
+        let Some(case_id) = sel.clone() else {
+            channels.set(Vec::new());
+            active.set(None);
+            loading_channels.set(false);
+            return sel;
+        };
+        loading_channels.set(true);
+        spawn_local(async move {
+            match list_channels(case_id).await {
+                Ok(list) => {
+                    // Keep the open channel if it still exists, else fall back
+                    // to the first one the server sent.
+                    let keep = active
+                        .get_untracked()
+                        .filter(|id| list.iter().any(|c| &c.id == id))
+                        .or_else(|| list.first().map(|c| c.id.clone()));
+                    active.set(keep);
+                    channels.set(list);
+                }
+                Err(e) => {
+                    channels.set(Vec::new());
+                    active.set(None);
+                    channel_error.set(err_text(e));
+                }
+            }
+            loading_channels.set(false);
+        });
+        sel
     });
 
     require_login(state, move || {
@@ -88,20 +154,28 @@ pub fn InboxPage() -> impl IntoView {
                 .into_iter()
                 .map(|c| {
                     let case_id = c.id.clone();
-                    let is_selected = {
-                        let case_id = case_id.clone();
-                        move || selected.get().as_deref() == Some(case_id.as_str())
-                    };
+                    // `StoredValue` keeps the id `Copy`-accessible so it can be
+                    // read from more than one reactive closure.
+                    let stored_id = StoredValue::new(case_id.clone());
+                    let is_selected =
+                        move || stored_id.with_value(|id| selected.get().as_deref() == Some(id.as_str()));
                     let count = c.message_count;
                     let name = title_for(&c);
+                    let can_manage = c.capabilities.contains(&CaseCapability::ManageChannels);
                     let select = {
                         let case_id = case_id.clone();
                         move |_| {
-                            selected.set(Some(case_id.clone()));
-                            viewing.set(true);
+                            // Selecting a case only expands its channels; the
+                            // thread opens once a channel is picked (matters on
+                            // mobile, where the two panes are exclusive).
+                            if selected.get_untracked().as_deref() != Some(case_id.as_str()) {
+                                selected.set(Some(case_id.clone()));
+                            }
                         }
                     };
+                    let nav_case_id = case_id.clone();
                     view! {
+                        <div class="space-y-1">
                         <button
                             on:click=select
                             class=move || {
@@ -118,6 +192,24 @@ pub fn InboxPage() -> impl IntoView {
                                 <span class="shrink-0 text-xs text-slate-500">{count} " msgs"</span>
                             </div>
                         </button>
+                        <Show when=is_selected>
+                            <ChannelNav
+                                case_id=nav_case_id.clone()
+                                can_manage=can_manage
+                                channels=channels
+                                active=active
+                                viewing=viewing
+                                loading=loading_channels
+                                error=channel_error
+                                editing=editing
+                                pending_adds=pending_adds
+                                pending_deletes=pending_deletes
+                                draft=draft
+                                busy=busy
+                                reload=reload
+                            />
+                        </Show>
+                        </div>
                     }
                     .into_any()
                 })
@@ -161,7 +253,16 @@ pub fn InboxPage() -> impl IntoView {
                     Some(c) => {
                         let title = title_for(&c);
                         let can_send = c.capabilities.contains(&CaseCapability::SendMessages);
-                        view! { <CaseChat case_id=c.id case_name=title can_send=can_send /> }.into_any()
+                        view! {
+                            <CaseChat
+                                case_name=title
+                                can_send=can_send
+                                channels=channels
+                                active=active
+                                loading_channels=loading_channels
+                            />
+                        }
+                        .into_any()
                     }
                     None => {
                         view! { <p class="text-sm text-slate-400">"Case not found."</p> }.into_any()
@@ -211,13 +312,421 @@ pub fn InboxPage() -> impl IntoView {
     })
 }
 
-/// The chat thread for a single case.
+/// The [`Channel`] sub-navigation shown under the selected case in the list on
+/// the left. Picking a channel opens its thread in the chat pane.
+///
+/// Every case has a permanent "Volunteer only" channel plus one or more shared
+/// channels (starting with "General"). The server decides what lands here — a
+/// client's `list_channels` response simply never contains the volunteer-only
+/// channel — so this component renders whatever it is given rather than
+/// filtering client-side.
+///
+/// `can_manage` (the `ManageChannels` capability, held only by "Full access")
+/// is what reveals the "Edit" control. Editing stages additions and removals
+/// locally: nothing is sent until "Save", and "Cancel" throws the draft away.
+/// Every call is re-checked server-side; the flag only shapes the UI.
+#[component]
+fn ChannelNav(
+    case_id: String,
+    can_manage: bool,
+    channels: RwSignal<Vec<Channel>>,
+    active: RwSignal<Option<String>>,
+    /// Mobile only: set when a channel is picked so the thread takes over the
+    /// screen. Desktop shows both panes regardless.
+    viewing: RwSignal<bool>,
+    loading: RwSignal<bool>,
+    error: RwSignal<String>,
+    editing: RwSignal<bool>,
+    pending_adds: RwSignal<Vec<String>>,
+    pending_deletes: RwSignal<Vec<String>>,
+    draft: RwSignal<String>,
+    busy: RwSignal<bool>,
+    reload: RwSignal<u32>,
+) -> impl IntoView {
+    // `StoredValue` keeps the case id `Copy`-accessible so the handlers below
+    // stay `FnMut` inside reactive closures.
+    let case_id = StoredValue::new(case_id);
+
+    let is_staged_delete = move |id: &str| pending_deletes.get().iter().any(|d| d == id);
+
+    let toggle_delete = move |id: String| {
+        pending_deletes.update(|list| {
+            if let Some(pos) = list.iter().position(|d| d == &id) {
+                list.remove(pos);
+            } else {
+                list.push(id);
+            }
+        });
+    };
+
+    // Stage the typed name after the same validation the server applies, so
+    // obvious mistakes are caught before "Save". An empty draft is a no-op, so
+    // "Save" can call this too and never silently drop a half-typed name.
+    let try_stage_draft = move || -> Result<(), String> {
+        let raw = draft.get_untracked();
+        if raw.trim().is_empty() {
+            return Ok(());
+        }
+        let name = normalize_channel_name(&raw)?;
+        let taken = channels
+            .get_untracked()
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(&name))
+            || pending_adds
+                .get_untracked()
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(&name));
+        if taken {
+            return Err(format!("This case already has a \"{name}\" channel."));
+        }
+        pending_adds.update(|list| list.push(name));
+        draft.set(String::new());
+        Ok(())
+    };
+
+    let commit_draft = move || match try_stage_draft() {
+        Ok(()) => error.set(String::new()),
+        Err(msg) => error.set(msg),
+    };
+
+    let cancel = move |_| {
+        editing.set(false);
+        pending_adds.set(Vec::new());
+        pending_deletes.set(Vec::new());
+        draft.set(String::new());
+        error.set(String::new());
+    };
+
+    // Apply the staged edits. Anything that fails stays staged so the user can
+    // see what went wrong and retry without retyping it.
+    let save = move |_| {
+        if let Err(msg) = try_stage_draft() {
+            error.set(msg);
+            return;
+        }
+        let case_id = case_id.get_value();
+        let adds = pending_adds.get_untracked();
+        let deletes = pending_deletes.get_untracked();
+        if adds.is_empty() && deletes.is_empty() {
+            editing.set(false);
+            error.set(String::new());
+            return;
+        }
+        busy.set(true);
+        spawn_local(async move {
+            let mut failed_adds = Vec::new();
+            let mut failed_deletes = Vec::new();
+            let mut first_error = None::<String>;
+
+            for name in adds {
+                if let Err(e) = create_channel(case_id.clone(), name.clone()).await {
+                    first_error.get_or_insert_with(|| err_text(e));
+                    failed_adds.push(name);
+                }
+            }
+            for id in deletes {
+                if let Err(e) = delete_channel(id.clone()).await {
+                    first_error.get_or_insert_with(|| err_text(e));
+                    failed_deletes.push(id);
+                } else if active.get_untracked().as_deref() == Some(id.as_str()) {
+                    // Drop the selection so the refetch falls back to the first
+                    // remaining channel.
+                    active.set(None);
+                }
+            }
+
+            pending_adds.set(failed_adds);
+            pending_deletes.set(failed_deletes);
+            match first_error {
+                Some(msg) => error.set(msg),
+                None => {
+                    error.set(String::new());
+                    editing.set(false);
+                }
+            }
+            busy.set(false);
+            reload.update(|r| *r += 1);
+        });
+    };
+
+    let rows = move || {
+        let list = channels.get();
+        if list.is_empty() {
+            let text = if loading.get() {
+                "Loading channels\u{2026}"
+            } else {
+                "This case has no channels."
+            };
+            return view! { <p class="px-2 py-1 text-xs text-slate-500">{text}</p> }.into_any();
+        }
+        list.into_iter()
+            .map(|c| {
+                let id = StoredValue::new(c.id.clone());
+                let is_active =
+                    move || id.with_value(|id| active.get().as_deref() == Some(id.as_str()));
+                let staged = move || id.with_value(|id| is_staged_delete(id));
+                let restricted = c.kind.is_restricted();
+                let select = move |_| {
+                    active.set(Some(id.get_value()));
+                    viewing.set(true);
+                };
+                // The volunteer-only channel is permanent, so its remove control
+                // is never rendered (the server refuses it either way).
+                let remove = if c.is_deletable() {
+                    view! {
+                        <Show when=move || editing.get()>
+                            <button
+                                on:click=move |_| toggle_delete(id.get_value())
+                                prop:disabled=move || busy.get()
+                                title=move || {
+                                    if staged() { "Keep channel" } else { "Remove channel" }
+                                }
+                                class="shrink-0 rounded px-1.5 text-xs font-semibold text-slate-500 hover:text-rose-400 disabled:opacity-50"
+                            >
+                                {move || if staged() { "\u{21ba}" } else { "\u{00d7}" }}
+                            </button>
+                        </Show>
+                    }
+                    .into_any()
+                } else {
+                    ().into_any()
+                };
+                let count = c.message_count;
+                let name = c.name.clone();
+                view! {
+                    <div class="flex items-center gap-0.5">
+                        <button
+                            on:click=select
+                            class=move || {
+                                let base = "flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors";
+                                if staged() {
+                                    format!("{base} text-slate-500 line-through")
+                                } else if is_active() {
+                                    format!("{base} bg-primary-500/15 font-semibold text-primary-300")
+                                } else {
+                                    format!("{base} text-slate-300 hover:bg-slate-800")
+                                }
+                            }
+                        >
+                            <span class="shrink-0 text-xs text-slate-500">
+                                {if restricted { "\u{1f512}" } else { "#" }}
+                            </span>
+                            <span class="min-w-0 truncate">{name}</span>
+                            <span class="ml-auto shrink-0 text-xs text-slate-500">{count}</span>
+                        </button>
+                        {remove}
+                    </div>
+                }
+                .into_any()
+            })
+            .collect_view()
+            .into_any()
+    };
+
+    // Channels queued for creation, shown alongside the real ones until saved.
+    let staged_rows = move || {
+        if !editing.get() {
+            return ().into_any();
+        }
+        pending_adds
+            .get()
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| {
+                view! {
+                    <div class="flex items-center gap-0.5">
+                        <span class="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-slate-400">
+                            <span class="shrink-0 text-xs text-slate-500">"#"</span>
+                            <span class="min-w-0 truncate">{name}</span>
+                            <span class="ml-auto shrink-0 text-xs text-slate-500">"new"</span>
+                        </span>
+                        <button
+                            on:click=move |_| pending_adds.update(|list| { list.remove(i); })
+                            prop:disabled=move || busy.get()
+                            title="Discard new channel"
+                            class="shrink-0 rounded px-1.5 text-xs font-semibold text-slate-500 hover:text-rose-400 disabled:opacity-50"
+                        >
+                            "\u{00d7}"
+                        </button>
+                    </div>
+                }
+                .into_any()
+            })
+            .collect_view()
+            .into_any()
+    };
+
+    let controls = move || {
+        if !can_manage {
+            return ().into_any();
+        }
+        if !editing.get() {
+            return view! {
+                <button
+                    on:click=move |_| {
+                        editing.set(true);
+                        error.set(String::new());
+                    }
+                    class="mt-1 rounded-lg px-2 py-1 text-xs font-medium text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+                >
+                    "Edit channels"
+                </button>
+            }
+            .into_any();
+        }
+        view! {
+            <div class="mt-1 space-y-2">
+                <div class="flex gap-1">
+                    <input
+                        class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none"
+                        placeholder="New channel name"
+                        prop:value=move || draft.get()
+                        prop:disabled=move || busy.get()
+                        on:input=move |ev| draft.set(event_target_value(&ev))
+                        on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                            if ev.key() == "Enter" {
+                                ev.prevent_default();
+                                commit_draft();
+                            }
+                        }
+                    />
+                    <button
+                        on:click=move |_| commit_draft()
+                        prop:disabled=move || busy.get() || draft.get().trim().is_empty()
+                        class="shrink-0 rounded-lg border border-dashed border-slate-600 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                    >
+                        "+ Add"
+                    </button>
+                </div>
+                <div class="flex gap-1">
+                    <button
+                        on:click=save
+                        prop:disabled=move || busy.get()
+                        class="rounded-lg bg-primary-500 px-2.5 py-1 text-xs font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                    >
+                        {move || if busy.get() { "Saving\u{2026}" } else { "Save" }}
+                    </button>
+                    <button
+                        on:click=cancel
+                        prop:disabled=move || busy.get()
+                        class="rounded-lg border border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                    >
+                        "Cancel"
+                    </button>
+                </div>
+            </div>
+        }
+        .into_any()
+    };
+
+    view! {
+        <div class="ml-3 border-l border-slate-800 pl-2">
+            <p class="px-2 pb-0.5 pt-1 text-[0.7rem] font-semibold uppercase tracking-wide text-slate-500">
+                "Channels"
+            </p>
+            {rows}
+            {staged_rows}
+            {controls}
+            <Show when=move || !error.get().is_empty()>
+                <p class="px-2 py-1 text-xs text-rose-300">{move || error.get()}</p>
+            </Show>
+        </div>
+    }
+    .into_any()
+}
+
+/// A single case's chat: the message thread for whichever channel is open in
+/// the case list on the left.
+///
+/// `can_send` gates posting and is re-checked server-side on every call; the
+/// flag only shapes the UI.
+#[component]
+fn CaseChat(
+    case_name: String,
+    can_send: bool,
+    channels: RwSignal<Vec<Channel>>,
+    active: RwSignal<Option<String>>,
+    loading_channels: RwSignal<bool>,
+) -> impl IntoView {
+    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+
+    let active_channel = move || {
+        let id = active.get()?;
+        channels.get().into_iter().find(|c| c.id == id)
+    };
+
+    let subtitle = move || match active_channel() {
+        Some(c) => {
+            let prefix = if c.kind.is_restricted() {
+                "\u{1f512} "
+            } else {
+                "# "
+            };
+            format!("{prefix}{}", c.name)
+        }
+        None => "No channel open".to_string(),
+    };
+
+    // Remounts whenever the open channel changes, so each channel gets a fresh
+    // thread (its own pagination window and scroll position) instead of one
+    // shared message list.
+    let thread = move || match active_channel() {
+        Some(c) => {
+            let restricted = c.kind.is_restricted();
+            view! {
+                <ChannelThread
+                    channel_id=c.id
+                    channel_name=c.name
+                    restricted=restricted
+                    can_send=can_send
+                    input_class=input_class
+                />
+            }
+            .into_any()
+        }
+        None if loading_channels.get() => {
+            view! {
+                <div class="flex-1 p-4">
+                    <Loading label="Loading channels\u{2026}" />
+                </div>
+            }
+            .into_any()
+        }
+        None => view! {
+            <div class="flex-1 p-8 text-center text-sm text-slate-500">
+                "This case has no channels to show."
+            </div>
+        }
+        .into_any(),
+    };
+
+    view! {
+        <div class="flex h-[70dvh] flex-col rounded-xl border border-slate-800 bg-slate-900 lg:h-[calc(100dvh-12rem)]">
+            <div class="border-b border-slate-800 p-4">
+                <h2 class="truncate text-lg font-semibold">{case_name}</h2>
+                <p class="mt-0.5 truncate text-sm text-slate-500">{subtitle}</p>
+            </div>
+            {thread}
+        </div>
+    }
+    .into_any()
+}
+
+/// The message thread for one channel.
 ///
 /// Messages are paginated newest-first: the thread opens scrolled to the latest
 /// message and a "Load earlier messages" button at the top pages older messages
 /// in on demand, so a long conversation never loads all at once.
 #[component]
-fn CaseChat(case_id: String, case_name: String, can_send: bool) -> impl IntoView {
+fn ChannelThread(
+    channel_id: String,
+    channel_name: String,
+    /// Whether this is the volunteer-only channel, which gets a visible banner
+    /// so staff always know clients cannot read what they post here.
+    restricted: bool,
+    can_send: bool,
+    input_class: &'static str,
+) -> impl IntoView {
     let state = expect_context::<AppState>();
     let me = state
         .current_user_summary
@@ -225,7 +734,7 @@ fn CaseChat(case_id: String, case_name: String, can_send: bool) -> impl IntoView
         .map(|u| u.id)
         .unwrap_or_default();
 
-    // This case's chat messages live here — loaded on demand for the open case.
+    // This channel's messages live here — loaded on demand for the open channel.
     let messages = RwSignal::new(Vec::<Message>::new());
     // Tracks the in-flight fetch of the newest messages so the thread can show a
     // loading indicator instead of a premature "no messages" state.
@@ -250,13 +759,15 @@ fn CaseChat(case_id: String, case_name: String, can_send: bool) -> impl IntoView
     // (Re)load the newest `limit` messages whenever the window grows. Browser
     // only; the SSR branch errors and is ignored.
     {
-        let case_id = case_id.clone();
+        let channel_id = channel_id.clone();
         Effect::new(move |_| {
             let lim = limit.get();
-            let case_id = case_id.clone();
+            let channel_id = channel_id.clone();
             loading.set(true);
             spawn_local(async move {
-                if let Ok(page) = crate::server_fns::cases::list_messages_page(case_id, lim).await {
+                if let Ok(page) =
+                    crate::server_fns::cases::list_messages_page(channel_id, lim).await
+                {
                     messages.set(page.items);
                     total.set(page.total);
                 }
@@ -278,12 +789,12 @@ fn CaseChat(case_id: String, case_name: String, can_send: bool) -> impl IntoView
     let error = RwSignal::new(String::new());
 
     let send = {
-        let case_id = case_id.clone();
+        let channel_id = channel_id.clone();
         move |_| {
-            let case_id = case_id.clone();
+            let channel_id = channel_id.clone();
             let body_val = body.get_untracked();
             spawn_local(async move {
-                match crate::server_fns::cases::send_message(case_id, body_val).await {
+                match crate::server_fns::cases::send_message(channel_id, body_val).await {
                     Ok(msg) => {
                         messages.update(|all| all.push(msg));
                         body.set(String::new());
@@ -370,14 +881,22 @@ fn CaseChat(case_id: String, case_name: String, can_send: bool) -> impl IntoView
         }
     };
 
-    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+    let banner = if restricted {
+        view! {
+            <p class="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs font-medium text-amber-300">
+                "\u{1f512} Private channel \u{2014} only volunteers and admins on this case can see these messages."
+            </p>
+        }
+        .into_any()
+    } else {
+        ().into_any()
+    };
+
+    let placeholder = format!("Message {channel_name}");
 
     view! {
-        <div class="flex h-[70dvh] flex-col rounded-xl border border-slate-800 bg-slate-900 lg:h-[calc(100dvh-12rem)]">
-            <div class="border-b border-slate-800 p-4">
-                <h2 class="truncate text-lg font-semibold">{case_name}</h2>
-                <p class="text-xs text-slate-500">"Case chat"</p>
-            </div>
+        <div class="flex min-h-0 flex-1 flex-col">
+            {banner}
             <div node_ref=scroll_ref class="flex-1 space-y-3 overflow-y-auto p-4">
                 {messages_view}
             </div>
@@ -391,7 +910,7 @@ fn CaseChat(case_id: String, case_name: String, can_send: bool) -> impl IntoView
                             <div class="flex gap-2">
                                 <input
                                     class=input_class
-                                    placeholder="Type a message"
+                                    placeholder=placeholder
                                     prop:value=move || body.get()
                                     on:input=move |ev| body.set(event_target_value(&ev))
                                 />
