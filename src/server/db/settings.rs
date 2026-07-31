@@ -6,6 +6,7 @@
 
 use crate::server::db::pool;
 use crate::server_fns::settings::{NotificationSettings, UserSettings};
+use crate::server_fns::users::AccountRole;
 
 /// A user who should receive a case notification: their email + display name and
 /// the notification settings (the notifications part of their [`UserSettings`])
@@ -105,8 +106,9 @@ pub async fn upsert_settings(user_id: &str, settings: &UserSettings) -> Result<(
 pub async fn recipients_for_case(
     case_id: &str,
     exclude_user_id: &str,
+    staff_only: bool,
 ) -> Result<Vec<Recipient>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, RecipientRow>(
+    let rows = sqlx::query_as::<_, RecipientRow>(&format!(
         "SELECT u.email, u.first_name, u.last_name,
                 COALESCE(s.notification_emails_enabled,   true),
                 COALESCE(s.notification_new_message,      true),
@@ -120,10 +122,13 @@ pub async fn recipients_for_case(
          WHERE a.case_id = $1
            AND a.capability = 'view_case'
            AND a.user_id <> $2
-           AND u.email <> ''",
-    )
+           AND u.email <> ''
+           AND (NOT $3 OR u.role <> '{client}')",
+        client = AccountRole::Client.slug()
+    ))
     .bind(case_id)
     .bind(exclude_user_id)
+    .bind(staff_only)
     .fetch_all(pool())
     .await?;
     Ok(rows.into_iter().map(recipient_from_row).collect())

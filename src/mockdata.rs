@@ -13,6 +13,7 @@
 
 use crate::server_fns::capabilities::{CaseAssignment, CasePreset};
 use crate::server_fns::cases::{Case, CaseNote, CaseProperty, CaseStatus};
+use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::evidence::Evidence;
 use crate::server_fns::grants::Grant;
 use crate::server_fns::message::Message;
@@ -302,6 +303,29 @@ const MESSAGES: &[(u32, &str, &str, &str)] = &[
     (8, "Noah Kim", "That works for me, thank you.", "2026-06-02 08:30"),
 ];
 
+/// Messages for each case's **volunteer-only** channel, in the same
+/// `(case number, author display name, body, sent_at)` shape as [`MESSAGES`].
+/// Authors here are only ever volunteers or admins — a client can neither read
+/// nor post in this channel — so the fixture doubles as a check that the
+/// restricted thread really is staff-only.
+const VOLUNTEER_MESSAGES: &[(u32, &str, &str, &str)] = &[
+    // c-1 Nguyen custody matter
+    (1, "Dana Patel", "Heads up: Jamie is anxious about the hearing date. Let's keep updates gentle.", "2026-02-03 09:20"),
+    (1, "Maria Nguyen", "Agreed. I'll review the filing before we share anything with the client.", "2026-02-04 08:10"),
+    // c-3 Silva benefits appeal
+    (3, "James Garcia", "Internal note: the first packet was rejected on a technicality; refiled today.", "2026-01-10 16:05"),
+    // c-6 Rivera protective order
+    (6, "Aisha Okafor", "Safety planning call scheduled with the shelter coordinator.", "2026-05-03 09:45"),
+    (6, "Dana Patel", "Noted. I'll cover the filing so Aisha can stay on the safety plan.", "2026-05-03 10:30"),
+];
+
+/// A seeded chat message together with which of its case's two default channels
+/// it belongs to.
+pub struct SeedMessage {
+    pub message: Message,
+    pub channel: ChannelKind,
+}
+
 fn prop(key: &str, value: &str) -> CaseProperty {
     CaseProperty {
         key: key.into(),
@@ -381,18 +405,32 @@ fn user_id_for_name(name: &str) -> String {
 
 /// The case chat messages, hand-authored per case so every thread is a coherent
 /// conversation between the case's assigned users. Emitted in send order (the DB
-/// preserves insertion order via its `seq` column).
-pub fn messages() -> Vec<Message> {
+/// preserves insertion order via its `seq` column), with each message tagged
+/// with the channel it belongs to: the shared "General" channel or the private
+/// volunteer-only one.
+pub fn messages() -> Vec<SeedMessage> {
     MESSAGES
         .iter()
+        .map(|m| (ChannelKind::Standard, m))
+        .chain(
+            VOLUNTEER_MESSAGES
+                .iter()
+                .map(|m| (ChannelKind::VolunteerOnly, m)),
+        )
         .enumerate()
-        .map(|(idx, (case, author, body, sent_at))| Message {
-            id: format!("m-{}", idx + 1),
-            case_id: case_id(*case),
-            author_id: user_id_for_name(author),
-            author: (*author).into(),
-            body: (*body).into(),
-            sent_at: (*sent_at).into(),
+        .map(|(idx, (channel, (case, author, body, sent_at)))| SeedMessage {
+            message: Message {
+                id: format!("m-{}", idx + 1),
+                case_id: case_id(*case),
+                // Resolved to the real channel row id by the seed, which is the
+                // only place the two default channels' ids exist.
+                channel_id: String::new(),
+                author_id: user_id_for_name(author),
+                author: (*author).into(),
+                body: (*body).into(),
+                sent_at: (*sent_at).into(),
+            },
+            channel,
         })
         .collect()
 }

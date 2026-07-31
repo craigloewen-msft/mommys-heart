@@ -238,6 +238,7 @@ pub async fn set_case_status(case_id: String, status: CaseStatus) -> Result<(), 
         user.full_name(),
         crate::server_fns::settings::NotificationKind::CaseData,
         format!("changed the status to \"{}\"", status.label()),
+        crate::server::notifications::Audience::Everyone,
     );
     Ok(())
 }
@@ -264,6 +265,7 @@ pub async fn set_case_name(case_id: String, name: String) -> Result<(), ServerFn
         user.full_name(),
         crate::server_fns::settings::NotificationKind::CaseData,
         format!("renamed the case to \"{name}\""),
+        crate::server::notifications::Audience::Everyone,
     );
     Ok(())
 }
@@ -295,6 +297,7 @@ pub async fn set_case_owner(case_id: String, owner_id: String) -> Result<(), Ser
         user.full_name(),
         crate::server_fns::settings::NotificationKind::CaseData,
         "changed the case owner".to_string(),
+        crate::server::notifications::Audience::Everyone,
     );
     Ok(())
 }
@@ -320,6 +323,7 @@ pub async fn set_case_properties(
         user.full_name(),
         crate::server_fns::settings::NotificationKind::CaseData,
         "updated the case properties".to_string(),
+        crate::server::notifications::Audience::Everyone,
     );
     Ok(())
 }
@@ -346,57 +350,73 @@ pub async fn add_case_note(case_id: String, body: String) -> Result<(), ServerFn
         user.full_name(),
         crate::server_fns::settings::NotificationKind::NoteAdded,
         "added a note".to_string(),
+        crate::server::notifications::Audience::Everyone,
     );
     Ok(())
 }
 
-/// One page of a case's chat: the most recent `limit` messages (oldest-first)
-/// plus the thread's total message count (requires the `SendMessages`
-/// capability). Backs the chat's "Load more" pagination.
+/// One page of a chat **channel**: the most recent `limit` messages
+/// (oldest-first) plus the channel's total message count. Backs the chat's
+/// "Load more" pagination.
 #[server(prefix = "/api")]
 pub async fn list_messages_page(
-    case_id: String,
+    channel_id: String,
     limit: i64,
 ) -> Result<Page<Message>, ServerFnError> {
     use crate::server::db::messages;
-    use crate::server::permissions::require_user;
+    use crate::server::permissions::{require_channel, require_user};
 
-    // Require user for authentication purposes
-    let _user = require_user().await?;
-    messages::page(&case_id, limit)
+    let user = require_user().await?;
+    require_channel(&user, &channel_id, CaseCapability::ViewCase).await?;
+    messages::page(&channel_id, limit)
         .await
         .map_err(ServerFnError::new)
 }
 
-/// Post a message to a case's chat as the signed-in user (requires the
-/// `SendMessages` capability). Returns the stored message.
+/// Post a message to a chat channel as the signed-in user
 #[server(prefix = "/api")]
-pub async fn send_message(case_id: String, body: String) -> Result<Message, ServerFnError> {
+pub async fn send_message(channel_id: String, body: String) -> Result<Message, ServerFnError> {
     use crate::server::db::messages;
-    use crate::server::permissions::{require_cap, require_user};
+    use crate::server::permissions::{require_channel, require_user};
     use crate::server_fns::capabilities::CaseCapability;
+    use crate::server_fns::channels::ChannelKind;
 
     let user = require_user().await?;
     let body = body.trim().to_string();
     if body.is_empty() {
         return Err(ServerFnError::new("Message cannot be empty."));
     }
-    require_cap(&user, &case_id, CaseCapability::SendMessages).await?;
-    let message = messages::create(&case_id, &user.id, &user.full_name(), &body)
-        .await
-        .map_err(ServerFnError::new)?;
+    let channel = require_channel(&user, &channel_id, CaseCapability::SendMessages).await?;
+    let message = messages::create(
+        &channel.case_id,
+        &channel.id,
+        &user.id,
+        &user.full_name(),
+        &body,
+    )
+    .await
+    .map_err(ServerFnError::new)?;
     let preview: String = body.chars().take(80).collect();
-    let detail = if body.chars().count() > 80 {
-        format!("posted a new message: \"{preview}…\"")
+    let ellipsis = if body.chars().count() > 80 { "…" } else { "" };
+    let detail = format!(
+        "posted a new message in \"{}\": \"{preview}{ellipsis}\"",
+        channel.name
+    );
+    // A volunteer-only message must never be summarized into a client's inbox,
+    // so the notification audience is narrowed to the same people who can read
+    // the channel.
+    let audience = if channel.kind == ChannelKind::VolunteerOnly {
+        crate::server::notifications::Audience::StaffOnly
     } else {
-        format!("posted a new message: \"{preview}\"")
+        crate::server::notifications::Audience::Everyone
     };
     crate::server::notifications::notify_case(
-        case_id,
+        channel.case_id,
         user.id.clone(),
         user.full_name(),
         crate::server_fns::settings::NotificationKind::NewMessage,
         detail,
+        audience,
     );
     Ok(message)
 }

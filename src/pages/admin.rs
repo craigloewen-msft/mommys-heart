@@ -549,13 +549,36 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
                                 let checkboxes = CaseCapability::ALL
                                     .into_iter()
                                     .map(|cap| {
+                                        let unmet = move || {
+                                            let held = row_caps.get();
+                                            cap.requires().iter().any(|r| !held.contains(r))
+                                        };
+                                        let title = move || {
+                                            let held = row_caps.get();
+                                            match cap
+                                                .requires()
+                                                .iter()
+                                                .find(|r| !held.contains(r))
+                                            {
+                                                Some(missing) => format!(
+                                                    "Requires \"{}\" first.",
+                                                    missing.label()
+                                                ),
+                                                None => cap.label().to_string(),
+                                            }
+                                        };
                                         view! {
-                                            <label class="inline-flex items-center gap-1.5 text-xs text-slate-300">
+                                            <label
+                                                class="inline-flex items-center gap-1.5 text-xs"
+                                                class=("text-slate-300", move || !unmet())
+                                                class=("text-slate-600", unmet)
+                                                title=title
+                                            >
                                                 <input
                                                     type="checkbox"
                                                     class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-950"
                                                     prop:checked=move || row_caps.get().contains(&cap)
-                                                    prop:disabled=move || row_removed.get()
+                                                    prop:disabled=move || row_removed.get() || unmet()
                                                     on:change=move |ev| {
                                                         let enabled = event_target_checked(&ev);
                                                         row_caps.update(|c| {
@@ -565,6 +588,18 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
                                                                 }
                                                             } else {
                                                                 c.retain(|x| *x != cap);
+                                                                loop {
+                                                                    let held = c.clone();
+                                                                    let before = c.len();
+                                                                    c.retain(|x| {
+                                                                        x.requires()
+                                                                            .iter()
+                                                                            .all(|r| held.contains(r))
+                                                                    });
+                                                                    if c.len() == before {
+                                                                        break;
+                                                                    }
+                                                                }
                                                             }
                                                         });
                                                     }
