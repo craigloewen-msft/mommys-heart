@@ -108,12 +108,12 @@ pub fn normalize_channel_name(name: &str) -> Result<String, String> {
 #[server(prefix = "/api")]
 pub async fn list_channels(case_id: String) -> Result<Vec<Channel>, ServerFnError> {
     use crate::server::db::channels;
-    use crate::server::permissions::{require_cap, require_user, sees_restricted_channels};
+    use crate::server::permissions::{require_cap, require_user, has_volunteer_access};
     use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::ViewCase).await?;
-    channels::list_visible(&case_id, sees_restricted_channels(&user))
+    channels::list_visible(&case_id, has_volunteer_access(&user))
         .await
         .map_err(ServerFnError::new)
 }

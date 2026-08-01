@@ -11,12 +11,14 @@
 //! running app creates get their ids from the database sequence, which starts
 //! well above these, so the two never collide.
 
+use crate::helpers::visibility::Visibility;
 use crate::server_fns::capabilities::{CaseAssignment, CasePreset};
-use crate::server_fns::cases::{Case, CaseNote, CaseProperty, CaseStatus};
+use crate::server_fns::cases::{Case, CaseNote, CaseStatus};
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::evidence::Evidence;
 use crate::server_fns::grants::Grant;
 use crate::server_fns::message::Message;
+use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::users::{AccountRole, User};
 
 /// Organization display name.
@@ -340,10 +342,7 @@ pub struct SeedMessage {
 }
 
 fn prop(key: &str, value: &str) -> CaseProperty {
-    CaseProperty {
-        key: key.into(),
-        value: value.into(),
-    }
+    CaseProperty::new(key, value)
 }
 
 /// The cases, each owned by one of the users and carrying its notes, evidence,
@@ -386,6 +385,8 @@ pub fn cases() -> Vec<Case> {
                         size_bytes: 0,
                         sha256: String::new(),
                         has_file: false,
+                        section: String::new(),
+                        visibility: Visibility::Shared,
                     }
                 })
                 .collect();

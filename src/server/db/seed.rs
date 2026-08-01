@@ -3,7 +3,7 @@
 //! logins keep working. Runs only when the database is empty.
 
 use crate::server::auth::hash_password;
-use crate::server::db::{channels, ids, messages, pool, users};
+use crate::server::db::{channels, evidence, ids, messages, pool, case_properties, users};
 use crate::server_fns::audit::ChangeLogEntry;
 use crate::server_fns::channels::{ChannelKind, DEFAULT_CHANNEL_NAME, VOLUNTEER_CHANNEL_NAME};
 use crate::server_fns::users::User;
@@ -87,17 +87,12 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         channels::create_defaults(&mut conn, &c.id).await?;
         drop(conn);
 
-        for (ord, p) in c.properties.iter().enumerate() {
-            sqlx::query(
-                "INSERT INTO case_properties (case_id, ord, key, value) VALUES ($1, $2, $3, $4)",
-            )
-            .bind(&c.id)
-            .bind(ord as i32)
-            .bind(&p.key)
-            .bind(&p.value)
-            .execute(pool)
-            .await?;
-        }
+        // Seeded cases carry the same intake/outtake fields a case created
+        // through the app gets, so the demo data shows what a real case
+        // actually looks like rather than a simplified version of one.
+        let mut tx = pool.begin().await?;
+        case_properties::add_for_new_case(&mut tx, &c.id, c.properties.iter().cloned()).await?;
+        tx.commit().await?;
 
         for n in &c.notes {
             sqlx::query(
@@ -115,8 +110,10 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         for e in &c.evidence {
             sqlx::query(
-                "INSERT INTO evidence (id, case_id, name, uploaded_by, uploaded_at, description)
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                "INSERT INTO evidence
+                    (id, case_id, name, uploaded_by, uploaded_at, description,
+                     section, visibility)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
             .bind(&e.id)
             .bind(&c.id)
@@ -124,9 +121,15 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .bind(&e.uploaded_by)
             .bind(&e.uploaded_at)
             .bind(&e.description)
+            .bind(&e.section)
+            .bind(e.visibility.slug())
             .execute(pool)
             .await?;
         }
+
+        let mut tx = pool.begin().await?;
+        evidence::add_for_new_case(&mut tx, &c.id, &c.owner_id).await?;
+        tx.commit().await?;
 
         insert_audit(&c.id, "case", &Vec::<ChangeLogEntry>::new()).await?;
     }

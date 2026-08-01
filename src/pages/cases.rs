@@ -10,9 +10,13 @@ use crate::components::loading::Loading;
 use crate::components::profile_link::ProfileLink;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::capabilities::CaseCapability;
+use crate::helpers::format::human_size;
+use crate::helpers::sections;
+use crate::helpers::visibility::Visibility;
 use crate::server_fns::cases::{self, Case, CaseStatus, CaseSummary};
 use crate::server_fns::err_text;
-use crate::server_fns::evidence;
+use crate::server_fns::evidence::{self, Evidence};
+use crate::server_fns::case_properties::{self, CaseProperty};
 use crate::server_fns::users::{search_users, UserSummary};
 use crate::state::AppState;
 
@@ -20,43 +24,110 @@ use crate::state::AppState;
 /// visible window by this much).
 const PAGE_SIZE: i64 = 10;
 
-/// One editable property row while a case is in edit mode.
+/// One editable property row while a case is in edit mode
 #[derive(Clone, Copy)]
 struct PropRow {
     id: usize,
     key: RwSignal<String>,
     value: RwSignal<String>,
+    section: RwSignal<String>,
+    visibility: Visibility,
+}
+
+/// The "add a file" form belonging to one visibility. Each visibility gets its
+/// own so a half-typed entry in one does not leak into the other.
+#[derive(Clone, Copy)]
+struct FileForm {
+    name: RwSignal<String>,
+    description: RwSignal<String>,
+    error: RwSignal<String>,
+    busy: RwSignal<bool>,
+    file_ref: NodeRef<leptos::html::Input>,
+}
+
+#[derive(Clone)]
+struct SectionFileForm {
+    visibility: Visibility,
+    section: String,
+    form: FileForm,
+}
+
+/// The case's properties and files arranged for display: visibility first, then
+/// section, with properties before files inside each section.
+///
+/// Section order is the order each name first appears in the case's own row
+/// order, so the intake/outtake fields a case was created with keep the order
+/// they were defined in and anything added later follows.
+fn group_case_information(
+    case: &Case,
+) -> Vec<(Visibility, Vec<(String, Vec<CaseProperty>, Vec<Evidence>)>)> {
+    Visibility::ALL
+        .into_iter()
+        .filter_map(|visibility| {
+            let props = case.properties.iter().filter(|p| p.visibility == visibility);
+            let files = case.evidence.iter().filter(|e| e.visibility == visibility);
+
+            let mut order: Vec<String> = Vec::new();
+            for name in props
+                .clone()
+                .map(|p| p.section.clone())
+                .chain(files.clone().map(|e| e.section.clone()))
+            {
+                if !order.contains(&name) {
+                    order.push(name);
+                }
+            }
+            if order.is_empty() {
+                return None;
+            }
+
+            let sections = order
+                .into_iter()
+                .map(|name| {
+                    let in_section: Vec<CaseProperty> =
+                        props.clone().filter(|p| p.section == name).cloned().collect();
+                    let file_rows: Vec<Evidence> =
+                        files.clone().filter(|e| e.section == name).cloned().collect();
+                    (name, in_section, file_rows)
+                })
+                .collect();
+            Some((visibility, sections))
+        })
+        .collect()
 }
 
 fn badge(classes: &str) -> String {
     format!("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {classes}")
 }
 
-/// Client-side (WASM) evidence upload: reads the chosen file from the `<input>`,
-/// performs a friendly size pre-check, and hands the multipart form to the
+/// Client-side (WASM) evidence upload: reads the chosen file from an
+/// `<input type="file">`, performs a friendly size pre-check, and hands the
+/// multipart form to the
 /// [`upload_evidence`](crate::server_fns::evidence::upload_evidence) server
 /// function. The server re-validates every byte — the pre-check is purely for
 /// fast UX feedback.
+///
+/// `fields` are the accompanying text parts, which decide where the bytes land:
+/// an `evidence_id` puts them into an existing entry, a `case_id` (plus `name`,
+/// `section`, `visibility`) creates a new one. Returns `Ok(None)` when no file
+/// was chosen, so callers can decide whether that is an error or simply means
+/// "create the entry with nothing in it".
 #[cfg(feature = "hydrate")]
 async fn upload_evidence_file(
-    case_id: &str,
     file_ref: NodeRef<leptos::html::Input>,
-    description: &str,
-) -> Result<(), String> {
+    fields: &[(&str, &str)],
+) -> Result<Option<()>, String> {
     use crate::server_fns::evidence::upload_evidence;
     use leptos::server_fn::codec::MultipartData;
 
     const MAX_BYTES: f64 = 25.0 * 1024.0 * 1024.0;
 
-    let input = file_ref
-        .get_untracked()
-        .ok_or("The file picker is not ready yet.")?;
-    let files = input
-        .files()
-        .ok_or("Please choose a file to upload.")?;
-    let file = files
-        .get(0)
-        .ok_or("Please choose a file to upload.")?;
+    let Some(input) = file_ref.get_untracked() else {
+        return Ok(None);
+    };
+    let Some(file) = input.files().and_then(|f| f.get(0)) else {
+        return Ok(None);
+    };
 
     if file.size() > MAX_BYTES {
         return Err("File is too large; the limit is 25 MB.".to_string());
@@ -66,17 +137,61 @@ async fn upload_evidence_file(
     let form = web_sys::FormData::new().map_err(|_| "Could not prepare the upload.".to_string())?;
     form.append_with_blob_and_filename("file", file.as_ref(), &filename)
         .map_err(|_| "Could not attach the file.".to_string())?;
-    form.append_with_str("case_id", case_id)
-        .map_err(|_| "Could not prepare the upload.".to_string())?;
-    let description = description.trim();
-    if !description.is_empty() {
-        let _ = form.append_with_str("description", description);
+    for (key, value) in fields {
+        form.append_with_str(key, value)
+            .map_err(|_| "Could not prepare the upload.".to_string())?;
     }
 
     upload_evidence(MultipartData::from(form))
         .await
-        .map(|_id| ())
+        .map(|_id| Some(()))
         .map_err(crate::server_fns::err_text)
+}
+
+/// Add a file to a case: upload the chosen file if there is one, or — when the
+/// picker was left empty — create the entry with nothing in it, for somebody to
+/// upload into later.
+///
+/// The two paths differ only in whether bytes were provided, so the caller does
+/// not have to decide up front which one it wants.
+async fn add_file_entry(
+    case_id: &str,
+    visibility: Visibility,
+    name: &str,
+    section: &str,
+    description: &str,
+    file_ref: NodeRef<leptos::html::Input>,
+) -> Result<(), String> {
+    #[cfg(feature = "hydrate")]
+    {
+        let uploaded = upload_evidence_file(
+            file_ref,
+            &[
+                ("case_id", case_id),
+                ("name", name),
+                ("section", section),
+                ("description", description),
+                ("visibility", visibility.slug()),
+            ],
+        )
+        .await?;
+        if uploaded.is_some() {
+            return Ok(());
+        }
+    }
+    #[cfg(not(feature = "hydrate"))]
+    let _ = file_ref;
+
+    evidence::add_case_file(
+        case_id.to_string(),
+        name.to_string(),
+        description.to_string(),
+        section.to_string(),
+        visibility,
+    )
+    .await
+    .map(|_id| ())
+    .map_err(err_text)
 }
 
 /// A short label summarizing a user's access to a case from their capabilities.
@@ -341,10 +456,10 @@ pub fn NewCasePage() -> impl IntoView {
                 let status =
                     CaseStatus::from_slug(&status.get_untracked()).unwrap_or(CaseStatus::Open);
                 let properties = vec![
-                    ("Attorney".to_string(), attorney.get_untracked()),
-                    ("Opposing attorney".to_string(), opposing.get_untracked()),
-                    ("Court".to_string(), court.get_untracked()),
-                    ("Docket number".to_string(), docket.get_untracked()),
+                    CaseProperty::new("Attorney", attorney.get_untracked()),
+                    CaseProperty::new("Opposing attorney", opposing.get_untracked()),
+                    CaseProperty::new("Court", court.get_untracked()),
+                    CaseProperty::new("Docket number", docket.get_untracked()),
                 ];
                 let note = first_note.get_untracked();
                 let note = if note.trim().is_empty() {
@@ -483,6 +598,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
     let can_view_evidence = caps.contains(&CaseCapability::ViewEvidence);
     let can_upload_evidence = caps.contains(&CaseCapability::UploadEvidence);
     let can_delete_evidence = caps.contains(&CaseCapability::DeleteEvidence);
+    let can_manage_case_information = can_edit || can_upload_evidence || can_delete_evidence;
 
     // The full case behind the summary — the heavy sub-resources are pulled on
     // demand only for the open case, keeping the list load lightweight.
@@ -530,17 +646,28 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
     let live_case = move || detail.get();
 
     let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+    // The card styling shared by every panel on the page. Named `panel` rather
+    // than `section` so it is never confused with a case information *section*.
+    let panel = "rounded-xl border border-slate-800 bg-slate-900 p-4";
 
-    // --- edit mode (name, status, owner, properties) ---
+    // --- global edit mode ---
     let editing = RwSignal::new(false);
     let edit_name = RwSignal::new(String::new());
     let edit_status = RwSignal::new(String::new());
     let edit_owner = RwSignal::new(String::new());
-    let edit_props: RwSignal<Vec<PropRow>> = RwSignal::new(Vec::new());
     let edit_error = RwSignal::new(String::new());
-    let row_seq = RwSignal::new(0usize);
 
-    let make_row = move |key: String, value: String| -> PropRow {
+    let edit_props: RwSignal<Vec<PropRow>> = RwSignal::new(Vec::new());
+    let props_error = RwSignal::new(String::new());
+    let row_seq = RwSignal::new(0usize);
+    let file_forms = StoredValue::new(Vec::<SectionFileForm>::new());
+
+    let make_row = move |
+        key: String,
+        value: String,
+        section: String,
+        visibility: Visibility,
+    | -> PropRow {
         let id = row_seq.get_untracked();
         row_seq.set(id + 1);
         owner.with_value(|o| {
@@ -548,6 +675,8 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                 id,
                 key: RwSignal::new(key),
                 value: RwSignal::new(value),
+                section: RwSignal::new(section),
+                visibility,
             })
         })
     };
@@ -560,26 +689,61 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
             owner_label.set(owner_name.get_value());
             owner_query.set(String::new());
             owner_picker_open.set(false);
-            let rows = c
-                .properties
-                .iter()
-                .map(|p| make_row(p.key.clone(), p.value.clone()))
-                .collect::<Vec<_>>();
-            edit_props.set(rows);
             edit_error.set(String::new());
+            props_error.set(String::new());
+            edit_props.set(
+                c.properties
+                    .iter()
+                    .map(|p| {
+                        make_row(
+                            p.key.clone(),
+                            p.value.clone(),
+                            p.section.clone(),
+                            p.visibility,
+                        )
+                    })
+                    .collect(),
+            );
+
+            let mut section_keys = Vec::<(Visibility, String)>::new();
+            for (visibility, sections) in group_case_information(&c) {
+                for (section, _, _) in sections {
+                    section_keys.push((visibility, section));
+                }
+            }
+            for visibility in Visibility::ALL {
+                let allowed = !visibility.is_restricted() || state.is_volunteer_or_admin();
+                if allowed && !section_keys.iter().any(|(v, _)| *v == visibility) {
+                    section_keys.push((visibility, String::new()));
+                }
+            }
+            file_forms.set_value(
+                section_keys
+                    .into_iter()
+                    .map(|(visibility, section)| SectionFileForm {
+                        visibility,
+                        section,
+                        form: owner.with_value(|o| {
+                            o.with(|| FileForm {
+                                name: RwSignal::new(String::new()),
+                                description: RwSignal::new(String::new()),
+                                error: RwSignal::new(String::new()),
+                                busy: RwSignal::new(false),
+                                file_ref: NodeRef::new(),
+                            })
+                        }),
+                    })
+                    .collect(),
+            );
             editing.set(true);
         }
     };
 
     let cancel_edit = move |_| {
         edit_error.set(String::new());
+        props_error.set(String::new());
         owner_picker_open.set(false);
         editing.set(false);
-    };
-
-    let add_prop_row = move |_| {
-        let row = make_row(String::new(), String::new());
-        edit_props.update(|rows| rows.push(row));
     };
 
     let save_edit = move |_| {
@@ -587,33 +751,55 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         let name = edit_name.get_untracked();
         let status_slug = edit_status.get_untracked();
         let owner = edit_owner.get_untracked();
-        let props = edit_props
-            .get_untracked()
-            .into_iter()
-            .map(|r| (r.key.get_untracked(), r.value.get_untracked()))
-            .collect::<Vec<_>>();
+        let can_see_restricted = state.is_volunteer_or_admin();
+        let properties = edit_props.get_untracked();
         spawn_local(async move {
-            if let Err(e) = cases::set_case_name(case_id.clone(), name).await {
-                edit_error.set(err_text(e));
-                return;
-            }
-            if let Some(s) = CaseStatus::from_slug(&status_slug) {
-                if let Err(e) = cases::set_case_status(case_id.clone(), s).await {
+            if can_edit {
+                if let Err(e) = cases::set_case_name(case_id.clone(), name).await {
                     edit_error.set(err_text(e));
                     return;
                 }
-            }
-            if is_admin {
-                if let Err(e) = cases::set_case_owner(case_id.clone(), owner).await {
-                    edit_error.set(err_text(e));
-                    return;
+                if let Some(s) = CaseStatus::from_slug(&status_slug) {
+                    if let Err(e) = cases::set_case_status(case_id.clone(), s).await {
+                        edit_error.set(err_text(e));
+                        return;
+                    }
                 }
-            }
-            if let Err(e) = cases::set_case_properties(case_id.clone(), props).await {
-                edit_error.set(err_text(e));
-                return;
+                if is_admin {
+                    if let Err(e) = cases::set_case_owner(case_id.clone(), owner).await {
+                        edit_error.set(err_text(e));
+                        return;
+                    }
+                }
+
+                for visibility in Visibility::ALL {
+                    if visibility.is_restricted() && !can_see_restricted {
+                        continue;
+                    }
+                    let rows = properties
+                        .iter()
+                        .filter(|row| row.visibility == visibility)
+                        .map(|row| CaseProperty {
+                            key: row.key.get_untracked(),
+                            value: row.value.get_untracked(),
+                            section: row.section.get_untracked(),
+                            visibility,
+                        })
+                        .collect();
+                    if let Err(e) = case_properties::set_case_properties(
+                        case_id.clone(),
+                        visibility,
+                        rows,
+                    )
+                    .await
+                    {
+                        props_error.set(err_text(e));
+                        return;
+                    }
+                }
             }
             edit_error.set(String::new());
+            props_error.set(String::new());
             editing.set(false);
             reload.update(|n| *n += 1);
         });
@@ -632,44 +818,6 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                     reload.update(|n| *n += 1);
                 }
             });
-        }
-    };
-
-    // --- evidence upload ---
-    let evi_desc = RwSignal::new(String::new());
-    let evi_error = RwSignal::new(String::new());
-    let evi_uploading = RwSignal::new(false);
-    let file_ref: NodeRef<leptos::html::Input> = NodeRef::new();
-    let add_evidence = {
-        let case_id = case_id.clone();
-        move |_| {
-            let case_id = case_id.clone();
-            let desc = evi_desc.get_untracked();
-            evi_error.set(String::new());
-            #[cfg(feature = "hydrate")]
-            {
-                if evi_uploading.get_untracked() {
-                    return;
-                }
-                evi_uploading.set(true);
-                spawn_local(async move {
-                    match upload_evidence_file(&case_id, file_ref, &desc).await {
-                        Ok(()) => {
-                            evi_desc.set(String::new());
-                            if let Some(input) = file_ref.get_untracked() {
-                                input.set_value("");
-                            }
-                            reload.update(|n| *n += 1);
-                        }
-                        Err(msg) => evi_error.set(msg),
-                    }
-                    evi_uploading.set(false);
-                });
-            }
-            #[cfg(not(feature = "hydrate"))]
-            {
-                let _ = (&case_id, &desc, file_ref, evi_uploading);
-            }
         }
     };
 
@@ -697,119 +845,413 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         }
     };
 
-    let evidence_view = {
-        let case_id = case_id.clone();
-        move || {
-            let evidence = live_case().map(|c| c.evidence).unwrap_or_default();
-            if evidence.is_empty() {
-                return view! { <p class="text-sm text-slate-500">"No evidence yet."</p> }
-                    .into_any();
-            }
-            evidence
-                .into_iter()
-                .map(|e| {
-                    let delete = {
-                        let case_id = case_id.clone();
-                        let evidence_id = e.id.clone();
-                        move |_| {
-                            let case_id = case_id.clone();
-                            let evidence_id = evidence_id.clone();
-                            spawn_local(async move {
-                                if evidence::delete_case_evidence(case_id, evidence_id)
-                                    .await
-                                    .is_ok()
-                                {
-                                    reload.update(|n| *n += 1);
-                                }
-                            });
-                        }
-                    };
-                    let delete_btn = if can_delete_evidence {
-                        view! {
-                            <button
-                                on:click=delete
-                                class="shrink-0 rounded-lg border border-rose-500/40 px-2 py-1 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
-                            >
-                                "Delete"
-                            </button>
-                        }
-                        .into_any()
-                    } else {
-                        ().into_any()
-                    };
-                    let file_meta = if e.has_file {
-                        let download_url = format!(
-                            "/api/cases/{}/evidence/{}/download",
-                            e.case_id, e.id
-                        );
-                        let download_name = e.original_filename.clone();
-                        let details = format!(
-                            "{} · {}",
-                            e.content_type.clone(),
-                            evidence::human_size(e.size_bytes),
-                        );
-                        view! {
-                            <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                                <a
-                                    href=download_url
-                                    download=download_name
-                                    class="rounded-lg border border-primary-500/40 px-2 py-1 font-medium text-primary-300 hover:bg-primary-500/10"
-                                >
-                                    "Download"
-                                </a>
-                                <span>{details}</span>
-                            </div>
-                        }
-                        .into_any()
-                    } else {
-                        ().into_any()
-                    };
-                    view! {
-                        <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
-                            <div class="flex items-start justify-between gap-2">
-                                <p class="text-sm font-medium text-slate-200">{e.name}</p>
-                                {delete_btn}
-                            </div>
-                            <Show when={
-                                let d = e.description.clone();
-                                move || !d.is_empty()
-                            }>
-                                <p class="text-sm text-slate-400">{e.description.clone()}</p>
-                            </Show>
-                            {file_meta}
-                            <p class="mt-1 text-xs text-slate-500">
-                                "Uploaded by " {e.uploaded_by} " · " {e.uploaded_at}
-                            </p>
-                        </div>
-                    }
-                    .into_any()
-                })
-                .collect_view()
-                .into_any()
-        }
+    // --- Case information: properties and files, grouped by visibility ---
+    let form_for = move |visibility: Visibility, section: &str| -> FileForm {
+        file_forms.with_value(|forms| {
+            forms
+                .iter()
+                .find(|entry| entry.visibility == visibility && entry.section == section)
+                .map(|entry| entry.form)
+                .expect("an evidence form exists for every visible section")
+        })
     };
 
-    let properties_view = {
-        move || {
-            let props = live_case().map(|c| c.properties).unwrap_or_default();
-            if props.is_empty() {
-                return view! { <p class="text-sm text-slate-500">"No properties yet."</p> }
-                    .into_any();
+    let add_file = move |visibility: Visibility, section: String| {
+        let form = form_for(visibility, &section);
+        let case_id = case_sv.get_value();
+        let name = form.name.get_untracked().trim().to_string();
+        let description = form.description.get_untracked().trim().to_string();
+        form.error.set(String::new());
+        if name.is_empty() {
+            form.error.set("Give the file a name.".to_string());
+            return;
+        }
+        if form.busy.get_untracked() {
+            return;
+        }
+        form.busy.set(true);
+        spawn_local(async move {
+            let result = add_file_entry(
+                &case_id,
+                visibility,
+                &name,
+                &section,
+                &description,
+                form.file_ref,
+            )
+            .await;
+            match result {
+                Ok(()) => {
+                    form.name.set(String::new());
+                    form.description.set(String::new());
+                    if let Some(input) = form.file_ref.get_untracked() {
+                        input.set_value("");
+                    }
+                    reload.update(|n| *n += 1);
+                }
+                Err(msg) => form.error.set(msg),
             }
-            props
-                .into_iter()
-                .map(|p| {
+            form.busy.set(false);
+        });
+    };
+
+    // Uploading into an entry that already exists: its own file input is the
+    // handle, and the server takes the case, name, section, and visibility from
+    // the stored row rather than from this request.
+    let upload_into = move |evidence_id: String, file_ref: NodeRef<leptos::html::Input>| {
+        let _ = (&evidence_id, file_ref);
+        #[cfg(feature = "hydrate")]
+        spawn_local(async move {
+            if upload_evidence_file(file_ref, &[("evidence_id", &evidence_id)])
+                .await
+                .is_ok()
+            {
+                reload.update(|n| *n += 1);
+            }
+        });
+    };
+
+    let delete_file = move |evidence_id: String| {
+        let case_id = case_sv.get_value();
+        spawn_local(async move {
+            if evidence::delete_case_evidence(case_id, evidence_id)
+                .await
+                .is_ok()
+            {
+                reload.update(|n| *n += 1);
+            }
+        });
+    };
+
+    // One file's row: its name and description, then either the download and
+    // details of the file it holds, or an upload control for the file it is
+    // still waiting on.
+    let file_row = move |e: Evidence| {
+        let evidence_id = e.id.clone();
+        let delete_btn = if can_delete_evidence && editing.get() {
+            let id = evidence_id.clone();
+            view! {
+                <button
+                    on:click=move |_| delete_file(id.clone())
+                    class="shrink-0 rounded-lg border border-rose-500/40 px-2 py-1 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
+                >
+                    "Remove"
+                </button>
+            }
+            .into_any()
+        } else {
+            ().into_any()
+        };
+
+        let body = if e.has_file {
+            let download_url = format!("/api/cases/{}/evidence/{}/download", e.case_id, e.id);
+            let details = format!(
+                "{} · {} · uploaded by {} · {}",
+                e.content_type.clone(),
+                human_size(e.size_bytes),
+                e.uploaded_by.clone(),
+                e.uploaded_at.clone(),
+            );
+            view! {
+                <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                    <a
+                        href=download_url
+                        download=e.original_filename.clone()
+                        class="rounded-lg border border-primary-500/40 px-2 py-1 font-medium text-primary-300 hover:bg-primary-500/10"
+                    >
+                        "Download"
+                    </a>
+                    <span>{details}</span>
+                </div>
+            }
+            .into_any()
+        } else if can_upload_evidence && editing.get() {
+            let file_input: NodeRef<leptos::html::Input> =
+                owner.with_value(|o| o.with(NodeRef::new));
+            let id = evidence_id.clone();
+            view! {
+                <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                    <span class=badge("bg-slate-700/40 text-slate-300")>"Waiting for a file"</span>
+                    <input
+                        node_ref=file_input
+                        type="file"
+                        accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+                        on:change=move |_| upload_into(id.clone(), file_input)
+                        class="block text-xs text-slate-300 file:mr-2 file:rounded-lg file:border-0 file:bg-slate-800 file:px-2 file:py-1 file:text-xs file:font-medium file:text-slate-200 hover:file:bg-slate-700"
+                    />
+                </div>
+            }
+            .into_any()
+        } else {
+            view! {
+                <p class="mt-1 text-xs text-slate-500">"Not provided yet."</p>
+            }
+            .into_any()
+        };
+
+        let description = e.description.clone();
+        view! {
+            <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                <div class="flex items-start justify-between gap-2">
+                    <p class="text-sm font-medium text-slate-200">{e.name.clone()}</p>
+                    {delete_btn}
+                </div>
+                <Show when={
+                    let d = description.clone();
+                    move || !d.is_empty()
+                }>
+                    <p class="text-sm text-slate-400">{description.clone()}</p>
+                </Show>
+                {body}
+            </div>
+        }
+        .into_any()
+    };
+
+    // The per-section evidence form inherits its section and visibility from
+    // the panel containing it.
+    let file_form_view = move |visibility: Visibility, section: String| {
+        if !can_upload_evidence || !editing.get() {
+            return ().into_any();
+        }
+        let form = form_for(visibility, &section);
+        let add_section = section.clone();
+        view! {
+            <div class="mt-4 space-y-2 border-t border-slate-800 pt-3">
+                <input
+                    class=input_class
+                    placeholder="File name (e.g. Intake letter)"
+                    prop:value=move || form.name.get()
+                    on:input=move |ev| form.name.set(event_target_value(&ev))
+                />
+                <input
+                    class=input_class
+                    placeholder="Extra information (optional)"
+                    prop:value=move || form.description.get()
+                    on:input=move |ev| form.description.set(event_target_value(&ev))
+                />
+                <input
+                    node_ref=form.file_ref
+                    type="file"
+                    accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+                    class="block w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-200 hover:file:bg-slate-700"
+                />
+                <button
+                    on:click=move |_| add_file(visibility, add_section.clone())
+                    prop:disabled=move || form.busy.get()
+                    class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                >
+                    {move || if form.busy.get() { "Saving…" } else { "Add file" }}
+                </button>
+                <p class="text-xs text-slate-500">
+                    "This evidence will be added to this section. Leave the file empty to just list what the case is waiting on. \
+                     PDF, images, or Office documents · up to 25 MB"
+                </p>
+                <Show when=move || !form.error.get().is_empty()>
+                    <p class="text-xs text-rose-400">{move || form.error.get()}</p>
+                </Show>
+            </div>
+        }
+        .into_any()
+    };
+
+    // The read-only rendering of one visibility: its sections, each listing that
+    // section's properties and then its files.
+    let sections_view = move |
+        visibility: Visibility,
+        groups: Vec<(String, Vec<CaseProperty>, Vec<Evidence>)>,
+    | {
+        if groups.is_empty() {
+            return view! {
+                <p class="px-4 py-5 text-sm text-slate-500">
+                    "No information has been added yet."
+                </p>
+            }
+            .into_any();
+        }
+        groups
+            .into_iter()
+            .map(|(name, props, files)| {
+                let heading = sections::label(&name).to_string();
+                let property_rows = if editing.get() && can_edit {
+                    let row_section = name.clone();
+                    let add_section = name.clone();
                     view! {
-                        <div class="flex justify-between gap-4 border-b border-slate-800 py-1.5 text-sm">
-                            <span class="text-slate-400">{p.key}</span>
-                            <span class="text-slate-200">{p.value}</span>
+                        <div class="space-y-2">
+                            <For
+                                each=move || {
+                                    let section = row_section.clone();
+                                    edit_props
+                                        .get()
+                                        .into_iter()
+                                        .filter(move |row| {
+                                            row.visibility == visibility
+                                                && row.section.get() == section
+                                        })
+                                        .collect::<Vec<_>>()
+                                }
+                                key=|row| row.id
+                                let:row
+                            >
+                                <div class="flex flex-col gap-2 sm:flex-row">
+                                    <input
+                                        class=input_class
+                                        placeholder="Name (e.g. Attorney)"
+                                        prop:value=move || row.key.get()
+                                        on:input=move |ev| row.key.set(event_target_value(&ev))
+                                    />
+                                    <input
+                                        class=input_class
+                                        placeholder="Value"
+                                        prop:value=move || row.value.get()
+                                        on:input=move |ev| row.value.set(event_target_value(&ev))
+                                    />
+                                    <button
+                                        on:click=move |_| {
+                                            edit_props.update(|rows| {
+                                                rows.retain(|entry| entry.id != row.id)
+                                            })
+                                        }
+                                        class="shrink-0 rounded-lg border border-rose-500/40 px-3 py-2 text-sm font-medium text-rose-300 hover:bg-rose-500/10"
+                                    >
+                                        "Remove"
+                                    </button>
+                                </div>
+                            </For>
+                            <button
+                                on:click=move |_| {
+                                    let row = make_row(
+                                        String::new(),
+                                        String::new(),
+                                        add_section.clone(),
+                                        visibility,
+                                    );
+                                    edit_props.update(|rows| rows.push(row));
+                                }
+                                class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                            >
+                                "+ Add property"
+                            </button>
                         </div>
                     }
                     .into_any()
-                })
-                .collect_view()
+                } else {
+                    props
+                        .into_iter()
+                        .map(|p| {
+                            let value = p.value.clone();
+                            let shown = if value.trim().is_empty() {
+                                view! { <span class="text-slate-600 italic">"Not filled in"</span> }
+                                    .into_any()
+                            } else {
+                                view! { <span class="text-slate-200">{value}</span> }.into_any()
+                            };
+                            view! {
+                                <div class="flex justify-between gap-4 border-b border-slate-800 py-1.5 text-sm">
+                                    <span class="text-slate-400">{p.key}</span>
+                                    {shown}
+                                </div>
+                            }
+                            .into_any()
+                        })
+                        .collect_view()
+                        .into_any()
+                };
+                let file_rows = files.into_iter().map(file_row).collect_view();
+                view! {
+                    <section class="border-t border-slate-800 px-4 py-5 first:border-t-0">
+                        <h4 class="text-base font-semibold text-slate-100">
+                            {heading}
+                        </h4>
+                        <div class="mt-2">{property_rows}</div>
+                        <div class="mt-3 space-y-2">{file_rows}</div>
+                        {file_form_view(visibility, name.clone())}
+                    </section>
+                }
                 .into_any()
+            })
+            .collect_view()
+            .into_any()
+    };
+
+    // Case information: everything recorded about the case, grouped by who can
+    // see it and then by section. Anything the viewer may not see never reaches
+    // the browser, so this renders only what they are allowed to know about.
+    let case_information = move || {
+        if !can_view_evidence {
+            return ().into_any();
         }
+        let Some(c) = live_case() else {
+            return ().into_any();
+        };
+        let mut grouped = group_case_information(&c);
+        // A visibility with nothing in it yet still needs somewhere to add the
+        // first entry, so every one the viewer may write to is shown.
+        if can_edit || can_upload_evidence {
+            for visibility in Visibility::ALL {
+                let allowed = !visibility.is_restricted() || state.is_volunteer_or_admin();
+                if allowed && !grouped.iter().any(|(v, _)| *v == visibility) {
+                    grouped.push((visibility, Vec::new()));
+                }
+            }
+            grouped.sort_by_key(|(v, _)| Visibility::ALL.iter().position(|x| x == v));
+        }
+        if grouped.is_empty() {
+            return ().into_any();
+        }
+
+        let groups = grouped
+            .into_iter()
+            .map(|(visibility, groups)| {
+                let (heading, container_class, header_class) = match visibility {
+                    Visibility::VolunteerOnly => (
+                        "Volunteer only",
+                        "overflow-hidden rounded-xl border border-amber-500/30 bg-slate-900",
+                        "border-b border-amber-500/20 bg-amber-500/10 px-4 py-4",
+                    ),
+                    Visibility::Shared => (
+                        "Shared with volunteers and client",
+                        "overflow-hidden rounded-xl border border-slate-800 bg-slate-900",
+                        "border-b border-slate-800 bg-slate-800/40 px-4 py-4",
+                    ),
+                };
+                let section_groups = if groups.is_empty() && editing.get() {
+                    vec![(String::new(), Vec::new(), Vec::new())]
+                } else {
+                    groups
+                };
+                view! {
+                    <section class=container_class>
+                        <div class=header_class>
+                            <div>
+                                <h3 class="text-base font-semibold text-slate-100">{heading}</h3>
+                                <p class="mt-1 text-sm text-slate-400">
+                                    {visibility.description()}
+                                </p>
+                            </div>
+                        </div>
+                        {sections_view(visibility, section_groups)}
+                    </section>
+                }
+                .into_any()
+            })
+            .collect_view();
+
+        view! {
+            <div>
+                <div class="mb-3">
+                    <h2 class="text-lg font-semibold text-slate-100">"Case information"</h2>
+                    <p class="mt-1 text-sm text-slate-500">
+                        "Information and files organized by who can see them."
+                    </p>
+                </div>
+                <div class="space-y-5">{groups}</div>
+                <Show when=move || !props_error.get().is_empty()>
+                    <p class="mt-3 text-sm text-rose-400">{move || props_error.get()}</p>
+                </Show>
+            </div>
+        }
+        .into_any()
     };
 
     let log_open = RwSignal::new(false);
@@ -821,16 +1263,32 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         view! { <ChangeLog scope=AuditScope::Case entity_id=log_case_id.get_value() /> }.into_any()
     };
 
-    let section = "rounded-xl border border-slate-800 bg-slate-900 p-4";
-
     let details_section = move || {
         let Some(c) = live_case() else {
             return ().into_any();
         };
-        if !editing.get() {
+        if !editing.get() || !can_edit {
             let owner_name = owner_name.get_value();
             let status = c.status;
-            let edit_btn = if can_edit {
+            let edit_controls = if editing.get() {
+                view! {
+                    <div class="flex shrink-0 items-center gap-2">
+                        <button
+                            on:click=save_edit
+                            class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600"
+                        >
+                            "Save"
+                        </button>
+                        <button
+                            on:click=cancel_edit
+                            class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800"
+                        >
+                            "Cancel"
+                        </button>
+                    </div>
+                }
+                .into_any()
+            } else if can_manage_case_information {
                 view! {
                     <button
                         on:click=begin_edit
@@ -844,7 +1302,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                 ().into_any()
             };
             return view! {
-                <div class=section>
+                <div class=panel>
                     <div class="flex items-start justify-between gap-3">
                         <div class="min-w-0">
                             <h2 class="text-lg font-semibold">{c.name.clone()}</h2>
@@ -855,7 +1313,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                         </div>
                         <div class="flex shrink-0 items-center gap-2">
                             <span class=badge(status.badge_classes())>{status.label()}</span>
-                            {edit_btn}
+                            {edit_controls}
                         </div>
                     </div>
                     <Show when=move || !can_edit && !can_note && !can_upload_evidence>
@@ -863,10 +1321,6 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                             "You have view-only access to this case."
                         </p>
                     </Show>
-                    <div class="mt-4">
-                        <h3 class="text-sm font-semibold text-slate-200">"Properties"</h3>
-                        <div class="mt-2">{properties_view()}</div>
-                    </div>
                 </div>
             }
             .into_any();
@@ -918,7 +1372,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
             .into_any()
         };
         view! {
-            <div class=section>
+            <div class=panel>
                 <div class="flex items-center justify-between gap-3">
                     <h2 class="text-lg font-semibold">"Edit case"</h2>
                     <div class="flex items-center gap-2">
@@ -1015,41 +1469,6 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                             }}
                         </div>
                     </div>
-                    <div>
-                        <label class="text-xs font-medium text-slate-400">"Properties"</label>
-                        <div class="mt-2 space-y-2">
-                            <For each=move || edit_props.get() key=|r| r.id let:row>
-                                <div class="flex flex-col gap-2 sm:flex-row">
-                                    <input
-                                        class=input_class
-                                        placeholder="Name (e.g. Attorney)"
-                                        prop:value=move || row.key.get()
-                                        on:input=move |ev| row.key.set(event_target_value(&ev))
-                                    />
-                                    <input
-                                        class=input_class
-                                        placeholder="Value"
-                                        prop:value=move || row.value.get()
-                                        on:input=move |ev| row.value.set(event_target_value(&ev))
-                                    />
-                                    <button
-                                        on:click=move |_| {
-                                            edit_props.update(|rows| rows.retain(|x| x.id != row.id))
-                                        }
-                                        class="shrink-0 rounded-lg border border-rose-500/40 px-3 py-2 text-sm font-medium text-rose-300 hover:bg-rose-500/10"
-                                    >
-                                        "Remove"
-                                    </button>
-                                </div>
-                            </For>
-                        </div>
-                        <button
-                            on:click=add_prop_row
-                            class="mt-2 rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
-                        >
-                            "+ Add property"
-                        </button>
-                    </div>
                 </div>
             </div>
         }
@@ -1061,7 +1480,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
             // While the full case is loading, show only a loading indicator and
             // hide the (empty) section scaffolding beneath it.
             <div class=move || {
-                if detail_loading.get() { section.to_string() } else { "hidden".to_string() }
+                if detail_loading.get() { panel.to_string() } else { "hidden".to_string() }
             }>
                 <Loading label="Loading case details\u{2026}" />
             </div>
@@ -1070,8 +1489,10 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
             }>
             {details_section}
 
+            {case_information}
+
             // Notes
-            <div class=section>
+            <div class=panel>
                 <h3 class="text-sm font-semibold text-slate-200">"Notes"</h3>
                 <div class="mt-3 space-y-2">{notes_view}</div>
                 {if can_note {
@@ -1097,63 +1518,10 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                 }}
             </div>
 
-            // Evidence
-            {if can_view_evidence {
-                view! {
-                    <div class=section>
-                        <h3 class="text-sm font-semibold text-slate-200">"Evidence"</h3>
-                        <div class="mt-3 space-y-2">{evidence_view}</div>
-                        {if can_upload_evidence {
-                            view! {
-                                <div class="mt-3 space-y-2">
-                                    <input
-                                        node_ref=file_ref
-                                        type="file"
-                                        accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
-                                        class="block w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-200 hover:file:bg-slate-700"
-                                    />
-                                    <input
-                                        class=input_class
-                                        placeholder="Extra information (optional)"
-                                        prop:value=move || evi_desc.get()
-                                        on:input=move |ev| evi_desc.set(event_target_value(&ev))
-                                    />
-                                    <button
-                                        on:click=add_evidence
-                                        prop:disabled=move || evi_uploading.get()
-                                        class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
-                                    >
-                                        {move || {
-                                            if evi_uploading.get() {
-                                                "Uploading…"
-                                            } else {
-                                                "Upload evidence"
-                                            }
-                                        }}
-                                    </button>
-                                    <p class="text-xs text-slate-500">
-                                        "PDF, images, or Office documents · up to 25 MB"
-                                    </p>
-                                    <Show when=move || !evi_error.get().is_empty()>
-                                        <p class="text-xs text-rose-400">{move || evi_error.get()}</p>
-                                    </Show>
-                                </div>
-                            }
-                                .into_any()
-                        } else {
-                            ().into_any()
-                        }}
-                    </div>
-                }
-                    .into_any()
-            } else {
-                ().into_any()
-            }}
-
             // Audit log
             {if is_admin {
                 view! {
-                    <div class=section>
+                    <div class=panel>
                         <div class="flex items-center justify-between">
                             <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
                             <button

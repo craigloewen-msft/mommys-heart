@@ -1,0 +1,207 @@
+//! Case property persistence (SSR only): the `case_properties` table.
+//!
+//! Kept separate from [`crate::server::db::cases`] because properties are their
+//! own list with their own ordering, visibility, and replace-in-place write,
+//! none of which the case row itself is involved in.
+
+use std::collections::HashMap;
+
+use crate::helpers::new_case_fields;
+use crate::helpers::visibility::Visibility;
+use crate::server::db::{audit, pool};
+use crate::server_fns::case_properties::CaseProperty;
+
+/// The properties on a case that the caller may see, in display order.
+///
+/// `include_volunteer_only` comes from the caller's account role, and the filter
+/// is applied in SQL, so a client's response never contains the volunteer-only
+/// properties in the first place.
+pub async fn get_case_properties(
+    case_id: &str,
+    include_volunteer_only: bool,
+) -> Result<Vec<CaseProperty>, sqlx::Error> {
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT key, value, section, visibility FROM case_properties
+         WHERE case_id = $1 AND ($2 OR visibility <> $3)
+         ORDER BY visibility ASC, ord ASC",
+    )
+    .bind(case_id)
+    .bind(include_volunteer_only)
+    .bind(Visibility::VolunteerOnly.slug())
+    .fetch_all(pool())
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(key, value, section, visibility)| CaseProperty {
+            key,
+            value,
+            section,
+            visibility: Visibility::from_slug(&visibility).unwrap_or_default(),
+        })
+        .collect())
+}
+
+/// Tracks the next display position within each visibility. `ord` is part of the
+/// primary key together with `visibility`, so each list counts from zero
+/// independently and rewriting one never renumbers the other.
+#[derive(Default)]
+struct Ordering(HashMap<Visibility, i32>);
+
+/// Insert one property, taking the next position in its visibility's list.
+///
+/// A blank `value` is allowed and meaningful: it is how a property appears as a
+/// labelled blank waiting to be filled in.
+async fn insert(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    case_id: &str,
+    ordering: &mut Ordering,
+    property: &CaseProperty,
+) -> Result<(), sqlx::Error> {
+    let next = ordering.0.entry(property.visibility).or_insert(0);
+    sqlx::query(
+        "INSERT INTO case_properties (case_id, ord, key, value, section, visibility)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(case_id)
+    .bind(*next)
+    .bind(&property.key)
+    .bind(&property.value)
+    .bind(&property.section)
+    .bind(property.visibility.slug())
+    .execute(&mut **tx)
+    .await?;
+    *next += 1;
+    Ok(())
+}
+
+/// The properties a new case starts with, from
+/// [`NEW_CASE_FIELDS`](crate::helpers::new_case_fields::NEW_CASE_FIELDS): each
+/// one named but not yet filled in.
+fn for_new_case() -> Vec<CaseProperty> {
+    new_case_fields::properties()
+        .map(|f| CaseProperty {
+            key: f.label.to_string(),
+            value: String::new(),
+            section: f.section.to_string(),
+            visibility: f.visibility,
+        })
+        .collect()
+}
+
+/// Insert the standing new-case paperwork from
+/// [`NEW_CASE_FIELDS`](crate::helpers::new_case_fields::NEW_CASE_FIELDS) first,
+/// then `extra`, numbered as one list per visibility, inside the caller's
+/// transaction so the whole starting set lands with the case or not at all. The
+/// standing paperwork comes first so it sits above whatever the creator typed in.
+pub async fn add_for_new_case(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    case_id: &str,
+    extra: impl IntoIterator<Item = CaseProperty>,
+) -> Result<(), sqlx::Error> {
+    let mut starting = for_new_case();
+    starting.extend(extra);
+    let mut ordering = Ordering::default();
+    for property in &starting {
+        insert(tx, case_id, &mut ordering, property).await?;
+    }
+    Ok(())
+}
+
+/// Trim a submitted property list, dropping the entries that cannot be stored.
+///
+/// A blank value is kept — that is a property nobody has filled in yet. A blank
+/// key is dropped, because an unlabelled property has nothing to show.
+pub fn clean(properties: Vec<CaseProperty>) -> Vec<CaseProperty> {
+    properties
+        .into_iter()
+        .filter_map(|p| {
+            let key = p.key.trim().to_string();
+            if key.is_empty() {
+                return None;
+            }
+            Some(CaseProperty {
+                key,
+                value: p.value.trim().to_string(),
+                section: p.section.trim().to_string(),
+                visibility: p.visibility,
+            })
+        })
+        .collect()
+}
+
+/// Replace the properties a case holds at one visibility, auditing once when
+/// they actually change.
+///
+/// Deliberately scoped to a single visibility. The write is a delete followed by
+/// a reinsert, and both visibilities share this table; an unscoped delete would
+/// let someone editing the shared list — which a client can do, and whose form
+/// never even loads the volunteer-only properties — destroy the team's intake
+/// record.
+pub async fn replace(
+    case_id: &str,
+    visibility: Visibility,
+    properties: Vec<CaseProperty>,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    // The submitted visibility wins over whatever each row claims: this call
+    // replaces exactly one list, so every row in it belongs to that list.
+    let cleaned: Vec<CaseProperty> = clean(properties)
+        .into_iter()
+        .map(|p| CaseProperty { visibility, ..p })
+        .collect();
+
+    let existing = get_at(case_id, visibility).await?;
+    let changed = existing != cleaned;
+
+    let mut tx = pool().begin().await?;
+    sqlx::query("DELETE FROM case_properties WHERE case_id = $1 AND visibility = $2")
+        .bind(case_id)
+        .bind(visibility.slug())
+        .execute(&mut *tx)
+        .await?;
+    let mut ordering = Ordering::default();
+    for property in &cleaned {
+        insert(&mut tx, case_id, &mut ordering, property).await?;
+    }
+    tx.commit().await?;
+
+    if changed {
+        audit::record(
+            pool(),
+            audit::Entity::Case,
+            case_id,
+            actor,
+            "properties",
+            "",
+            "updated",
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// The properties a case holds at one visibility, in display order.
+async fn get_at(
+    case_id: &str,
+    visibility: Visibility,
+) -> Result<Vec<CaseProperty>, sqlx::Error> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT key, value, section FROM case_properties
+         WHERE case_id = $1 AND visibility = $2 ORDER BY ord ASC",
+    )
+    .bind(case_id)
+    .bind(visibility.slug())
+    .fetch_all(pool())
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(key, value, section)| CaseProperty {
+            key,
+            value,
+            section,
+            visibility,
+        })
+        .collect())
+}

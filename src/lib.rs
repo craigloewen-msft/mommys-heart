@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 pub mod app;
+pub mod helpers;
 pub mod mockdata;
 pub mod server_fns;
 pub mod state;

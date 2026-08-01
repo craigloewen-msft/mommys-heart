@@ -10,6 +10,7 @@
 //! When ACS Email is not configured (see [`EmailConfig::is_configured`]), every
 //! helper is a silent no-op.
 
+use crate::helpers::visibility::Visibility;
 use crate::server::config::{Brand, EmailConfig};
 use crate::server::db::settings::{self, Recipient};
 use crate::server::db::cases;
@@ -29,6 +30,15 @@ fn configured_email() -> Option<EmailConfig> {
 pub enum Audience {
     Everyone,
     StaffOnly,
+}
+
+/// Who to notify about a change to case information of a given visibility.
+pub fn audience_for(visibility: Visibility) -> Audience {
+    if visibility.is_restricted() {
+        Audience::StaffOnly
+    } else {
+        Audience::Everyone
+    }
 }
 
 /// Fire a best-effort case notification to everyone assigned to the case (with

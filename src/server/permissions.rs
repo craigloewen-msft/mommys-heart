@@ -21,6 +21,7 @@
 
 use leptos::prelude::ServerFnError;
 
+use crate::helpers::visibility::Visibility;
 use crate::server::auth::AuthUser;
 use crate::server::db::{cases, channels};
 use crate::server_fns::capabilities::CaseCapability;
@@ -44,13 +45,23 @@ pub fn require_admin(user: &User) -> Result<(), ServerFnError> {
     }
 }
 
-/// Whether this account may see a case's restricted (volunteer-only) chat
-/// channel. This is an **account-role** gate, deliberately orthogonal to the
-/// per-case capability gate: staff — volunteers and admins — get the private
-/// back-channel, and a client never does, no matter how many capabilities they
-/// have been granted on the case.
-pub fn sees_restricted_channels(user: &User) -> bool {
+/// Whether this account may see the volunteer-only info of a case
+/// Including properties, evidence and channels
+pub fn has_volunteer_access(user: &User) -> bool {
     !matches!(user.role, AccountRole::Client)
+}
+
+/// Reject unless the caller may act on the given visibility. Used by every write
+/// path so a client can never create or edit a volunteer-only property or file
+/// by posting the visibility directly.
+pub fn require_visibility(user: &User, visibility: Visibility) -> Result<(), ServerFnError> {
+    if !visibility.is_restricted() || has_volunteer_access(user) {
+        Ok(())
+    } else {
+        Err(ServerFnError::new(
+            "You do not have access to volunteer-only case information.",
+        ))
+    }
 }
 
 /// The caller's capabilities on a case: exactly the set granted by their
@@ -91,7 +102,7 @@ pub async fn require_cap(
 /// capability is checked against always comes from the stored channel and never
 /// from a case id supplied by the caller. Both access checks are then applied:
 /// `cap` on the owning case, and — for the volunteer-only channel — the
-/// [`sees_restricted_channels`] account-role gate that keeps clients out.
+/// [`has_volunteer_access`] account-role gate that keeps clients out.
 ///
 /// A client asking for the volunteer-only channel gets the same "not found"
 /// answer as for a channel id that does not exist, so the private thread's
@@ -104,7 +115,7 @@ pub async fn require_channel(
     let channel = channels::get(channel_id)
         .await
         .map_err(ServerFnError::new)?
-        .filter(|c| sees_restricted_channels(user) || !c.kind.is_restricted())
+        .filter(|c| has_volunteer_access(user) || !c.kind.is_restricted())
         .ok_or_else(|| ServerFnError::new("Channel not found."))?;
     require_cap(user, &channel.case_id, cap).await?;
     Ok(channel)

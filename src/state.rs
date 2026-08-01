@@ -98,6 +98,12 @@ impl AppState {
         self.role().map(|r| r.is_admin()).unwrap_or(false)
     }
 
+    pub fn is_volunteer_or_admin(&self) -> bool {
+        self.role()
+            .map(|r| !matches!(r, AccountRole::Client))
+            .unwrap_or(false)
+    }
+
     /// Attempt a sign-in.
     pub async fn login(self, email: &str, password: &str) -> Result<LoginOutcome, String> {
         let outcome = auth::login(email.trim().to_string(), password.to_string())

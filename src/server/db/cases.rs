@@ -1,8 +1,11 @@
-//! Cases and their sub-resources: notes, evidence, properties, and audit log.
+//! Cases, sub properties of evidence and case_properties are their own files
 
-use crate::server::db::{audit, capabilities, channels, evidence, ids, now_stamp, pool, users};
-use crate::server_fns::cases::{Case, CaseNote, CaseProperty, CaseStatus, CaseSummary};
+use crate::server::db::{
+    audit, capabilities, channels, evidence, ids, now_stamp, pool, case_properties, users,
+};
+use crate::server_fns::cases::{Case, CaseNote, CaseStatus, CaseSummary};
 use crate::server_fns::channels::ChannelKind;
+use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::pagination::Page;
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::users::AccountRole;
@@ -237,7 +240,11 @@ pub async fn get_summaries_by_ids(ids: &[String]) -> Result<Vec<CaseSummary>, sq
 /// A single case by id, fully hydrated (properties, evidence, and its newest
 /// notes) including the capabilities `user_id` holds on it, or `None` if no
 /// such case exists.
-pub async fn get(id: &str, user_id: &str) -> Result<Option<Case>, sqlx::Error> {
+pub async fn get(
+    id: &str,
+    user_id: &str,
+    has_volunteer_access: bool,
+) -> Result<Option<Case>, sqlx::Error> {
     let Some(row) =
         sqlx::query_as::<_, CaseRow>("SELECT id, name, status, owner_id FROM cases WHERE id = $1")
             .bind(id)
@@ -268,18 +275,8 @@ pub async fn get(id: &str, user_id: &str) -> Result<Option<Case>, sqlx::Error> {
         })
         .collect();
 
-    let evidence = evidence::get_case_evidence(id).await?;
-
-    let property_rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key, value FROM case_properties WHERE case_id = $1 ORDER BY ord ASC",
-    )
-    .bind(id)
-    .fetch_all(pool())
-    .await?;
-    let properties = property_rows
-        .into_iter()
-        .map(|(key, value)| CaseProperty { key, value })
-        .collect();
+    let evidence = evidence::get_case_evidence(id, has_volunteer_access).await?;
+    let properties = case_properties::get_case_properties(id, has_volunteer_access).await?;
 
     Ok(Some(Case {
         id: row.id,
@@ -302,7 +299,7 @@ pub async fn create(
     owner_name: &str,
     name: &str,
     status: CaseStatus,
-    properties: Vec<(String, String)>,
+    initial_properties: Vec<CaseProperty>,
     first_note: Option<String>,
 ) -> Result<String, sqlx::Error> {
     let id = ids::next(pool(), "c").await?;
@@ -321,24 +318,11 @@ pub async fn create(
     // exist without somewhere to chat.
     channels::create_defaults(&mut *tx, &id).await?;
 
-    let mut ord: i32 = 0;
-    for (k, v) in properties {
-        let key = k.trim().to_string();
-        let value = v.trim().to_string();
-        if key.is_empty() || value.is_empty() {
-            continue;
-        }
-        sqlx::query(
-            "INSERT INTO case_properties (case_id, ord, key, value) VALUES ($1, $2, $3, $4)",
-        )
-        .bind(&id)
-        .bind(ord)
-        .bind(&key)
-        .bind(&value)
-        .execute(&mut *tx)
+    // The fields every case starts with come first, so the standing paperwork
+    // sits above whatever the creator typed in.
+    case_properties::add_for_new_case(&mut tx, &id, case_properties::clean(initial_properties))
         .await?;
-        ord += 1;
-    }
+    evidence::add_for_new_case(&mut tx, &id, owner_name).await?;
 
     if let Some(body) = first_note {
         let body = body.trim().to_string();
@@ -472,69 +456,6 @@ async fn user_name(user_id: &str) -> Result<String, sqlx::Error> {
     Ok(row
         .map(|(f, l)| format!("{f} {l}").trim().to_string())
         .unwrap_or_else(|| user_id.to_string()))
-}
-
-/// Replace a case's whole property set, auditing once when it changes.
-pub async fn replace_properties(
-    case_id: &str,
-    props: Vec<(String, String)>,
-    actor: &str,
-) -> Result<(), sqlx::Error> {
-    let cleaned: Vec<(String, String)> = props
-        .into_iter()
-        .filter_map(|(k, v)| {
-            let key = k.trim().to_string();
-            if key.is_empty() {
-                None
-            } else {
-                Some((key, v.trim().to_string()))
-            }
-        })
-        .collect();
-
-    let existing: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key, value FROM case_properties WHERE case_id = $1 ORDER BY ord ASC",
-    )
-    .bind(case_id)
-    .fetch_all(pool())
-    .await?;
-    let changed = existing.len() != cleaned.len()
-        || existing
-            .iter()
-            .zip(cleaned.iter())
-            .any(|((ek, ev), (k, v))| ek != k || ev != v);
-
-    let mut tx = pool().begin().await?;
-    sqlx::query("DELETE FROM case_properties WHERE case_id = $1")
-        .bind(case_id)
-        .execute(&mut *tx)
-        .await?;
-    for (ord, (key, value)) in cleaned.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO case_properties (case_id, ord, key, value) VALUES ($1, $2, $3, $4)",
-        )
-        .bind(case_id)
-        .bind(ord as i32)
-        .bind(key)
-        .bind(value)
-        .execute(&mut *tx)
-        .await?;
-    }
-    tx.commit().await?;
-
-    if changed {
-        audit::record(
-            pool(),
-            audit::Entity::Case,
-            case_id,
-            actor,
-            "properties",
-            "",
-            "updated",
-        )
-        .await?;
-    }
-    Ok(())
 }
 
 /// Append a note to a case.

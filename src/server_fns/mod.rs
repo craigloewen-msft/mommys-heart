@@ -26,6 +26,7 @@ pub mod grants;
 pub mod message;
 pub mod pagination;
 pub mod profile;
+pub mod case_properties;
 pub mod settings;
 pub mod users;
 

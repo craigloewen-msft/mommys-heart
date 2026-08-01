@@ -1,6 +1,8 @@
 //! Case server functions: creation, edits, notes, and the per-case chat. Each
 //! operation resolves the caller and checks the required capability before
-//! touching the database. (Evidence lives in [`crate::server_fns::evidence`].)
+//! touching the database. (A case's files live in
+//! [`crate::server_fns::evidence`] and its properties in
+//! [`crate::server_fns::case_properties`].)
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -9,6 +11,7 @@ use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::evidence::Evidence;
 use crate::server_fns::message::Message;
 use crate::server_fns::pagination::Page;
+use crate::server_fns::case_properties::CaseProperty;
 
 /// The lifecycle status of a case.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,13 +61,6 @@ pub struct CaseNote {
     pub author: String,
     pub body: String,
     pub created_at: String,
-}
-
-/// A named key/value property on a case (e.g. attorney names, court, docket).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CaseProperty {
-    pub key: String,
-    pub value: String,
 }
 
 /// A support case tracked by the organization.
@@ -152,11 +148,11 @@ pub async fn load_case_summaries_for_user(
 #[server(prefix = "/api")]
 pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
     use crate::server::db::cases;
-    use crate::server::permissions::{require_cap, require_user};
+    use crate::server::permissions::{require_cap, require_user, has_volunteer_access};
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::ViewCase).await?;
-    cases::get(&case_id, &user.id)
+    cases::get(&case_id, &user.id, has_volunteer_access(&user))
         .await
         .map_err(ServerFnError::new)
 }
@@ -197,16 +193,19 @@ pub async fn admin_cases_by_ids(ids: Vec<String>) -> Result<Vec<CaseSummary>, Se
 pub async fn create_case(
     name: String,
     status: CaseStatus,
-    properties: Vec<(String, String)>,
+    properties: Vec<CaseProperty>,
     first_note: Option<String>,
 ) -> Result<String, ServerFnError> {
     use crate::server::db::cases;
-    use crate::server::permissions::require_user;
+    use crate::server::permissions::{require_user, require_visibility};
 
     let user = require_user().await?;
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err(ServerFnError::new("Case name is required."));
+    }
+    for property in &properties {
+        require_visibility(&user, property.visibility)?;
     }
     cases::create(
         &user.id,
@@ -297,32 +296,6 @@ pub async fn set_case_owner(case_id: String, owner_id: String) -> Result<(), Ser
         user.full_name(),
         crate::server_fns::settings::NotificationKind::CaseData,
         "changed the case owner".to_string(),
-        crate::server::notifications::Audience::Everyone,
-    );
-    Ok(())
-}
-
-/// Replace a case's free-form properties (requires the `EditCase` capability).
-#[server(prefix = "/api")]
-pub async fn set_case_properties(
-    case_id: String,
-    properties: Vec<(String, String)>,
-) -> Result<(), ServerFnError> {
-    use crate::server::db::cases;
-    use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::capabilities::CaseCapability;
-
-    let user = require_user().await?;
-    require_cap(&user, &case_id, CaseCapability::EditCase).await?;
-    cases::replace_properties(&case_id, properties, &user.full_name())
-        .await
-        .map_err(ServerFnError::new)?;
-    crate::server::notifications::notify_case(
-        case_id,
-        user.id.clone(),
-        user.full_name(),
-        crate::server_fns::settings::NotificationKind::CaseData,
-        "updated the case properties".to_string(),
         crate::server::notifications::Audience::Everyone,
     );
     Ok(())
