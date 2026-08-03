@@ -66,7 +66,7 @@ async fn main() {
     rag::start_background_ingest();
 
     // Prune audit-log entries older than the retention window, on startup and
-    // then daily.
+    // then every 30 days.
     mommys_heart_crm::server::db::audit::start_retention_task();
 
     // Same for the durable email-delivery-failure log surfaced in the admin
@@ -74,7 +74,7 @@ async fn main() {
     mommys_heart_crm::server::db::email_failures::start_retention_task();
 
     // Prune case-chat notifications that were never read within the retention
-    // window (unread ones a user never opened), on startup and then daily.
+    // window (unread ones a user never opened), on startup and every 30 days.
     mommys_heart_crm::server::db::channel_notifications::start_retention_task();
 
     let conf = get_configuration(None).unwrap();

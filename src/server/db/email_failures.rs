@@ -12,10 +12,11 @@ use crate::server_fns::email_failures::EmailFailure;
 use crate::server_fns::pagination::Page;
 
 /// How long failure rows are retained before the background task prunes them.
-const RETENTION_MONTHS: i64 = 6;
+const RETENTION_YEARS: i64 = 10;
 
 /// How often the background retention task runs.
-const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+const RETENTION_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
 #[derive(sqlx::FromRow)]
 struct FailureRow {
@@ -95,14 +96,14 @@ pub async fn record(recipient: &str, subject: &str, context: &str, error: &str) 
     }
 }
 
-/// Delete failure rows older than the retention window ([`RETENTION_MONTHS`]),
+/// Delete failure rows older than the retention window ([`RETENTION_YEARS`]),
 /// returning the number removed. Retention is computed against the
 /// machine-readable `created_at` timestamp (not the display-only `at` text).
 pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(
-        "DELETE FROM email_failures WHERE created_at < now() - make_interval(months => $1)",
+        "DELETE FROM email_failures WHERE created_at < now() - make_interval(years => $1)",
     )
-    .bind(RETENTION_MONTHS as i32)
+    .bind(RETENTION_YEARS as i32)
     .execute(pool)
     .await?;
     Ok(result.rows_affected())

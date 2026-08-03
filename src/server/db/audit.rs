@@ -5,10 +5,11 @@ use crate::server_fns::audit::ChangeLogEntry;
 use crate::server_fns::pagination::Page;
 
 /// How long audit entries are retained before the background task prunes them.
-const RETENTION_MONTHS: i64 = 12;
+const RETENTION_YEARS: i64 = 10;
 
 /// How often the background retention task runs.
-const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+const RETENTION_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Which kind of entity an audit entry is attached to.
 #[derive(Clone, Copy, Debug)]
@@ -126,13 +127,13 @@ pub async fn record(
     Ok(())
 }
 
-/// Delete audit entries older than the retention window ([`RETENTION_MONTHS`]),
+/// Delete audit entries older than the retention window ([`RETENTION_YEARS`]),
 /// returning the number of rows removed. Retention is computed against the
 /// machine-readable `created_at` timestamp (not the display-only `at` text).
 pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
     let result =
-        sqlx::query("DELETE FROM audit_log WHERE created_at < now() - make_interval(months => $1)")
-            .bind(RETENTION_MONTHS as i32)
+        sqlx::query("DELETE FROM audit_log WHERE created_at < now() - make_interval(years => $1)")
+            .bind(RETENTION_YEARS as i32)
             .execute(pool)
             .await?;
     Ok(result.rows_affected())
