@@ -159,6 +159,18 @@ pub fn InboxPage() -> impl IntoView {
                     let stored_id = StoredValue::new(case_id.clone());
                     let is_selected =
                         move || stored_id.with_value(|id| selected.get().as_deref() == Some(id.as_str()));
+                    // Total unread across this case's channels, for the list badge.
+                    let case_unread = move || {
+                        stored_id.with_value(|id| {
+                            state
+                                .unread
+                                .get()
+                                .iter()
+                                .filter(|u| &u.case_id == id)
+                                .map(|u| u.count)
+                                .sum::<i64>()
+                        })
+                    };
                     let count = c.message_count;
                     let name = title_for(&c);
                     let can_manage = c.capabilities.contains(&CaseCapability::ManageChannels);
@@ -189,7 +201,20 @@ pub fn InboxPage() -> impl IntoView {
                         >
                             <div class="flex items-center justify-between gap-2">
                                 <span class="min-w-0 truncate text-sm font-medium text-slate-200">{name}</span>
-                                <span class="shrink-0 text-xs text-slate-500">{count} " msgs"</span>
+                                <span class="flex shrink-0 items-center gap-1.5 text-xs text-slate-500">
+                                    {move || {
+                                        let n = case_unread();
+                                        (n > 0)
+                                            .then(|| {
+                                                view! {
+                                                    <span class="inline-flex min-w-[1.1rem] items-center justify-center rounded-full bg-primary-500 px-1.5 text-[0.65rem] font-semibold leading-none text-white">
+                                                        {n}
+                                                    </span>
+                                                }
+                                            })
+                                    }}
+                                    <span>{count} " msgs"</span>
+                                </span>
                             </div>
                         </button>
                         <Show when=is_selected>
@@ -346,6 +371,7 @@ fn ChannelNav(
     // `StoredValue` keeps the case id `Copy`-accessible so the handlers below
     // stay `FnMut` inside reactive closures.
     let case_id = StoredValue::new(case_id);
+    let state = expect_context::<AppState>();
 
     let is_staged_delete = move |id: &str| pending_deletes.get().iter().any(|d| d == id);
 
@@ -465,6 +491,18 @@ fn ChannelNav(
                 let is_active =
                     move || id.with_value(|id| active.get().as_deref() == Some(id.as_str()));
                 let staged = move || id.with_value(|id| is_staged_delete(id));
+                // Unread messages for this channel, from the app-wide badge state.
+                let unread = move || {
+                    id.with_value(|id| {
+                        state
+                            .unread
+                            .get()
+                            .iter()
+                            .find(|u| &u.channel_id == id)
+                            .map(|u| u.count)
+                            .unwrap_or(0)
+                    })
+                };
                 let restricted = c.kind.is_restricted();
                 let select = move |_| {
                     active.set(Some(id.get_value()));
@@ -503,6 +541,8 @@ fn ChannelNav(
                                     format!("{base} text-slate-500 line-through")
                                 } else if is_active() {
                                     format!("{base} bg-primary-500/15 font-semibold text-primary-300")
+                                } else if unread() > 0 {
+                                    format!("{base} font-semibold text-primary-300 hover:bg-slate-800")
                                 } else {
                                     format!("{base} text-slate-300 hover:bg-slate-800")
                                 }
@@ -512,7 +552,24 @@ fn ChannelNav(
                                 {if restricted { "\u{1f512}" } else { "#" }}
                             </span>
                             <span class="min-w-0 truncate">{name}</span>
-                            <span class="ml-auto shrink-0 text-xs text-slate-500">{count}</span>
+                            {move || {
+                                let n = unread();
+                                if n > 0 {
+                                    view! {
+                                        <span class="ml-auto inline-flex min-w-[1.1rem] shrink-0 items-center justify-center rounded-full bg-primary-500 px-1.5 text-[0.65rem] font-semibold leading-none text-white">
+                                            {n}
+                                        </span>
+                                    }
+                                    .into_any()
+                                } else {
+                                    view! {
+                                        <span class="ml-auto shrink-0 text-xs text-slate-500">
+                                            {count}
+                                        </span>
+                                    }
+                                    .into_any()
+                                }
+                            }}
                         </button>
                         {remove}
                     </div>
@@ -772,6 +829,31 @@ fn ChannelThread(
                     total.set(page.total);
                 }
                 loading.set(false);
+            });
+        });
+    }
+
+    // Opening a channel clears its unread notifications for this user. The badge
+    // clears optimistically, then the authoritative count is refetched once the
+    // server confirms the delete.
+    {
+        let channel_id = channel_id.clone();
+        Effect::new(move |_| {
+            let channel_id = channel_id.clone();
+            let is_unread = state.unread.with_untracked(|list| {
+                list.iter().any(|item| item.channel_id == channel_id)
+            });
+            if !is_unread {
+                return;
+            }
+            state.clear_channel_unread(&channel_id);
+            spawn_local(async move {
+                if crate::server_fns::channel_notifications::mark_channel_read(channel_id)
+                    .await
+                    .is_ok()
+                {
+                    state.refresh_unread();
+                }
             });
         });
     }

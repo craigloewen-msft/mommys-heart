@@ -369,6 +369,21 @@ pub async fn send_message(channel_id: String, body: String) -> Result<Message, S
     )
     .await
     .map_err(ServerFnError::new)?;
+
+    if let Err(e) = crate::server::db::channel_notifications::record_for_channel_message(
+        &channel.case_id,
+        &channel.id,
+        &message.id,
+        &user.id,
+        channel.kind,
+    )
+    .await
+    {
+        tracing::warn!(
+            "failed to record chat notifications for channel {}: {e}",
+            channel.id
+        );
+    }
     let preview: String = body.chars().take(80).collect();
     let ellipsis = if body.chars().count() > 80 { "…" } else { "" };
     let detail = format!(

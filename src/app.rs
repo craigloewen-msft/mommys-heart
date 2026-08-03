@@ -93,6 +93,14 @@ pub fn App() -> impl IntoView {
     provide_context(state);
     state.restore_session();
 
+    // Refresh unread notifications every 5 minutes
+    Effect::new(move |_| {
+        set_interval(
+            move || state.refresh_unread(),
+            std::time::Duration::from_secs(300),
+        );
+    });
+
     view! {
         <Stylesheet id="leptos" href="/pkg/mommys-heart-crm.css" />
         <Title text="Mommy's Heart CRM" />

@@ -73,6 +73,10 @@ async fn main() {
     // dashboard.
     mommys_heart_crm::server::db::email_failures::start_retention_task();
 
+    // Prune case-chat notifications that were never read within the retention
+    // window (unread ones a user never opened), on startup and then daily.
+    mommys_heart_crm::server::db::channel_notifications::start_retention_task();
+
     let conf = get_configuration(None).unwrap();
     let leptos_options = conf.leptos_options;
     let addr = leptos_options.site_addr;

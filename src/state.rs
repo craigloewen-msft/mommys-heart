@@ -9,6 +9,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::server_fns::channel_notifications::{self, ChannelUnread};
 use crate::server_fns::users::{AccountRole, UserSummary};
 use crate::server_fns::auth::LoginOutcome;
 use crate::server_fns::{auth, err_text};
@@ -46,6 +47,7 @@ pub fn today() -> String {
 pub struct AppState {
     pub current_user_summary: RwSignal<Option<UserSummary>>,
     pub auth_resolved: RwSignal<bool>,
+    pub unread: RwSignal<Vec<ChannelUnread>>,
 }
 
 impl Default for AppState {
@@ -59,6 +61,7 @@ impl AppState {
         Self {
             current_user_summary: RwSignal::new(None),
             auth_resolved: RwSignal::new(false),
+            unread: RwSignal::new(Vec::new()),
         }
     }
 
@@ -81,9 +84,35 @@ impl AppState {
         spawn_local(async move {
             if let Ok(Some(user)) = auth::current_user().await {
                 self.current_user_summary.set(Some(user));
+                self.refresh_unread();
             }
             self.auth_resolved.set(true);
         });
+    }
+
+    pub fn refresh_unread(self) {
+        if !cfg!(feature = "hydrate") {
+            return;
+        }
+        if self.current_user_summary.with_untracked(|u| u.is_none()) {
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(list) = channel_notifications::load_unread_notifications().await {
+                self.unread.set(list);
+            }
+        });
+    }
+
+    /// Optimistically drop a channel's unread entry once the user opens it, so
+    /// the badge clears immediately without waiting for the next server refresh.
+    pub fn clear_channel_unread(self, channel_id: &str) {
+        self.unread
+            .update(|list| list.retain(|c| c.channel_id != channel_id));
+    }
+
+    pub fn total_unread(&self) -> i64 {
+        self.unread.get().iter().map(|c| c.count).sum()
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -111,6 +140,7 @@ impl AppState {
             .map_err(err_text)?;
         if let LoginOutcome::Authenticated(user) = &outcome {
             self.current_user_summary.set(Some(user.clone().into()));
+            self.refresh_unread();
         }
         Ok(outcome)
     }
@@ -123,6 +153,7 @@ impl AppState {
             .await
             .map_err(err_text)?;
         self.current_user_summary.set(Some(user.into()));
+        self.refresh_unread();
         Ok(())
     }
 
@@ -155,11 +186,13 @@ impl AppState {
             .await
             .map_err(err_text)?;
         self.current_user_summary.set(Some(user.into()));
+        self.refresh_unread();
         Ok(())
     }
 
     pub fn logout(self) {
         self.current_user_summary.set(None);
+        self.unread.set(Vec::new());
         spawn_local(async move {
             let _ = auth::logout().await;
         });

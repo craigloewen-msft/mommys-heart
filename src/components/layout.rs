@@ -6,7 +6,11 @@ use crate::state::AppState;
 
 /// A top-navbar link that highlights when its route is active.
 #[component]
-fn NavLink(#[prop(into)] href: String, label: &'static str) -> impl IntoView {
+fn NavLink(
+    #[prop(into)] href: String,
+    label: &'static str,
+    #[prop(optional, into)] badge: Option<Signal<i64>>,
+) -> impl IntoView {
     let location = use_location();
     let match_on = href.clone();
     let active = move || {
@@ -17,6 +21,7 @@ fn NavLink(#[prop(into)] href: String, label: &'static str) -> impl IntoView {
             path.starts_with(&match_on)
         }
     };
+    let unread = move || badge.map(|b| b.get()).unwrap_or(0);
 
     view! {
         <A
@@ -25,12 +30,29 @@ fn NavLink(#[prop(into)] href: String, label: &'static str) -> impl IntoView {
                 let base = "px-3 py-2 rounded-lg text-sm font-medium transition-colors";
                 if active() {
                     format!("{base} bg-primary-500/15 text-primary-300")
+                } else if unread() > 0 {
+                    format!("{base} text-primary-300 hover:bg-slate-800")
                 } else {
                     format!("{base} text-slate-300 hover:bg-slate-800 hover:text-slate-100")
                 }
             }
         >
-            {label}
+            {move || {
+                let n = unread();
+                if n > 0 {
+                    view! {
+                        <span class="inline-flex items-center gap-1.5">
+                            {label}
+                                <span class="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-primary-500 px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-white">
+                                    {n}
+                                </span>
+                        </span>
+                    }
+                    .into_any()
+                } else {
+                    label.into_any()
+                }
+            }}
         </A>
     }
 }
@@ -66,6 +88,9 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let close_menu = move |_| menu_open.set(false);
     let is_admin = role.is_admin();
 
+    // Reactive unread total driving the "Case Chat" badge.
+    let unread_total = Signal::derive(move || state.total_unread());
+
     view! {
         <div class="min-h-screen bg-slate-950 text-slate-100">
             <header class="sticky top-0 z-20 border-b border-slate-800 bg-slate-900/80 backdrop-blur">
@@ -80,7 +105,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
 
                         <nav class="hidden md:flex items-center gap-1">
                             <NavLink href="/cases" label="Cases" />
-                            <NavLink href="/inbox" label="Case Chat" />
+                            <NavLink href="/inbox" label="Case Chat" badge=unread_total />
                             {if is_admin {
                                 view! { <NavLink href="/grants" label="Grants" /> }.into_any()
                             } else {
@@ -128,7 +153,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                         on:click=close_menu
                     >
                         <NavLink href="/cases" label="Cases" />
-                        <NavLink href="/inbox" label="Case Chat" />
+                        <NavLink href="/inbox" label="Case Chat" badge=unread_total />
                         {if is_admin {
                             view! { <NavLink href="/grants" label="Grants" /> }.into_any()
                         } else {
