@@ -17,6 +17,7 @@ use leptos_router::hooks::use_params_map;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
+use crate::components::volunteer_hours::VolunteerHoursPanel;
 use crate::server_fns::err_text;
 use crate::server_fns::profile::{load_profile, save_my_profile, ProfileEdit, UserProfile};
 use crate::state::AppState;
@@ -30,7 +31,11 @@ const SECTION_CLASS: &str = "rounded-xl border border-slate-800 bg-slate-900 p-4
 #[component]
 fn DetailRow(label: &'static str, #[prop(into)] value: String) -> impl IntoView {
     let empty = value.trim().is_empty();
-    let text = if empty { "Not provided".to_string() } else { value };
+    let text = if empty {
+        "Not provided".to_string()
+    } else {
+        value
+    };
     view! {
         <div class="flex flex-col gap-0.5 border-b border-slate-800 py-2 last:border-b-0 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
             <span class=LABEL_CLASS>{label}</span>
@@ -45,6 +50,8 @@ fn DetailRow(label: &'static str, #[prop(into)] value: String) -> impl IntoView 
 pub fn ProfilePage() -> impl IntoView {
     let state = expect_context::<AppState>();
     let params = use_params_map();
+    let current_user_id =
+        Memo::new(move |_| state.current_user_summary.get().map(|current| current.id));
 
     // `/profile` shows the signed-in user; `/profile/:id` shows that user.
     let target_id = move || {
@@ -52,7 +59,7 @@ pub fn ProfilePage() -> impl IntoView {
             .read()
             .get("id")
             .filter(|id| !id.trim().is_empty())
-            .or_else(|| state.current_user_summary.get().map(|u| u.id))
+            .or_else(|| current_user_id.get())
             .unwrap_or_default()
     };
 
@@ -68,7 +75,7 @@ pub fn ProfilePage() -> impl IntoView {
 
     Effect::new(move |_| {
         let id = target_id();
-        if !state.is_authenticated() || id.is_empty() {
+        if current_user_id.get().is_none() || id.is_empty() {
             return;
         }
         profile.set(None);
@@ -110,18 +117,25 @@ pub fn ProfilePage() -> impl IntoView {
             save_error.set(None);
             spawn_local(async move {
                 match save_my_profile(edit).await {
-                    Ok(updated) => {
+                    Ok(saved_edit) => {
                         // Keep the navbar (and anything else reading the session
                         // user) in step with the freshly saved name.
                         state.current_user_summary.update(|current| {
                             if let Some(u) = current {
-                                if u.id == updated.id {
-                                    u.first_name = updated.first_name.clone();
-                                    u.last_name = updated.last_name.clone();
+                                u.first_name = saved_edit.first_name.clone();
+                                u.last_name = saved_edit.last_name.clone();
+                            }
+                        });
+                        profile.update(|current| {
+                            if let Some(profile) = current {
+                                profile.first_name = saved_edit.first_name.clone();
+                                profile.last_name = saved_edit.last_name.clone();
+                                if let Some(contact) = &mut profile.contact {
+                                    contact.phone = saved_edit.phone.clone();
+                                    contact.home_address = saved_edit.home_address.clone();
                                 }
                             }
                         });
-                        profile.set(Some(updated));
                         editing.set(false);
                         saved.set(true);
                     }
@@ -234,6 +248,24 @@ pub fn ProfilePage() -> impl IntoView {
                 <p class="text-xs text-slate-500">
                     "You can see this profile because you work a case with " {p.full_name()} "."
                 </p>
+            }
+            .into_any()
+        };
+
+        let volunteer_hours = move || {
+            let Some(p) = profile.get() else {
+                return ().into_any();
+            };
+            let display_name = p.full_name();
+            let Some(hours) = p.volunteer_hours else {
+                return ().into_any();
+            };
+            view! {
+                <VolunteerHoursPanel
+                    initial_hours=hours
+                    is_self=p.is_self
+                    display_name=display_name
+                />
             }
             .into_any()
         };
@@ -353,6 +385,7 @@ pub fn ProfilePage() -> impl IntoView {
                     </Show>
                     {edit_form}
                     <Show when=move || !editing.get()>{details.clone()}</Show>
+                    {volunteer_hours}
                     {shared}
                 </div>
             }

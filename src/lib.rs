@@ -13,6 +13,7 @@ pub mod components {
     pub mod layout;
     pub mod loading;
     pub mod profile_link;
+    pub mod volunteer_hours;
 }
 
 pub mod pages {

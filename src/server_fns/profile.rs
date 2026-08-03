@@ -21,6 +21,7 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::server_fns::users::{AccountRole, User};
+use crate::server_fns::volunteer_hours::VolunteerHours;
 
 /// The personal contact details on a profile. Only ever populated for the
 /// profile's owner and for administrators; omitted entirely otherwise.
@@ -42,6 +43,10 @@ pub struct UserProfile {
     /// an administrator.
     #[serde(default)]
     pub contact: Option<ProfileContact>,
+    /// Volunteer hours, present only for a volunteer-access account when the
+    /// viewer owns this profile or is an administrator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volunteer_hours: Option<VolunteerHours>,
     /// Whether this profile belongs to the caller (drives the edit affordances).
     #[serde(default)]
     pub is_self: bool,
@@ -60,7 +65,13 @@ impl UserProfile {
     /// *constructor* rather than a filter applied afterwards: you cannot get a
     /// `UserProfile` at all without first answering "is this the owner or an
     /// admin?", so a caller cannot forget to strip the contact block.
-    pub fn for_viewer(user: User, is_self: bool, is_admin: bool, shares_case: bool) -> Self {
+    pub fn for_viewer(
+        user: User,
+        is_self: bool,
+        is_admin: bool,
+        shares_case: bool,
+        volunteer_hours: Option<VolunteerHours>,
+    ) -> Self {
         let User {
             id,
             first_name,
@@ -81,6 +92,7 @@ impl UserProfile {
                 phone,
                 home_address,
             }),
+            volunteer_hours,
             is_self,
             shares_case,
         }
@@ -138,8 +150,8 @@ pub struct ProfileEdit {
 /// owner and for admins.
 #[server(prefix = "/api")]
 pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError> {
-    use crate::server::db::users;
-    use crate::server::permissions::require_user;
+    use crate::server::db::{users, volunteer_hours};
+    use crate::server::permissions::{has_volunteer_access, require_user};
 
     let viewer = require_user().await?;
     let user_id = user_id.trim().to_string();
@@ -168,18 +180,30 @@ pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError>
         return Err(ServerFnError::new(UNAVAILABLE));
     }
 
+    let hours = if (is_self || is_admin) && has_volunteer_access(&record) {
+        Some(
+            volunteer_hours::list_for_user(&record.id)
+                .await
+                .map_err(ServerFnError::new)?,
+        )
+    } else {
+        None
+    };
+
     Ok(UserProfile::for_viewer(
         record,
         is_self,
         is_admin,
         shares_case,
+        hours,
     ))
 }
 
-/// Save the caller's own profile and return it as freshly stored. Always scoped
-/// to the signed-in user: there is no way to edit somebody else's profile here.
+/// Save and return the caller's normalized editable profile fields. Always
+/// scoped to the signed-in user: there is no way to edit somebody else's
+/// profile here, and unrelated profile data is neither read nor returned.
 #[server(prefix = "/api")]
-pub async fn save_my_profile(edit: ProfileEdit) -> Result<UserProfile, ServerFnError> {
+pub async fn save_my_profile(edit: ProfileEdit) -> Result<ProfileEdit, ServerFnError> {
     use crate::server::db::users;
     use crate::server::permissions::require_user;
 
@@ -198,16 +222,5 @@ pub async fn save_my_profile(edit: ProfileEdit) -> Result<UserProfile, ServerFnE
         .await
         .map_err(ServerFnError::new)?;
 
-    let saved = users::get(&user.id)
-        .await
-        .map_err(ServerFnError::new)?
-        .ok_or_else(|| ServerFnError::new("This profile isn't available."))?;
-
-    // Editing is always self-service, so the contact block is always included.
-    Ok(UserProfile::for_viewer(
-        saved,
-        true,
-        user.role.is_admin(),
-        false,
-    ))
+    Ok(edit)
 }

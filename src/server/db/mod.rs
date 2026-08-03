@@ -25,6 +25,7 @@ pub mod settings;
 pub mod throttle;
 pub mod trusted_devices;
 pub mod users;
+pub mod volunteer_hours;
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;

@@ -30,6 +30,7 @@ pub mod profile;
 pub mod case_properties;
 pub mod settings;
 pub mod users;
+pub mod volunteer_hours;
 
 use leptos::prelude::*;
 
