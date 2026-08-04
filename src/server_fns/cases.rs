@@ -107,6 +107,8 @@ pub struct CaseSummary {
     pub owner_last_name: String,
     pub message_count: usize,
     #[serde(default)]
+    pub inactive: bool,
+    #[serde(default)]
     pub capabilities: Vec<CaseCapability>,
 }
 

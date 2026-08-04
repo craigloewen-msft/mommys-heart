@@ -298,6 +298,17 @@ pub fn CaseHomePage() -> impl IntoView {
                             view! { <span class=badge(classes)>{label}</span> }.into_any()
                         })
                         .unwrap_or_else(|| ().into_any());
+                    let inactive_badge = c
+                        .inactive
+                        .then(|| {
+                            view! {
+                                <span class=badge("bg-amber-500/15 text-amber-300 ring-1 ring-inset ring-amber-500/30")>
+                                    "\u{26a0} No activity in 30+ days"
+                                </span>
+                            }
+                            .into_any()
+                        })
+                        .unwrap_or_else(|| ().into_any());
                     let status = c.status;
                     let name = c.name.clone();
                     let owner = c.owner_full_name();
@@ -324,6 +335,7 @@ pub fn CaseHomePage() -> impl IntoView {
                         <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
                             <span>"Owner: " {owner}</span>
                             {access_badge}
+                            {inactive_badge}
                         </div>
                     </button>
                 }

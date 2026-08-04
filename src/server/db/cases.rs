@@ -38,10 +38,15 @@ struct SummaryRow {
     owner_first_name: String,
     owner_last_name: String,
     message_count: i64,
+    last_activity: Option<String>,
 }
 
 impl SummaryRow {
-    fn into_summary(self, capabilities: Vec<CaseCapability>) -> CaseSummary {
+    fn into_summary(self, capabilities: Vec<CaseCapability>, threshold: &str) -> CaseSummary {
+        let inactive = self
+            .last_activity
+            .as_deref()
+            .is_some_and(|ts| ts < threshold);
         CaseSummary {
             id: self.id,
             name: self.name,
@@ -50,9 +55,18 @@ impl SummaryRow {
             owner_first_name: self.owner_first_name,
             owner_last_name: self.owner_last_name,
             message_count: self.message_count.max(0) as usize,
+            inactive,
             capabilities,
         }
     }
+}
+
+/// The `YYYY-MM-DD HH:MM` local-time cutoff (30 days ago) for the case-chat
+/// inactivity badge, matching the format [`now_stamp`] writes for `sent_at`.
+fn inactivity_threshold() -> String {
+    (chrono::Local::now() - chrono::Duration::days(30))
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
 }
 
 /// The `SELECT` list that projects a `cases` row (aliased `c`) into a
@@ -73,7 +87,11 @@ fn summary_select(message_count_scope: &str) -> String {
         (SELECT COUNT(*) FROM messages m
           JOIN case_channels ch ON ch.id = m.channel_id
           WHERE m.case_id = c.id
-            AND (({message_count_scope}) OR ch.kind <> '{restricted}')) AS message_count
+            AND (({message_count_scope}) OR ch.kind <> '{restricted}')) AS message_count,
+        (SELECT MAX(m.sent_at) FROM messages m
+          JOIN case_channels ch ON ch.id = m.channel_id
+          WHERE m.case_id = c.id
+            AND (({message_count_scope}) OR ch.kind <> '{restricted}')) AS last_activity
  FROM cases c
  LEFT JOIN users u ON u.id = c.owner_id",
         restricted = ChannelKind::VolunteerOnly.slug()
@@ -175,11 +193,12 @@ pub async fn get_summaries_for_user(
     } else {
         capabilities::get_multi_case(user_id, &ids).await?
     };
+    let threshold = inactivity_threshold();
     let items = rows
         .into_iter()
         .map(|r| {
             let caps = capabilities_by_case.remove(&r.id).unwrap_or_default();
-            r.into_summary(caps)
+            r.into_summary(caps, &threshold)
         })
         .collect::<Vec<_>>();
     Ok(Page { items, total })
@@ -212,9 +231,10 @@ pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, s
     .bind(limit)
     .fetch_all(pool())
     .await?;
+    let threshold = inactivity_threshold();
     Ok(rows
         .into_iter()
-        .map(|r| r.into_summary(Vec::new()))
+        .map(|r| r.into_summary(Vec::new(), &threshold))
         .collect())
 }
 
@@ -232,9 +252,10 @@ pub async fn get_summaries_by_ids(ids: &[String]) -> Result<Vec<CaseSummary>, sq
     .bind(ids)
     .fetch_all(pool())
     .await?;
+    let threshold = inactivity_threshold();
     Ok(rows
         .into_iter()
-        .map(|r| r.into_summary(Vec::new()))
+        .map(|r| r.into_summary(Vec::new(), &threshold))
         .collect())
 }
 
