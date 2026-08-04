@@ -85,6 +85,35 @@ pub async fn insert(
     password_hash: &str,
     role: AccountRole,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    insert_in(
+        &mut tx,
+        id,
+        first_name,
+        last_name,
+        email,
+        phone,
+        home_address,
+        password_hash,
+        role,
+    )
+    .await?;
+    tx.commit().await
+}
+
+/// Insert a user as part of a larger transaction.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: &str,
+    first_name: &str,
+    last_name: &str,
+    email: &str,
+    phone: &str,
+    home_address: &str,
+    password_hash: &str,
+    role: AccountRole,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO users (id, first_name, last_name, email, phone, home_address, password_hash, role)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -97,7 +126,7 @@ pub async fn insert(
     .bind(home_address)
     .bind(password_hash)
     .bind(role.slug())
-    .execute(pool())
+    .execute(&mut **tx)
     .await?;
     Ok(())
 }
@@ -321,11 +350,23 @@ pub async fn assign_capabilities(
     actor: &str,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
-    lock_capability_target(&mut tx, user_id).await?;
+    assign_capabilities_in(&mut tx, user_id, case_id, capabilities, actor).await?;
+    tx.commit().await
+}
+
+/// Replace a user's case capabilities inside an existing transaction.
+pub async fn assign_capabilities_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: &str,
+    case_id: &str,
+    capabilities: &[CaseCapability],
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    lock_capability_target(tx, user_id).await?;
     sqlx::query("DELETE FROM case_assignments WHERE user_id = $1 AND case_id = $2")
         .bind(user_id)
         .bind(case_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     for cap in capabilities {
         sqlx::query(
@@ -335,7 +376,7 @@ pub async fn assign_capabilities(
         .bind(user_id)
         .bind(case_id)
         .bind(cap.slug())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     }
 
@@ -345,7 +386,7 @@ pub async fn assign_capabilities(
         .collect::<Vec<_>>()
         .join(", ");
     audit::record_in_transaction(
-        &mut tx,
+        tx,
         audit::Entity::User,
         user_id,
         actor,
@@ -354,7 +395,7 @@ pub async fn assign_capabilities(
         &summary,
     )
     .await?;
-    tx.commit().await
+    Ok(())
 }
 
 /// Whether `viewer_id` and `other_id` work at least one case together — the

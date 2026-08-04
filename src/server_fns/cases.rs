@@ -7,6 +7,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::helpers::case_intake::CaseIntake;
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::evidence::Evidence;
 use crate::server_fns::message::Message;
@@ -191,7 +192,7 @@ pub async fn admin_cases_by_ids(ids: Vec<String>) -> Result<Vec<CaseSummary>, Se
 pub async fn create_case(
     name: String,
     status: CaseStatus,
-    properties: Vec<CaseProperty>,
+    intake: CaseIntake,
     first_note: Option<String>,
 ) -> Result<String, ServerFnError> {
     use crate::server::db::cases;
@@ -202,6 +203,7 @@ pub async fn create_case(
     if name.is_empty() {
         return Err(ServerFnError::new("Case name is required."));
     }
+    let properties = intake.properties();
     for property in &properties {
         require_visibility(&user, property.visibility)?;
     }

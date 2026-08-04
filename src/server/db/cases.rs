@@ -1,5 +1,6 @@
 //! Cases, sub properties of evidence and case_properties are their own files
 
+use crate::helpers::new_case_fields;
 use crate::server::db::{
     audit, capabilities, channels, evidence, ids, now_stamp, pool, case_properties, users,
 };
@@ -341,11 +342,48 @@ pub async fn create(
             .await?;
         }
     }
+    users::assign_capabilities_in(&mut tx, owner_id, &id, &CaseCapability::ALL, owner_name)
+        .await?;
     tx.commit().await?;
-
-    // Give the owner an explicit full-control assignment (also audits it).
-    users::assign_capabilities(owner_id, &id, &CaseCapability::ALL, owner_name).await?;
     Ok(id)
+}
+
+/// Materialize the case reserved during public signup inside the caller's
+/// account-verification transaction.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_from_signup_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    case_id: &str,
+    owner_id: &str,
+    owner_name: &str,
+    name: &str,
+    initial_properties: Vec<CaseProperty>,
+    agreement: evidence::EvidenceFile<'_>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO cases (id, name, status, owner_id) VALUES ($1, $2, $3, $4)")
+        .bind(case_id)
+        .bind(name)
+        .bind(CaseStatus::Open.slug())
+        .bind(owner_id)
+        .execute(&mut **tx)
+        .await?;
+    channels::create_defaults(&mut **tx, case_id).await?;
+    case_properties::add_for_new_case(tx, case_id, case_properties::clean(initial_properties))
+        .await?;
+    // A signup case is created with the same standard rows as any other, then the
+    // agreement staged during signup is dropped into its "Signed service
+    // agreement" slot — no signup-only evidence path.
+    evidence::add_for_new_case(tx, case_id, owner_name).await?;
+    evidence::set_file_in(
+        tx,
+        case_id,
+        new_case_fields::SIGNED_SERVICE_AGREEMENT_LABEL,
+        owner_name,
+        &agreement,
+    )
+    .await?;
+    users::assign_capabilities_in(tx, owner_id, case_id, &CaseCapability::ALL, owner_name).await?;
+    Ok(())
 }
 
 /// Update a single `cases` column and record an audit entry — but only when the

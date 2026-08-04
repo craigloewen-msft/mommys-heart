@@ -178,14 +178,14 @@ async fn insert(
 }
 
 /// Add the evidence a new case starts with, from
-/// [`NEW_CASE_FIELDS`](crate::helpers::new_case_fields::NEW_CASE_FIELDS): each
-/// one named, with no file in it yet.
+/// [`VOLUNTEER_ONLY_FIELDS`](crate::helpers::new_case_fields::VOLUNTEER_ONLY_FIELDS):
+/// each one named, with no file in it yet.
 pub async fn add_for_new_case(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     case_id: &str,
     added_by: &str,
 ) -> Result<(), sqlx::Error> {
-    for field in new_case_fields::files() {
+    for field in new_case_fields::volunteer_only_files() {
         insert_in(
             tx,
             added_by,
@@ -194,11 +194,47 @@ pub async fn add_for_new_case(
                 name: field.label,
                 description: field.description,
                 section: field.section,
-                visibility: field.visibility,
+                visibility: Visibility::VolunteerOnly,
                 file: None,
             },
         )
         .await?;
+    }
+    Ok(())
+}
+
+/// Put a file into an existing, still-empty evidence slot inside a transaction,
+/// identified by its case and name. The transaction-scoped sibling of
+/// [`set_file`]: it lets a case be created and one of its standing slots filled
+/// (public signup stages the signed agreement up front) in a single atomic step.
+/// Errors if the named slot does not exist so a staged file can never be
+/// silently dropped.
+pub async fn set_file_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    case_id: &str,
+    name: &str,
+    uploaded_by: &str,
+    file: &EvidenceFile<'_>,
+) -> Result<(), sqlx::Error> {
+    let affected = sqlx::query(
+        "UPDATE evidence SET uploaded_by = $3, uploaded_at = $4, original_filename = $5,
+                content_type = $6, size_bytes = $7, sha256 = $8, blob_path = $9
+         WHERE case_id = $1 AND name = $2",
+    )
+    .bind(case_id)
+    .bind(name)
+    .bind(uploaded_by)
+    .bind(now_stamp())
+    .bind(file.original_filename)
+    .bind(file.content_type)
+    .bind(file.size_bytes)
+    .bind(file.sha256)
+    .bind(file.blob_path)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    if affected == 0 {
+        return Err(sqlx::Error::RowNotFound);
     }
     Ok(())
 }

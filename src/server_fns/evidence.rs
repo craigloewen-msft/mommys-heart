@@ -440,7 +440,7 @@ fn validate_bytes(bytes: &[u8]) -> Result<&'static str, String> {
 /// Reduce a client-supplied filename to a safe display/download name: strip any
 /// path components and control characters, and cap the length.
 #[cfg(feature = "ssr")]
-fn sanitize_filename(raw: &str) -> String {
+pub(crate) fn sanitize_filename(raw: &str) -> String {
     let base = raw
         .rsplit(['/', '\\'])
         .next()
@@ -454,6 +454,32 @@ fn sanitize_filename(raw: &str) -> String {
         base
     };
     cleaned.chars().take(255).collect()
+}
+
+/// Validate a signed agreement as a genuine Word Open XML package.
+#[cfg(feature = "ssr")]
+pub(crate) fn validate_docx(bytes: &[u8]) -> Result<&'static str, String> {
+    use std::io::Cursor;
+
+    if bytes.is_empty() {
+        return Err("The signed agreement is empty.".to_string());
+    }
+    if bytes.len() > MAX_SIZE_BYTES {
+        return Err(format!(
+            "The signed agreement is too large ({:.1} MB); the limit is {} MB.",
+            bytes.len() as f64 / (1024.0 * 1024.0),
+            MAX_SIZE_BYTES / (1024 * 1024)
+        ));
+    }
+    let archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|_| "The signed agreement must be a valid .docx file.".to_string())?;
+    let has_content_types = archive.file_names().any(|name| name == "[Content_Types].xml");
+    let has_relationships = archive.file_names().any(|name| name == "_rels/.rels");
+    let has_document = archive.file_names().any(|name| name == "word/document.xml");
+    if !has_content_types || !has_relationships || !has_document {
+        return Err("The signed agreement must be a valid .docx file.".to_string());
+    }
+    Ok("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 }
 
 // ---------------------------------------------------------------------------

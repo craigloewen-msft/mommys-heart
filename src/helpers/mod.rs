@@ -10,6 +10,7 @@
 //! request handling — so it compiles for both the server and the WASM client.
 
 pub mod format;
+pub mod case_intake;
 pub mod new_case_fields;
 pub mod sections;
 pub mod visibility;

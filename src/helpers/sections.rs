@@ -1,6 +1,9 @@
 //! Sections: the free-text heading a case property or case file is grouped
 //! under in the case view, such as "Intake".
 
+pub const INTAKE: &str = "Intake";
+pub const OUTTAKE: &str = "Outtake";
+
 /// The heading used for rows whose section is empty.
 pub const DEFAULT_LABEL: &str = "General";
 

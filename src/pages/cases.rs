@@ -3,6 +3,7 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 
+use crate::components::case_intake::{CaseIntakeFields, CaseIntakeState};
 use crate::components::change_log::ChangeLog;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
@@ -438,10 +439,7 @@ pub fn NewCasePage() -> impl IntoView {
 
     let name = RwSignal::new(String::new());
     let status = RwSignal::new(CaseStatus::Open.slug().to_string());
-    let attorney = RwSignal::new(String::new());
-    let opposing = RwSignal::new(String::new());
-    let court = RwSignal::new(String::new());
-    let docket = RwSignal::new(String::new());
+    let intake = CaseIntakeState::new();
     let first_note = RwSignal::new(String::new());
     let error = RwSignal::new(String::new());
 
@@ -455,12 +453,7 @@ pub fn NewCasePage() -> impl IntoView {
                 let navigate = navigate.clone();
                 let status =
                     CaseStatus::from_slug(&status.get_untracked()).unwrap_or(CaseStatus::Open);
-                let properties = vec![
-                    CaseProperty::new("Attorney", attorney.get_untracked()),
-                    CaseProperty::new("Opposing attorney", opposing.get_untracked()),
-                    CaseProperty::new("Court", court.get_untracked()),
-                    CaseProperty::new("Docket number", docket.get_untracked()),
-                ];
+                let intake = intake.value();
                 let note = first_note.get_untracked();
                 let note = if note.trim().is_empty() {
                     None
@@ -469,7 +462,7 @@ pub fn NewCasePage() -> impl IntoView {
                 };
                 let name_val = name.get_untracked();
                 spawn_local(async move {
-                    match cases::create_case(name_val, status, properties, note).await {
+                    match cases::create_case(name_val, status, intake, note).await {
                         Ok(_) => navigate("/cases", Default::default()),
                         Err(e) => error.set(err_text(e)),
                     }
@@ -482,10 +475,14 @@ pub fn NewCasePage() -> impl IntoView {
             <div class="mx-auto max-w-2xl space-y-6">
                 <div class="rounded-xl border border-slate-800 bg-slate-900 p-6 space-y-5">
                     <div>
-                        <label class=label_class>"Case name"</label>
+                        <label class=label_class>
+                            "Case name "
+                            <span class="text-rose-400" aria-hidden="true">"*"</span>
+                        </label>
                         <input
                             class=format!("mt-1 {input_class}")
                             placeholder="e.g. Rivera custody support"
+                            required
                             prop:value=move || name.get()
                             on:input=move |ev| name.set(event_target_value(&ev))
                         />
@@ -508,46 +505,15 @@ pub fn NewCasePage() -> impl IntoView {
                                 .collect_view()}
                         </select>
                     </div>
-                    <div class="grid gap-4 sm:grid-cols-2">
-                        <div>
-                            <label class=label_class>"Attorney"</label>
-                            <input
-                                class=format!("mt-1 {input_class}")
-                                placeholder="Lead attorney"
-                                prop:value=move || attorney.get()
-                                on:input=move |ev| attorney.set(event_target_value(&ev))
-                            />
+                    <div class="border-t border-slate-800 pt-5">
+                        <div class="mb-5">
+                            <h2 class="text-sm font-semibold text-slate-200">"Case intake"</h2>
+                            <p class="mt-1 text-sm text-slate-400">"Every field in this section is optional."</p>
                         </div>
-                        <div>
-                            <label class=label_class>"Opposing attorney"</label>
-                            <input
-                                class=format!("mt-1 {input_class}")
-                                placeholder="Opposing counsel"
-                                prop:value=move || opposing.get()
-                                on:input=move |ev| opposing.set(event_target_value(&ev))
-                            />
-                        </div>
-                        <div>
-                            <label class=label_class>"Court"</label>
-                            <input
-                                class=format!("mt-1 {input_class}")
-                                placeholder="Court / jurisdiction"
-                                prop:value=move || court.get()
-                                on:input=move |ev| court.set(event_target_value(&ev))
-                            />
-                        </div>
-                        <div>
-                            <label class=label_class>"Docket number"</label>
-                            <input
-                                class=format!("mt-1 {input_class}")
-                                placeholder="Docket #"
-                                prop:value=move || docket.get()
-                                on:input=move |ev| docket.set(event_target_value(&ev))
-                            />
-                        </div>
+                        <CaseIntakeFields state=intake />
                     </div>
                     <div>
-                        <label class=label_class>"Initial note (optional)"</label>
+                        <label class=label_class>"Initial note"</label>
                         <textarea
                             class=format!("mt-1 {input_class}")
                             rows="3"

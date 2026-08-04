@@ -146,6 +146,15 @@ pub fn RegisterPage() -> impl IntoView {
                             "Sign in"
                         </A>
                     </p>
+                    <p class="mt-3 text-center text-sm text-slate-400">
+                        "Opening a new case? "
+                        <A
+                            href="/case-signup"
+                            attr:class="font-medium text-primary-400 hover:text-primary-300"
+                        >
+                            "Start customer case signup"
+                        </A>
+                    </p>
                 </div>
             </div>
         </div>

@@ -76,22 +76,22 @@ async fn insert(
 }
 
 /// The properties a new case starts with, from
-/// [`NEW_CASE_FIELDS`](crate::helpers::new_case_fields::NEW_CASE_FIELDS): each
-/// one named but not yet filled in.
+/// [`VOLUNTEER_ONLY_FIELDS`](crate::helpers::new_case_fields::VOLUNTEER_ONLY_FIELDS):
+/// each one named but not yet filled in.
 fn for_new_case() -> Vec<CaseProperty> {
-    new_case_fields::properties()
+    new_case_fields::volunteer_only_properties()
         .map(|f| CaseProperty {
             key: f.label.to_string(),
             value: String::new(),
             section: f.section.to_string(),
-            visibility: f.visibility,
+            visibility: Visibility::VolunteerOnly,
         })
         .collect()
 }
 
 /// Insert the standing new-case paperwork from
-/// [`NEW_CASE_FIELDS`](crate::helpers::new_case_fields::NEW_CASE_FIELDS) first,
-/// then `extra`, numbered as one list per visibility, inside the caller's
+/// [`VOLUNTEER_ONLY_FIELDS`](crate::helpers::new_case_fields::VOLUNTEER_ONLY_FIELDS)
+/// first, then `extra`, numbered as one list per visibility, inside the caller's
 /// transaction so the whole starting set lands with the case or not at all. The
 /// standing paperwork comes first so it sits above whatever the creator typed in.
 pub async fn add_for_new_case(
