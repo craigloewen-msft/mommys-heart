@@ -1,5 +1,5 @@
 //! Client-side application state for the CRM. Holds the signed-in user plus
-//! reactive caches (users, cases, grants, messages) that are **loaded from and
+//! reactive caches (users, cases, messages) that are **loaded from and
 //! written through to the server** via the Leptos server functions in
 //! [`crate::server_fns`]. The server (backed by PostgreSQL) is the source of
 //! truth; these signals are a live cache so the UI stays reactive. After every
@@ -9,9 +9,10 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::server_fns::admin_requests;
+use crate::server_fns::auth::LoginOutcome;
 use crate::server_fns::channel_notifications::{self, ChannelUnread};
 use crate::server_fns::users::{AccountRole, UserSummary};
-use crate::server_fns::auth::LoginOutcome;
 use crate::server_fns::{auth, err_text};
 
 /// Current local date-time as `YYYY-MM-DD HH:MM`, read from the browser clock.
@@ -48,6 +49,7 @@ pub struct AppState {
     pub current_user_summary: RwSignal<Option<UserSummary>>,
     pub auth_resolved: RwSignal<bool>,
     pub unread: RwSignal<Vec<ChannelUnread>>,
+    pub admin_request_pending: RwSignal<i64>,
 }
 
 impl Default for AppState {
@@ -62,6 +64,7 @@ impl AppState {
             current_user_summary: RwSignal::new(None),
             auth_resolved: RwSignal::new(false),
             unread: RwSignal::new(Vec::new()),
+            admin_request_pending: RwSignal::new(0),
         }
     }
 
@@ -85,6 +88,7 @@ impl AppState {
             if let Ok(Some(user)) = auth::current_user().await {
                 self.current_user_summary.set(Some(user));
                 self.refresh_unread();
+                self.refresh_admin_request_pending();
             }
             self.auth_resolved.set(true);
         });
@@ -100,6 +104,21 @@ impl AppState {
         spawn_local(async move {
             if let Ok(list) = channel_notifications::load_unread_notifications().await {
                 self.unread.set(list);
+            }
+        });
+    }
+
+    pub fn refresh_admin_request_pending(self) {
+        let is_site_admin = self
+            .current_user_summary
+            .with_untracked(|user| user.as_ref().is_some_and(|user| user.role.is_site_admin()));
+        if !cfg!(feature = "hydrate") || !is_site_admin {
+            self.admin_request_pending.set(0);
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(count) = admin_requests::pending_admin_request_count().await {
+                self.admin_request_pending.set(count);
             }
         });
     }
@@ -123,8 +142,15 @@ impl AppState {
         self.current_user_summary.get().map(|u| u.role)
     }
 
-    pub fn is_admin(&self) -> bool {
-        self.role().map(|r| r.is_admin()).unwrap_or(false)
+    /// Whether the signed-in user may perform operations-admin actions.
+    pub fn has_operations_admin_permissions(&self) -> bool {
+        self.role()
+            .map(|role| role.has_operations_admin_permissions())
+            .unwrap_or(false)
+    }
+
+    pub fn is_site_admin(&self) -> bool {
+        self.role().map(|r| r.is_site_admin()).unwrap_or(false)
     }
 
     pub fn is_volunteer_or_admin(&self) -> bool {
@@ -141,6 +167,7 @@ impl AppState {
         if let LoginOutcome::Authenticated(user) = &outcome {
             self.current_user_summary.set(Some(user.clone().into()));
             self.refresh_unread();
+            self.refresh_admin_request_pending();
         }
         Ok(outcome)
     }
@@ -154,6 +181,7 @@ impl AppState {
             .map_err(err_text)?;
         self.current_user_summary.set(Some(user.into()));
         self.refresh_unread();
+        self.refresh_admin_request_pending();
         Ok(())
     }
 
@@ -187,12 +215,14 @@ impl AppState {
             .map_err(err_text)?;
         self.current_user_summary.set(Some(user.into()));
         self.refresh_unread();
+        self.refresh_admin_request_pending();
         Ok(())
     }
 
     pub fn logout(self) {
         self.current_user_summary.set(None);
         self.unread.set(Vec::new());
+        self.admin_request_pending.set(0);
         spawn_local(async move {
             let _ = auth::logout().await;
         });

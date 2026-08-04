@@ -103,13 +103,15 @@ impl CaseCapability {
     }
 }
 
-/// Check that a capability set is internally consistent: every capability's
-/// prerequisites (see [`CaseCapability::requires`]) are also present in the set.
-/// Returns a human-readable error describing the first missing prerequisite, or
-/// `Ok(())` when the set makes sense (e.g. you cannot grant "Edit case" without
-/// also granting "View case").
+/// Check that a capability set has no duplicates and every capability's
+/// prerequisites (see [`CaseCapability::requires`]) are also present. Returns a
+/// human-readable error describing the first problem, or `Ok(())` when the set
+/// makes sense (e.g. you cannot grant "Edit case" without "View case").
 pub fn validate_capabilities(capabilities: &[CaseCapability]) -> Result<(), String> {
-    for &cap in capabilities {
+    for (index, &cap) in capabilities.iter().enumerate() {
+        if capabilities[..index].contains(&cap) {
+            return Err(format!("\"{}\" appears more than once.", cap.label()));
+        }
         for &req in cap.requires() {
             if !capabilities.contains(&req) {
                 return Err(format!(

@@ -18,15 +18,36 @@ pub struct Recipient {
     pub settings: NotificationSettings,
 }
 
-/// A recipient query row: the three contact columns followed by the six
+/// A recipient query row: the three contact columns followed by the seven
 /// notification flags (already `COALESCE`d to their defaults). sqlx reads tuple
 /// rows positionally, so the SELECT just has to list the columns in this order.
-type RecipientRow = (String, String, String, bool, bool, bool, bool, bool, bool);
+type RecipientRow = (
+    String,
+    String,
+    String,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+);
 
 /// Build a [`Recipient`] from a recipient query row.
 fn recipient_from_row(row: RecipientRow) -> Recipient {
-    let (email, first_name, last_name, emails_enabled, new_message, case_data, note_added, evidence_changed, assigned) =
-        row;
+    let (
+        email,
+        first_name,
+        last_name,
+        emails_enabled,
+        new_message,
+        case_data,
+        note_added,
+        evidence_changed,
+        assigned,
+        admin_requests,
+    ) = row;
     Recipient {
         email,
         name: format!("{first_name} {last_name}").trim().to_string(),
@@ -37,15 +58,17 @@ fn recipient_from_row(row: RecipientRow) -> Recipient {
             note_added,
             evidence_changed,
             assigned,
+            admin_requests,
         },
     }
 }
 
 /// A single user's settings
 pub async fn get_settings(user_id: &str) -> Result<UserSettings, sqlx::Error> {
-    let row = sqlx::query_as::<_, (bool, bool, bool, bool, bool, bool)>(
+    let row = sqlx::query_as::<_, (bool, bool, bool, bool, bool, bool, bool)>(
         "SELECT notification_emails_enabled, notification_new_message, notification_case_data,
-                notification_note_added, notification_evidence_changed, notification_assigned
+                notification_note_added, notification_evidence_changed, notification_assigned,
+                notification_admin_requests
          FROM user_settings WHERE user_id = $1",
     )
     .bind(user_id)
@@ -54,7 +77,15 @@ pub async fn get_settings(user_id: &str) -> Result<UserSettings, sqlx::Error> {
 
     let notifications = row
         .map(
-            |(emails_enabled, new_message, case_data, note_added, evidence_changed, assigned)| {
+            |(
+                emails_enabled,
+                new_message,
+                case_data,
+                note_added,
+                evidence_changed,
+                assigned,
+                admin_requests,
+            )| {
                 NotificationSettings {
                     emails_enabled,
                     new_message,
@@ -62,6 +93,7 @@ pub async fn get_settings(user_id: &str) -> Result<UserSettings, sqlx::Error> {
                     note_added,
                     evidence_changed,
                     assigned,
+                    admin_requests,
                 }
             },
         )
@@ -76,15 +108,17 @@ pub async fn upsert_settings(user_id: &str, settings: &UserSettings) -> Result<(
         "INSERT INTO user_settings
              (user_id, notification_emails_enabled, notification_new_message,
               notification_case_data, notification_note_added,
-              notification_evidence_changed, notification_assigned)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+                            notification_evidence_changed, notification_assigned,
+                            notification_admin_requests)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (user_id) DO UPDATE SET
              notification_emails_enabled   = EXCLUDED.notification_emails_enabled,
              notification_new_message      = EXCLUDED.notification_new_message,
              notification_case_data        = EXCLUDED.notification_case_data,
              notification_note_added       = EXCLUDED.notification_note_added,
              notification_evidence_changed = EXCLUDED.notification_evidence_changed,
-             notification_assigned         = EXCLUDED.notification_assigned",
+             notification_assigned         = EXCLUDED.notification_assigned,
+             notification_admin_requests   = EXCLUDED.notification_admin_requests",
     )
     .bind(user_id)
     .bind(n.emails_enabled)
@@ -93,6 +127,7 @@ pub async fn upsert_settings(user_id: &str, settings: &UserSettings) -> Result<(
     .bind(n.note_added)
     .bind(n.evidence_changed)
     .bind(n.assigned)
+    .bind(n.admin_requests)
     .execute(pool())
     .await?;
     Ok(())
@@ -115,7 +150,8 @@ pub async fn recipients_for_case(
                 COALESCE(s.notification_case_data,        true),
                 COALESCE(s.notification_note_added,       true),
                 COALESCE(s.notification_evidence_changed, true),
-                COALESCE(s.notification_assigned,         true)
+                COALESCE(s.notification_assigned,         true),
+                COALESCE(s.notification_admin_requests,   true)
          FROM case_assignments a
          JOIN users u ON u.id = a.user_id
          LEFT JOIN user_settings s ON s.user_id = u.id
@@ -145,7 +181,8 @@ pub async fn recipient_for_user(user_id: &str) -> Result<Option<Recipient>, sqlx
                 COALESCE(s.notification_case_data,        true),
                 COALESCE(s.notification_note_added,       true),
                 COALESCE(s.notification_evidence_changed, true),
-                COALESCE(s.notification_assigned,         true)
+                COALESCE(s.notification_assigned,         true),
+                COALESCE(s.notification_admin_requests,   true)
          FROM users u
          LEFT JOIN user_settings s ON s.user_id = u.id
          WHERE u.id = $1 AND u.email <> ''",
@@ -154,4 +191,27 @@ pub async fn recipient_for_user(user_id: &str) -> Result<Option<Recipient>, sqlx
     .fetch_optional(pool())
     .await?;
     Ok(row.map(recipient_from_row))
+}
+
+/// Every site administrator with an email address and their notification
+/// preferences, so callers can honor the admin-request category.
+pub async fn recipients_for_site_admins() -> Result<Vec<Recipient>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, RecipientRow>(
+        "SELECT u.email, u.first_name, u.last_name,
+                COALESCE(s.notification_emails_enabled,   true),
+                COALESCE(s.notification_new_message,      true),
+                COALESCE(s.notification_case_data,        true),
+                COALESCE(s.notification_note_added,       true),
+                COALESCE(s.notification_evidence_changed, true),
+                COALESCE(s.notification_assigned,         true),
+                COALESCE(s.notification_admin_requests,   true)
+         FROM users u
+         LEFT JOIN user_settings s ON s.user_id = u.id
+         WHERE u.role = $1 AND u.email <> ''
+         ORDER BY u.id",
+    )
+    .bind(AccountRole::SiteAdmin.slug())
+    .fetch_all(pool())
+    .await?;
+    Ok(rows.into_iter().map(recipient_from_row).collect())
 }

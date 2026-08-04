@@ -7,6 +7,7 @@ pub mod server_fns;
 pub mod state;
 
 pub mod components {
+    pub mod admin_requests;
     pub mod change_log;
     pub mod email_failures;
     pub mod guard;
@@ -20,7 +21,6 @@ pub mod pages {
     pub mod admin;
     pub mod cases;
     pub mod forgot_password;
-    pub mod grants;
     pub mod inbox;
     pub mod login;
     pub mod mfa;

@@ -79,8 +79,12 @@ async fn deliver(
     }
 
     let msg = EmailMessage {
-        to_address: to_email.to_string(),
-        to_name: to_name.to_string(),
+        recipients: crate::server::email::EmailRecipients::To(
+            crate::server::email::EmailRecipient {
+                address: to_email.to_string(),
+                name: to_name.to_string(),
+            },
+        ),
         subject: email.subject.clone(),
         html: email.html.clone(),
         plain_text: email.plain_text.clone(),

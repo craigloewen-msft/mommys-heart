@@ -35,7 +35,8 @@ fn failure_row(e: EmailFailure) -> AnyView {
 }
 
 /// An independently-fetched, paginated list of recorded email delivery
-/// failures, newest first. Admin-only (the server function enforces it too).
+/// failures, newest first. Requires operations-admin permissions (the server
+/// function enforces this too).
 #[component]
 pub fn EmailFailureLog() -> impl IntoView {
     let state = expect_context::<AppState>();

@@ -25,6 +25,9 @@ const MAX_ATTEMPTS: u32 = 3;
 /// How long to wait between attempts after a transient failure.
 const RETRY_DELAY: Duration = Duration::from_secs(25);
 
+/// ACS Email's maximum total recipients in one message.
+pub const MAX_RECIPIENTS_PER_MESSAGE: usize = 50;
+
 /// Outcome of a single send attempt: `Retryable` failures (network errors, HTTP
 /// 429/5xx) are worth another try; `Permanent` ones (bad request, auth, a bad
 /// recipient) are not.
@@ -33,13 +36,27 @@ enum SendError {
     Permanent(String),
 }
 
-/// A single outbound email addressed to one recipient.
+/// One email recipient.
+#[derive(Clone, Debug)]
+pub struct EmailRecipient {
+    pub address: String,
+    /// Recipient display name (may be empty).
+    pub name: String,
+}
+
+/// The visible-recipient policy for an outbound email.
+#[derive(Clone, Debug)]
+pub enum EmailRecipients {
+    /// A direct, single-recipient message.
+    To(EmailRecipient),
+    /// A shared message whose recipients must remain hidden from one another.
+    Bcc(Vec<EmailRecipient>),
+}
+
+/// A single outbound email.
 #[derive(Clone, Debug)]
 pub struct EmailMessage {
-    /// Recipient email address.
-    pub to_address: String,
-    /// Recipient display name (may be empty).
-    pub to_name: String,
+    pub recipients: EmailRecipients,
     pub subject: String,
     /// HTML body.
     pub html: String,
@@ -59,11 +76,7 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
     let path_and_query = format!("/emails:send?api-version={API_VERSION}");
     let url = format!("{base}{path_and_query}");
 
-    let recipient = if msg.to_name.trim().is_empty() {
-        json!({ "address": msg.to_address })
-    } else {
-        json!({ "address": msg.to_address, "displayName": msg.to_name })
-    };
+    let (recipients, recipient_summary) = recipients_json(&msg.recipients)?;
     let body = json!({
         "senderAddress": cfg.sender_address,
         "content": {
@@ -71,10 +84,11 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
             "plainText": msg.plain_text,
             "html": msg.html,
         },
-        "recipients": { "to": [recipient] },
+        "recipients": recipients,
     });
     // Serialize once: the exact bytes we hash must be the exact bytes we send.
-    let serialized = serde_json::to_string(&body).map_err(|e| format!("email encode failed: {e}"))?;
+    let serialized =
+        serde_json::to_string(&body).map_err(|e| format!("email encode failed: {e}"))?;
 
     // Retry transient failures a few times. Each attempt is freshly signed
     // because the `x-ms-date` header (and thus the signature) must be current.
@@ -82,7 +96,7 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
     for attempt in 1..=MAX_ATTEMPTS {
         match try_send(cfg, &url, &path_and_query, &host, &serialized).await {
             Ok(()) => {
-                tracing::info!("email \"{}\" sent to {}", msg.subject, msg.to_address);
+                tracing::info!("email \"{}\" sent to {recipient_summary}", msg.subject);
                 return Ok(());
             }
             Err(SendError::Permanent(e)) => return Err(e),
@@ -90,15 +104,51 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
                 last_err = e;
                 if attempt < MAX_ATTEMPTS {
                     tracing::warn!(
-                        "email to {} failed (attempt {attempt}/{MAX_ATTEMPTS}): {last_err}; retrying",
-                        msg.to_address
+                        "email to {recipient_summary} failed (attempt {attempt}/{MAX_ATTEMPTS}): \
+                         {last_err}; retrying"
                     );
                     tokio::time::sleep(RETRY_DELAY).await;
                 }
             }
         }
     }
-    Err(format!("email failed after {MAX_ATTEMPTS} attempts: {last_err}"))
+    Err(format!(
+        "email failed after {MAX_ATTEMPTS} attempts: {last_err}"
+    ))
+}
+
+fn recipients_json(recipients: &EmailRecipients) -> Result<(serde_json::Value, String), String> {
+    match recipients {
+        EmailRecipients::To(recipient) => Ok((
+            json!({ "to": [recipient_json(recipient)] }),
+            recipient.address.clone(),
+        )),
+        EmailRecipients::Bcc(recipients) => {
+            if recipients.is_empty() {
+                return Err("email requires at least one recipient".to_string());
+            }
+            if recipients.len() > MAX_RECIPIENTS_PER_MESSAGE {
+                return Err(format!(
+                    "email has {} recipients; ACS permits at most {MAX_RECIPIENTS_PER_MESSAGE}",
+                    recipients.len()
+                ));
+            }
+            Ok((
+                json!({
+                    "bcc": recipients.iter().map(recipient_json).collect::<Vec<_>>()
+                }),
+                format!("{} BCC recipients", recipients.len()),
+            ))
+        }
+    }
+}
+
+fn recipient_json(recipient: &EmailRecipient) -> serde_json::Value {
+    if recipient.name.trim().is_empty() {
+        json!({ "address": recipient.address })
+    } else {
+        json!({ "address": recipient.address, "displayName": recipient.name })
+    }
 }
 
 /// Make one signed POST to ACS. On failure, classify it as retryable (network

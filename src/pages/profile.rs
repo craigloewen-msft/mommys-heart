@@ -204,24 +204,24 @@ pub fn ProfilePage() -> impl IntoView {
             let Some(p) = profile.get() else {
                 return ().into_any();
             };
-            // Contact details arrive only for the profile's owner and for
-            // admins; everyone else sees the name/role header alone.
+            // Contact details arrive only for the profile's owner and viewers
+            // with operations-admin permissions.
             let Some(contact) = p.contact.clone() else {
                 return view! {
                     <div class=SECTION_CLASS>
                         <h3 class="text-sm font-semibold text-slate-200">"Contact details"</h3>
                         <p class="mt-2 text-sm text-slate-500 italic">
                             "Contact details are only visible to " {p.full_name()}
-                            " and to administrators."
+                            " and to users with operations-admin permissions."
                         </p>
                     </div>
                 }
                 .into_any();
             };
             let scope_note = if p.is_self {
-                "Only you and administrators can see these details."
+                "Only you and users with operations-admin permissions can see these details."
             } else {
-                "Visible to you because you are an administrator."
+                "Visible to you because you have operations-admin permissions."
             };
             view! {
                 <div class=SECTION_CLASS>
@@ -351,7 +351,7 @@ pub fn ProfilePage() -> impl IntoView {
                             </div>
                         </div>
                         <p class="text-xs text-slate-500">
-                            "Your phone number and home address are only shown to you and to administrators. Your email address and account role are managed by an administrator."
+                            "Your phone number and home address are only shown to you and to users with operations-admin permissions. Your email address and account role are managed by a site administrator."
                         </p>
                     </div>
                 </div>

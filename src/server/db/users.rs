@@ -203,6 +203,17 @@ pub async fn is_assigned(user_id: &str, case_id: &str) -> Result<bool, sqlx::Err
     Ok(exists.is_some())
 }
 
+async fn lock_capability_target(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .fetch_optional(&mut **transaction)
+        .await?;
+    Ok(())
+}
+
 /// Change a user's global role, recording an audit entry when it changes.
 pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(), sqlx::Error> {
     let current: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
@@ -234,13 +245,15 @@ pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(
 
 /// Remove a user's assignment to a case entirely.
 pub async fn unassign(user_id: &str, case_id: &str, actor: &str) -> Result<(), sqlx::Error> {
+    let mut transaction = pool().begin().await?;
+    lock_capability_target(&mut transaction, user_id).await?;
     sqlx::query("DELETE FROM case_assignments WHERE user_id = $1 AND case_id = $2")
         .bind(user_id)
         .bind(case_id)
-        .execute(pool())
+        .execute(&mut *transaction)
         .await?;
-    audit::record(
-        pool(),
+    audit::record_in_transaction(
+        &mut transaction,
         audit::Entity::User,
         user_id,
         actor,
@@ -248,7 +261,8 @@ pub async fn unassign(user_id: &str, case_id: &str, actor: &str) -> Result<(), s
         "assigned",
         "removed",
     )
-    .await
+    .await?;
+    transaction.commit().await
 }
 
 /// Toggle a single capability for a user on a case.
@@ -259,6 +273,8 @@ pub async fn toggle_capability(
     enabled: bool,
     actor: &str,
 ) -> Result<(), sqlx::Error> {
+    let mut transaction = pool().begin().await?;
+    lock_capability_target(&mut transaction, user_id).await?;
     if enabled {
         sqlx::query(
             "INSERT INTO case_assignments (user_id, case_id, capability) VALUES ($1, $2, $3)
@@ -267,7 +283,7 @@ pub async fn toggle_capability(
         .bind(user_id)
         .bind(case_id)
         .bind(cap.slug())
-        .execute(pool())
+        .execute(&mut *transaction)
         .await?;
     } else {
         sqlx::query(
@@ -276,7 +292,7 @@ pub async fn toggle_capability(
         .bind(user_id)
         .bind(case_id)
         .bind(cap.slug())
-        .execute(pool())
+        .execute(&mut *transaction)
         .await?;
     }
     let (old, new) = if enabled {
@@ -284,8 +300,8 @@ pub async fn toggle_capability(
     } else {
         (cap.slug(), "")
     };
-    audit::record(
-        pool(),
+    audit::record_in_transaction(
+        &mut transaction,
         audit::Entity::User,
         user_id,
         actor,
@@ -293,7 +309,8 @@ pub async fn toggle_capability(
         old,
         new,
     )
-    .await
+    .await?;
+    transaction.commit().await
 }
 
 /// Replace a user's capability set on a case (adds the assignment if missing).
@@ -304,6 +321,7 @@ pub async fn assign_capabilities(
     actor: &str,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    lock_capability_target(&mut tx, user_id).await?;
     sqlx::query("DELETE FROM case_assignments WHERE user_id = $1 AND case_id = $2")
         .bind(user_id)
         .bind(case_id)
@@ -320,15 +338,14 @@ pub async fn assign_capabilities(
         .execute(&mut *tx)
         .await?;
     }
-    tx.commit().await?;
 
     let summary = capabilities
         .iter()
         .map(|c| c.slug())
         .collect::<Vec<_>>()
         .join(", ");
-    audit::record(
-        pool(),
+    audit::record_in_transaction(
+        &mut tx,
         audit::Entity::User,
         user_id,
         actor,
@@ -336,7 +353,8 @@ pub async fn assign_capabilities(
         "",
         &summary,
     )
-    .await
+    .await?;
+    tx.commit().await
 }
 
 /// Whether `viewer_id` and `other_id` work at least one case together — the

@@ -807,7 +807,7 @@ fn ChannelThread(
     // scroll, so the user stays where they were reading.
     let scroll_ref = NodeRef::<leptos::html::Div>::new();
     let scroll_to_bottom = move || {
-        if let Some(el) = scroll_ref.get() {
+        if let Some(el) = scroll_ref.get_untracked() {
             request_animation_frame(move || el.set_scroll_top(el.scroll_height()));
         }
     };
@@ -982,7 +982,7 @@ fn ChannelThread(
             <div node_ref=scroll_ref class="flex-1 space-y-3 overflow-y-auto p-4">
                 {messages_view}
             </div>
-            <div class="border-t border-slate-800 p-4">
+            <div class="relative z-10 shrink-0 border-t border-slate-800 bg-slate-900 p-4">
                 {if can_send {
                     view! {
                         <div class="space-y-2">

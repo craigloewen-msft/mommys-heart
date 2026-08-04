@@ -18,6 +18,7 @@
 
 use crate::server::config::Brand;
 use crate::server::email::palette;
+use crate::server_fns::admin_requests::{AdminRequest, AdminRequestStatus};
 use crate::server_fns::settings::NotificationKind;
 
 /// A fully rendered email: the subject line and both body representations ACS
@@ -39,11 +40,30 @@ struct Theme {
 
 fn theme(kind: NotificationKind) -> Theme {
     match kind {
-        NotificationKind::NewMessage => Theme { accent: palette::color("sky-300"), emoji: "\u{1F4AC}" }, // 💬
-        NotificationKind::CaseData => Theme { accent: palette::color("amber-300"), emoji: "\u{270F}\u{FE0F}" }, // ✏️
-        NotificationKind::NoteAdded => Theme { accent: palette::color("emerald-300"), emoji: "\u{1F4DD}" }, // 📝
-        NotificationKind::EvidenceChanged => Theme { accent: palette::color("rose-400"), emoji: "\u{1F4CE}" }, // 📎
-        NotificationKind::Assigned => Theme { accent: palette::color("primary-500"), emoji: "\u{1F511}" }, // 🔑
+        NotificationKind::NewMessage => Theme {
+            accent: palette::color("sky-300"),
+            emoji: "\u{1F4AC}",
+        }, // 💬
+        NotificationKind::CaseData => Theme {
+            accent: palette::color("amber-300"),
+            emoji: "\u{270F}\u{FE0F}",
+        }, // ✏️
+        NotificationKind::NoteAdded => Theme {
+            accent: palette::color("emerald-300"),
+            emoji: "\u{1F4DD}",
+        }, // 📝
+        NotificationKind::EvidenceChanged => Theme {
+            accent: palette::color("rose-400"),
+            emoji: "\u{1F4CE}",
+        }, // 📎
+        NotificationKind::Assigned => Theme {
+            accent: palette::color("primary-500"),
+            emoji: "\u{1F511}",
+        }, // 🔑
+        NotificationKind::AdminRequests => Theme {
+            accent: palette::color("amber-300"),
+            emoji: "\u{1F4CB}",
+        }, // 📋
     }
 }
 
@@ -88,7 +108,11 @@ pub fn case_event(
         "/cases",
     );
 
-    RenderedEmail { subject, html, plain_text: plain }
+    RenderedEmail {
+        subject,
+        html,
+        plain_text: plain,
+    }
 }
 
 /// Build the "you've been given access to a case" email, whose single recipient
@@ -125,7 +149,135 @@ pub fn assignment(brand: &Brand, case_name: &str, actor_name: &str) -> RenderedE
         "/cases",
     );
 
-    RenderedEmail { subject, html, plain_text: plain }
+    RenderedEmail {
+        subject,
+        html,
+        plain_text: plain,
+    }
+}
+
+/// Build the site-admin notification for a newly filed approval request.
+pub fn admin_request_filed(brand: &Brand, request: &AdminRequest) -> RenderedEmail {
+    let theme = Theme {
+        accent: palette::color("amber-300"),
+        emoji: "\u{1F4CB}",
+    };
+    let subject = format!(
+        "[{}] Approval needed: {} for {}",
+        brand.name,
+        request.kind.label(),
+        request.target_user_name,
+    );
+    let context = request
+        .case_name
+        .as_deref()
+        .map(|case| format!(" on <strong>{}</strong>", escape(case)))
+        .unwrap_or_default();
+    let note = if request.request_note.is_empty() {
+        String::new()
+    } else {
+        format!("<br><br>Reason: {}", escape(&request.request_note))
+    };
+    let callout = format!(
+        "<strong>{requester}</strong> requested a {kind} for <strong>{target}</strong>{context}: {change}.{note}",
+        requester = escape(&request.requested_by_name),
+        kind = escape(request.kind.label()),
+        target = escape(&request.target_user_name),
+        change = escape(&request.change_summary()),
+    );
+    let cta_href = cta_url(brand, "/admin");
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: "An administrative request is waiting for review.",
+            eyebrow: "Approval request",
+            heading: "Review requested",
+            callout_html: &callout,
+            cta: cta_href.as_deref().map(|url| (url, "Review request")),
+            body_note: "Only a site admin can approve or deny this request.",
+            footer_html: "This is a required administrative workflow notification.",
+        },
+    );
+    let plain_text = plain(
+        brand,
+        &format!(
+            "{} requested {} for {}: {}.",
+            request.requested_by_name,
+            request.kind.label(),
+            request.target_user_name,
+            request.change_summary(),
+        ),
+        "/admin",
+    );
+    RenderedEmail {
+        subject,
+        html,
+        plain_text,
+    }
+}
+
+/// Build the requester notification for a decided administrative request.
+pub fn admin_request_decided(brand: &Brand, request: &AdminRequest) -> RenderedEmail {
+    let approved = request.status == AdminRequestStatus::Approved;
+    let status = request.status.label();
+    let theme = Theme {
+        accent: if approved {
+            palette::color("emerald-300")
+        } else {
+            palette::color("rose-400")
+        },
+        emoji: if approved { "\u{2705}" } else { "\u{274C}" },
+    };
+    let subject = format!(
+        "[{}] Request {}: {} for {}",
+        brand.name,
+        status.to_lowercase(),
+        request.kind.label(),
+        request.target_user_name,
+    );
+    let note = if request.decision_note.is_empty() {
+        String::new()
+    } else {
+        format!("<br><br>Decision note: {}", escape(&request.decision_note))
+    };
+    let callout = format!(
+        "The {kind} request for <strong>{target}</strong> was <strong>{status}</strong>: {change}.{note}",
+        kind = escape(request.kind.label()),
+        target = escape(&request.target_user_name),
+        status = escape(&status.to_lowercase()),
+        change = escape(&request.change_summary()),
+    );
+    let cta_href = cta_url(brand, "/admin");
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: &format!("Your administrative request was {}.", status.to_lowercase()),
+            eyebrow: "Request decision",
+            heading: &format!("Request {status}"),
+            callout_html: &callout,
+            cta: cta_href.as_deref().map(|url| (url, "View requests")),
+            body_note: "Sign in to review the request history and current access.",
+            footer_html: "This is a required administrative workflow notification.",
+        },
+    );
+    let plain_text = plain(
+        brand,
+        &format!(
+            "The {} request for {} was {}: {}.",
+            request.kind.label(),
+            request.target_user_name,
+            status.to_lowercase(),
+            request.change_summary(),
+        ),
+        "/admin",
+    );
+    RenderedEmail {
+        subject,
+        html,
+        plain_text,
+    }
 }
 
 /// The full CTA url for an in-app path, or `None` when no public app URL is
@@ -156,7 +308,10 @@ fn notification_footer(brand: &Brand) -> String {
 /// Build the MFA one-time-code email. Transactional (no notification-settings
 /// footer): the recipient is finishing a sign-in they just started.
 pub fn auth_code(brand: &Brand, code: &str) -> RenderedEmail {
-    let theme = Theme { accent: palette::color("primary-500"), emoji: "\u{1F510}" }; // 🔐
+    let theme = Theme {
+        accent: palette::color("primary-500"),
+        emoji: "\u{1F510}",
+    }; // 🔐
     let subject = format!("[{}] Your sign-in verification code", brand.name);
 
     let callout = format!(
@@ -186,14 +341,21 @@ pub fn auth_code(brand: &Brand, code: &str) -> RenderedEmail {
         brand = brand.name,
         code = code,
     );
-    RenderedEmail { subject, html, plain_text: plain }
+    RenderedEmail {
+        subject,
+        html,
+        plain_text: plain,
+    }
 }
 
 /// Build the registration email-verification code email. Transactional (no
 /// notification-settings footer): the recipient is finishing a sign-up they just
 /// started, and the account is not created until this code is entered.
 pub fn verify_email(brand: &Brand, code: &str) -> RenderedEmail {
-    let theme = Theme { accent: palette::color("primary-500"), emoji: "\u{2709}\u{FE0F}" }; // ✉️
+    let theme = Theme {
+        accent: palette::color("primary-500"),
+        emoji: "\u{2709}\u{FE0F}",
+    }; // ✉️
     let subject = format!("[{}] Verify your email address", brand.name);
 
     let callout = format!(
@@ -225,13 +387,20 @@ pub fn verify_email(brand: &Brand, code: &str) -> RenderedEmail {
         brand = brand.name,
         code = code,
     );
-    RenderedEmail { subject, html, plain_text: plain }
+    RenderedEmail {
+        subject,
+        html,
+        plain_text: plain,
+    }
 }
 
 /// Build the password-reset email. `reset_url` is the full, tokenized link the
 /// recipient follows to choose a new password.
 pub fn password_reset(brand: &Brand, reset_url: &str) -> RenderedEmail {
-    let theme = Theme { accent: palette::color("primary-500"), emoji: "\u{1F511}" }; // 🔑
+    let theme = Theme {
+        accent: palette::color("primary-500"),
+        emoji: "\u{1F511}",
+    }; // 🔑
     let subject = format!("[{}] Reset your password", brand.name);
 
     let callout = format!(
@@ -260,7 +429,11 @@ pub fn password_reset(brand: &Brand, reset_url: &str) -> RenderedEmail {
         brand = brand.name,
         url = reset_url,
     );
-    RenderedEmail { subject, html, plain_text: plain }
+    RenderedEmail {
+        subject,
+        html,
+        plain_text: plain,
+    }
 }
 
 /// The pieces that vary between templates; everything else is shared chrome.
@@ -284,8 +457,12 @@ struct LayoutParts<'a> {
 /// Assemble the full, email-client-safe HTML document around the varying parts.
 fn layout(brand: &Brand, theme: &Theme, parts: &LayoutParts) -> String {
     let (primary, muted, border) = (palette::primary(), palette::muted(), palette::border());
-    let (canvas, card, text, callout_bg) =
-        (palette::canvas(), palette::card(), palette::text(), palette::callout_bg());
+    let (canvas, card, text, callout_bg) = (
+        palette::canvas(),
+        palette::card(),
+        palette::text(),
+        palette::callout_bg(),
+    );
 
     let cta = match parts.cta {
         Some((url, label)) => button(url, label, primary),
@@ -451,7 +628,12 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
 
     let mut samples: Vec<Sample> = NotificationKind::ALL
         .iter()
-        .filter(|k| **k != NotificationKind::Assigned)
+        .filter(|kind| {
+            !matches!(
+                **kind,
+                NotificationKind::Assigned | NotificationKind::AdminRequests
+            )
+        })
         .map(|kind| {
             let detail = sample_detail(*kind);
             Sample {
@@ -506,5 +688,6 @@ fn sample_detail(kind: NotificationKind) -> &'static str {
         NotificationKind::NoteAdded => "added a note",
         NotificationKind::EvidenceChanged => "added evidence \u{201C}hearing-notes.pdf\u{201D}",
         NotificationKind::Assigned => "gave you access to the case",
+        NotificationKind::AdminRequests => "filed an administrative request",
     }
 }

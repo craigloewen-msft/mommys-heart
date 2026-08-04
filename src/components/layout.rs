@@ -86,40 +86,45 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let menu_open = RwSignal::new(false);
     let toggle_menu = move |_| menu_open.update(|open| *open = !*open);
     let close_menu = move |_| menu_open.set(false);
-    let is_admin = role.is_admin();
+    let has_operations_admin_permissions = role.has_operations_admin_permissions();
 
     // Reactive unread total driving the "Case Chat" badge.
     let unread_total = Signal::derive(move || state.total_unread());
+    let pending_requests = Signal::derive(move || state.admin_request_pending.get());
 
     view! {
         <div class="min-h-screen bg-slate-950 text-slate-100">
             <header class="sticky top-0 z-20 border-b border-slate-800 bg-slate-900/80 backdrop-blur">
                 <div class="mx-auto max-w-7xl px-4 sm:px-6">
-                    <div class="flex h-16 items-center gap-4">
+                    <div class="flex h-16 items-center gap-2 sm:gap-4">
                         <A href="/" attr:class="flex items-center gap-2 shrink-0">
                             <span class="grid h-8 w-8 place-items-center rounded-lg bg-primary-500/20 text-lg text-primary-400">
                                 "\u{2665}"
                             </span>
-                            <span class="font-semibold tracking-tight">"Mommy's Heart"</span>
+                            <span class="hidden font-semibold tracking-tight min-[440px]:inline">
+                                "Mommy's Heart"
+                            </span>
                         </A>
 
                         <nav class="hidden md:flex items-center gap-1">
                             <NavLink href="/cases" label="Cases" />
                             <NavLink href="/inbox" label="Case Chat" badge=unread_total />
-                            {if is_admin {
-                                view! { <NavLink href="/grants" label="Grants" /> }.into_any()
-                            } else {
-                                ().into_any()
-                            }}
-                            {if is_admin {
-                                view! { <NavLink href="/admin" label="Admin" /> }.into_any()
+                            {if has_operations_admin_permissions {
+                                view! {
+                                    <NavLink
+                                        href="/admin"
+                                        label="Admin"
+                                        badge=pending_requests
+                                    />
+                                }
+                                .into_any()
                             } else {
                                 ().into_any()
                             }}
                             <NavLink href="/settings" label="Settings" />
                         </nav>
 
-                        <div class="ml-auto flex items-center gap-3">
+                        <div class="ml-auto flex items-center gap-2 sm:gap-3">
                             <div class="hidden sm:flex flex-col items-end leading-tight">
                                 <span class="text-sm font-medium">{user_name}</span>
                                 <span class=role_badge>{role_label}</span>
@@ -154,13 +159,15 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                     >
                         <NavLink href="/cases" label="Cases" />
                         <NavLink href="/inbox" label="Case Chat" badge=unread_total />
-                        {if is_admin {
-                            view! { <NavLink href="/grants" label="Grants" /> }.into_any()
-                        } else {
-                            ().into_any()
-                        }}
-                        {if is_admin {
-                            view! { <NavLink href="/admin" label="Admin" /> }.into_any()
+                        {if has_operations_admin_permissions {
+                            view! {
+                                <NavLink
+                                    href="/admin"
+                                    label="Admin"
+                                    badge=pending_requests
+                                />
+                            }
+                            .into_any()
                         } else {
                             ().into_any()
                         }}

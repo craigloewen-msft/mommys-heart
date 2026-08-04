@@ -258,9 +258,9 @@ pub fn VolunteerHoursPanel(
                     <h3 class="text-sm font-semibold text-slate-200">"Volunteer hours"</h3>
                     <p class="mt-1 text-xs text-slate-500">
                         {if is_self {
-                            "Only you and administrators can see these hours.".to_string()
+                            "Only you and users with operations-admin permissions can see these hours.".to_string()
                         } else {
-                            format!("Visible to you because you are an administrator viewing {display_name}.")
+                            format!("Visible to you because you have operations-admin permissions and are viewing {display_name}.")
                         }}
                     </p>
                 </div>

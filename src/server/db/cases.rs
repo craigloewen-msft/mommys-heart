@@ -60,7 +60,7 @@ impl SummaryRow {
 ///
 /// `message_count_scope` is an SQL boolean spliced into the count subquery that
 /// decides whether the volunteer-only channel's messages are included. Passing
-/// `"true"` counts everything (admin-only lookups that never surface to a
+/// `"true"` counts everything (site-admin-only lookups that never surface to a
 /// client); a viewer-scoped query passes a role test so a client's case list
 /// does not even leak *how many* private staff messages exist. It is always an
 /// internal constant or a bind-parameter reference, never user input.

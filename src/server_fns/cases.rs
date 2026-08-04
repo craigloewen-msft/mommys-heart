@@ -157,32 +157,30 @@ pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
         .map_err(ServerFnError::new)
 }
 
-/// Admin-only lightweight case search for the capability tool: find any case
-/// (across the whole system) by id or name so an admin can assign a user to it.
-/// This is a management action, not a case view — it never hydrates or exposes
-/// case contents.
+/// Lightweight case search for the capability tool. Requires operations-admin
+/// permissions because it supports self-management and approval requests. It
+/// returns only case ids and names, never case contents.
 #[server(prefix = "/api")]
 pub async fn admin_search_cases(query: String) -> Result<Vec<CaseSummary>, ServerFnError> {
     use crate::server::db::cases;
-    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
-    require_admin(&user)?;
+    require_operations_admin(&user)?;
     cases::search_lite(&query, 10)
         .await
         .map_err(ServerFnError::new)
 }
 
-/// Admin-only lightweight resolution of specific case ids to names, so the
-/// capability tool can show which cases a user is already assigned to without
-/// loading every case.
+/// Resolve specific case ids to names for the capability tool. Requires
+/// operations-admin permissions and never loads case contents.
 #[server(prefix = "/api")]
 pub async fn admin_cases_by_ids(ids: Vec<String>) -> Result<Vec<CaseSummary>, ServerFnError> {
     use crate::server::db::cases;
-    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
-    require_admin(&user)?;
+    require_operations_admin(&user)?;
     cases::get_summaries_by_ids(&ids)
         .await
         .map_err(ServerFnError::new)
@@ -269,17 +267,17 @@ pub async fn set_case_name(case_id: String, name: String) -> Result<(), ServerFn
     Ok(())
 }
 
-/// Reassign a case's owner. Admin only: ownership decides whose personal
+/// Reassign a case's owner. Site Admin only: ownership decides whose personal
 /// information (e.g. other users' names, surfaced through the owner picker) a
 /// case exposes, so it is deliberately *not* covered by the per-case `EditCase`
 /// capability that a case owner themselves holds.
 #[server(prefix = "/api")]
 pub async fn set_case_owner(case_id: String, owner_id: String) -> Result<(), ServerFnError> {
     use crate::server::db::{cases, users};
-    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::permissions::{require_site_admin, require_user};
 
     let user = require_user().await?;
-    require_admin(&user)?;
+    require_site_admin(&user)?;
     if users::get(&owner_id)
         .await
         .map_err(ServerFnError::new)?

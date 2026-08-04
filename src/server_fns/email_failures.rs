@@ -28,21 +28,22 @@ pub struct EmailFailure {
     pub at: String,
 }
 
-/// List recorded email failures, newest first. Admin-only.
+/// List recorded email failures, newest first. Requires operations-admin
+/// permissions.
 #[server(prefix = "/api")]
 pub async fn list_email_failures_page(
     offset: i64,
     limit: i64,
 ) -> Result<Page<EmailFailure>, ServerFnError> {
     use crate::server::db::email_failures;
-    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::permissions::{require_operations_admin, require_user};
 
     /// Hard server-side cap on rows per request, regardless of what the client
     /// asks for — the admin view paginates in small windows.
     const MAX_LIMIT: i64 = 200;
 
     let user = require_user().await?;
-    require_admin(&user)?;
+    require_operations_admin(&user)?;
 
     email_failures::page(offset.max(0), limit.clamp(1, MAX_LIMIT))
         .await

@@ -61,16 +61,7 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         insert_audit(&u.id, "user", &Vec::<ChangeLogEntry>::new()).await?;
     }
 
-    // 2. Grants.
-    for g in crate::mockdata::grants() {
-        sqlx::query("INSERT INTO grants (id, name) VALUES ($1, $2)")
-            .bind(&g.id)
-            .bind(&g.name)
-            .execute(pool)
-            .await?;
-    }
-
-    // 3. Cases + their default chat channels, notes, evidence, properties, and
+    // 2. Cases + their default chat channels, notes, evidence, properties, and
     //    case audit log.
     for c in crate::mockdata::cases() {
         sqlx::query("INSERT INTO cases (id, name, status, owner_id) VALUES ($1, $2, $3, $4)")
@@ -134,12 +125,12 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         insert_audit(&c.id, "case", &Vec::<ChangeLogEntry>::new()).await?;
     }
 
-    // 4. Case assignments (after both users and cases exist).
+    // 3. Case assignments (after both users and cases exist).
     for (u, _) in crate::mockdata::users() {
         insert_assignments(&u).await?;
     }
 
-    // 5. Case chat messages, routed into the channel each one belongs to.
+    // 4. Case chat messages, routed into the channel each one belongs to.
     let mut channel_ids: std::collections::HashMap<(String, &'static str), String> =
         std::collections::HashMap::new();
     for sm in crate::mockdata::messages() {
@@ -171,13 +162,13 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
     }
 
-    // 6. A handful of real audit-log entries, date-spread across the last ~6
+    // 5. A handful of real audit-log entries, date-spread across the last ~6
     //    weeks, so the change-log views (which fetch the audit log as their own
     //    paginated, date-filtered data source) have data to show and page
     //    through in the demo. Real edits made in the running app append more.
     seed_audit_fixtures().await?;
 
-    // 7. Advance the shared id sequence past every seeded id. Seed ids are
+    // 6. Advance the shared id sequence past every seeded id. Seed ids are
     //    `prefix-<n>` numbered per prefix from 1 (e.g. `m-1`..`m-13000`), and
     //    those counts can exceed the sequence's START value. Since `ids::next`
     //    hands out `<prefix>-<nextval>` from this one global sequence, leaving it
@@ -242,7 +233,7 @@ async fn seed_audit_fixtures() -> Result<(), sqlx::Error> {
         SeedAudit { entity_type: "case", entity_id: "c-3", days_ago: 9, actor: "Maria Nguyen", field: "status", old_value: "Monitor", new_value: "Closed" },
         SeedAudit { entity_type: "user", entity_id: "u-2", days_ago: 5, actor: "Maria Nguyen", field: "permissions on c-1", old_value: "none", new_value: "Contributor" },
         SeedAudit { entity_type: "case", entity_id: "c-2", days_ago: 2, actor: "Dana Patel", field: "Docket", old_value: "FC-2026-0002", new_value: "FC-2026-0002-A" },
-        SeedAudit { entity_type: "user", entity_id: "u-1", days_ago: 1, actor: "Maria Nguyen", field: "role", old_value: "Volunteer", new_value: "Admin" },
+        SeedAudit { entity_type: "user", entity_id: "u-1", days_ago: 1, actor: "Maria Nguyen", field: "role", old_value: "Volunteer", new_value: "Site admin" },
         SeedAudit { entity_type: "case", entity_id: "c-1", days_ago: 0, actor: "Maria Nguyen", field: "status", old_value: "Monitor", new_value: "Open" },
     ];
     // Oldest first so the newest change ends up with the highest `seq`.

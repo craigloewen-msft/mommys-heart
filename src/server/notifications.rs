@@ -8,21 +8,24 @@
 //! [`crate::server::rag::start_background_ingest`] and the audit retention task.
 //!
 //! When ACS Email is not configured (see [`EmailConfig::is_configured`]), every
-//! helper is a silent no-op.
+//! helper is a silent no-op unless dry-run mode is enabled.
 
 use crate::helpers::visibility::Visibility;
 use crate::server::config::{Brand, EmailConfig};
-use crate::server::db::settings::{self, Recipient};
 use crate::server::db::cases;
+use crate::server::db::settings::{self, Recipient};
 use crate::server::email::templates::{self, RenderedEmail};
-use crate::server::email::{send_email, EmailMessage};
+use crate::server::email::{
+    send_email, EmailMessage, EmailRecipient, EmailRecipients, MAX_RECIPIENTS_PER_MESSAGE,
+};
+use crate::server_fns::admin_requests::AdminRequest;
 use crate::server_fns::settings::NotificationKind;
 
-/// The active email config, or `None` when ACS Email is not configured — in
-/// which case every notification helper is a silent no-op.
+/// The active email config, or `None` when neither delivery nor dry-run logging
+/// is configured.
 fn configured_email() -> Option<EmailConfig> {
     let cfg = EmailConfig::from_env();
-    cfg.is_configured().then_some(cfg)
+    (cfg.dry_run || cfg.is_configured()).then_some(cfg)
 }
 
 /// Who a case notification should reach.
@@ -60,20 +63,21 @@ pub fn notify_case(
     };
     tokio::spawn(async move {
         let staff_only = audience == Audience::StaffOnly;
-        let recipients = match settings::recipients_for_case(&case_id, &actor_id, staff_only).await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("notify_case: recipient lookup failed for {case_id}: {e}");
-                return;
-            }
-        };
-        if recipients.iter().all(|r| !r.settings.wants(kind)) {
+        let mut recipients =
+            match settings::recipients_for_case(&case_id, &actor_id, staff_only).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("notify_case: recipient lookup failed for {case_id}: {e}");
+                    return;
+                }
+            };
+        recipients.retain(|recipient| recipient.settings.wants(kind));
+        if recipients.is_empty() {
             return;
         }
         let case = case_name(&case_id).await;
         let email = templates::case_event(&Brand::from_env(), kind, &case, &actor_name, &detail);
-        dispatch(&cfg, recipients, kind, &email).await;
+        dispatch(&cfg, recipients, &email, "Case notification").await;
     });
 }
 
@@ -97,56 +101,117 @@ pub fn notify_assignment(user_id: String, actor_name: String, case_id: String) {
         }
         let case = case_name(&case_id).await;
         let email = templates::assignment(&Brand::from_env(), &case, &actor_name);
-        dispatch(
-            &cfg,
-            vec![recipient],
-            NotificationKind::Assigned,
-            &email,
-        )
-        .await;
+        dispatch(&cfg, vec![recipient], &email, "Case notification").await;
     });
 }
 
-/// Send `msg` to each recipient that still wants `kind`, logging per-recipient
-/// outcomes. Runs on the background task, so it never affects the request.
+/// Notify all site admins that an operations-admin request is waiting for
+/// review, honouring each administrator's notification settings.
+pub fn notify_admin_request_filed(request: AdminRequest) {
+    let Some(cfg) = configured_email() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let mut recipients = match settings::recipients_for_site_admins().await {
+            Ok(recipients) => recipients,
+            Err(error) => {
+                tracing::warn!("admin request recipient lookup failed: {error}");
+                return;
+            }
+        };
+        recipients.retain(|recipient| recipient.settings.wants(NotificationKind::AdminRequests));
+        if recipients.is_empty() {
+            return;
+        }
+        let email = templates::admin_request_filed(&Brand::from_env(), &request);
+        dispatch(&cfg, recipients, &email, "Admin request notification").await;
+    });
+}
+
+/// Notify the requester when a site admin approves or denies an administrative
+/// request. Affected users receive the notification for the resulting domain
+/// event, such as [`notify_assignment`], instead.
+pub fn notify_admin_request_decided(request: AdminRequest) {
+    let Some(cfg) = configured_email() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let recipients = match settings::recipient_for_user(&request.requested_by_id).await {
+            Ok(Some(recipient)) if recipient.settings.wants(NotificationKind::AdminRequests) => {
+                vec![recipient]
+            }
+            Ok(None) => Vec::new(),
+            Ok(Some(_)) => Vec::new(),
+            Err(error) => {
+                tracing::warn!(
+                    "admin request decision recipient lookup failed for {}: {error}",
+                    request.requested_by_id
+                );
+                return;
+            }
+        };
+        let email = templates::admin_request_decided(&Brand::from_env(), &request);
+        dispatch(&cfg, recipients, &email, "Admin request notification").await;
+    });
+}
+
+/// Send one direct message or BCC chunks when the rendered content is shared.
 async fn dispatch(
     cfg: &EmailConfig,
     recipients: Vec<Recipient>,
-    kind: NotificationKind,
     email: &RenderedEmail,
+    context: &str,
 ) {
-    for r in recipients {
-        if !r.settings.wants(kind) {
-            continue;
-        }
+    for chunk in recipients.chunks(MAX_RECIPIENTS_PER_MESSAGE) {
         if cfg.dry_run {
-            tracing::info!(
-                "[email dry-run] would send \"{}\" to {} (set EMAIL_DRY_RUN=false to send)",
+            let addresses = chunk
+                .iter()
+                .map(|recipient| recipient.email.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            tracing::warn!(
+                "[email dry-run] would send \"{}\" to {} ({} recipient(s); \
+                 set EMAIL_DRY_RUN=false to send)",
                 email.subject,
-                r.email
+                addresses,
+                chunk.len()
             );
             continue;
         }
-        let msg = EmailMessage {
-            to_address: r.email.clone(),
-            to_name: r.name.clone(),
+
+        let recipients = if let [recipient] = chunk {
+            EmailRecipients::To(email_recipient(recipient))
+        } else {
+            EmailRecipients::Bcc(chunk.iter().map(email_recipient).collect())
+        };
+        let message = EmailMessage {
+            recipients,
             subject: email.subject.clone(),
             html: email.html.clone(),
             plain_text: email.plain_text.clone(),
         };
-        match send_email(cfg, &msg).await {
-            Ok(()) => tracing::info!("notification email accepted for {}", r.email),
-            Err(e) => {
-                tracing::warn!("notification email to {} failed: {e}", r.email);
+        if let Err(error) = send_email(cfg, &message).await {
+            tracing::warn!(
+                "notification email batch for {} recipient(s) failed: {error}",
+                chunk.len()
+            );
+            for recipient in chunk {
                 crate::server::db::email_failures::record(
-                    &r.email,
+                    &recipient.email,
                     &email.subject,
-                    "Case notification",
-                    &e,
+                    context,
+                    &error,
                 )
                 .await;
             }
         }
+    }
+}
+
+fn email_recipient(recipient: &Recipient) -> EmailRecipient {
+    EmailRecipient {
+        address: recipient.email.clone(),
+        name: recipient.name.clone(),
     }
 }
 

@@ -8,8 +8,7 @@ use crate::server_fns::pagination::Page;
 const RETENTION_YEARS: i64 = 10;
 
 /// How often the background retention task runs.
-const RETENTION_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(30 * 24 * 60 * 60);
+const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Which kind of entity an audit entry is attached to.
 #[derive(Clone, Copy, Debug)]
@@ -109,7 +108,52 @@ pub async fn record(
     old_value: &str,
     new_value: &str,
 ) -> Result<(), sqlx::Error> {
-    let id = ids::next(pool, "cl").await?;
+    let mut connection = pool.acquire().await?;
+    record_with_connection(
+        &mut connection,
+        entity,
+        entity_id,
+        actor,
+        field,
+        old_value,
+        new_value,
+    )
+    .await
+}
+
+/// Append an audit entry as part of an existing transaction, so the audited
+/// mutation and its audit record commit or roll back together.
+pub async fn record_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entity: Entity,
+    entity_id: &str,
+    actor: &str,
+    field: &str,
+    old_value: &str,
+    new_value: &str,
+) -> Result<(), sqlx::Error> {
+    record_with_connection(
+        &mut **transaction,
+        entity,
+        entity_id,
+        actor,
+        field,
+        old_value,
+        new_value,
+    )
+    .await
+}
+
+async fn record_with_connection(
+    connection: &mut sqlx::PgConnection,
+    entity: Entity,
+    entity_id: &str,
+    actor: &str,
+    field: &str,
+    old_value: &str,
+    new_value: &str,
+) -> Result<(), sqlx::Error> {
+    let id = ids::next(&mut *connection, "cl").await?;
     sqlx::query(
         "INSERT INTO audit_log (id, entity_type, entity_id, actor, field, old_value, new_value, at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -122,7 +166,7 @@ pub async fn record(
     .bind(old_value)
     .bind(new_value)
     .bind(now_stamp())
-    .execute(pool)
+    .execute(connection)
     .await?;
     Ok(())
 }

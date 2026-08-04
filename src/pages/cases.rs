@@ -593,7 +593,12 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
     // the case summary. No implicit grants for owners or admins.
     let caps = summary.capabilities.clone();
     let can_edit = caps.contains(&CaseCapability::EditCase);
-    let is_admin = state.is_admin();
+    let role = state
+        .current_user_summary
+        .with_untracked(|user| user.as_ref().map(|user| user.role));
+    let has_operations_admin_permissions =
+        role.is_some_and(|role| role.has_operations_admin_permissions());
+    let is_site_admin = role.is_some_and(|role| role.is_site_admin());
     let can_note = caps.contains(&CaseCapability::AddNotes);
     let can_view_evidence = caps.contains(&CaseCapability::ViewEvidence);
     let can_upload_evidence = caps.contains(&CaseCapability::UploadEvidence);
@@ -765,7 +770,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                         return;
                     }
                 }
-                if is_admin {
+                if is_site_admin {
                     if let Err(e) = cases::set_case_owner(case_id.clone(), owner).await {
                         edit_error.set(err_text(e));
                         return;
@@ -1430,7 +1435,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                             <label class="text-xs font-medium text-slate-400">
                                 "Owner (who filed it)"
                             </label>
-                            {if is_admin {
+                            {if is_site_admin {
                                 view! {
                                     <div class="relative">
                                         <input
@@ -1462,7 +1467,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                                         class=input_class
                                         prop:value=move || owner_label.get()
                                         disabled=true
-                                        title="Only an administrator can change the owner."
+                                        title="Only a site administrator can change the owner."
                                     />
                                 }
                                     .into_any()
@@ -1519,7 +1524,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
             </div>
 
             // Audit log
-            {if is_admin {
+            {if has_operations_admin_permissions {
                 view! {
                     <div class=panel>
                         <div class="flex items-center justify-between">

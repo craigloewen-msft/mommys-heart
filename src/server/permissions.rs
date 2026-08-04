@@ -9,7 +9,7 @@
 //!
 //! Every `#[server]` function in [`crate::server_fns`] resolves the caller with
 //! [`require_user`] (from the session cookie) and then checks authorization with
-//! the helpers here: [`require_admin`] for the account-level role gate,
+//! the helpers here: [`require_operations_admin`] for the account-level role gate,
 //! [`require_cap`] for a specific per-case capability, and [`require_channel`]
 //! for the case chat, which combines a capability check with the account-role
 //! rule that keeps clients out of a case's volunteer-only channel. Keeping
@@ -36,12 +36,41 @@ pub async fn require_user() -> Result<User, ServerFnError> {
     Ok(user)
 }
 
-/// Reject unless the caller is an administrator.
-pub fn require_admin(user: &User) -> Result<(), ServerFnError> {
-    if user.role.is_admin() {
+/// Reject unless the caller is a site administrator.
+pub fn require_site_admin(user: &User) -> Result<(), ServerFnError> {
+    if user.role.is_site_admin() {
         Ok(())
     } else {
-        Err(ServerFnError::new("Admin access required."))
+        Err(ServerFnError::new("Site admin access required."))
+    }
+}
+
+/// Reject unless the caller has operations-admin permissions.
+pub fn require_operations_admin(user: &User) -> Result<(), ServerFnError> {
+    if user.role.has_operations_admin_permissions() {
+        Ok(())
+    } else {
+        Err(ServerFnError::new(
+            "Operations-admin permissions required.",
+        ))
+    }
+}
+
+/// Reject unless the caller may manage the target user's case assignments and
+/// capabilities. Site admins may manage anyone; operations admins may manage
+/// only themselves.
+pub fn require_case_access_management(
+    actor: &User,
+    target_user_id: &str,
+) -> Result<(), ServerFnError> {
+    let allowed = actor.role.is_site_admin()
+        || (actor.role.is_operations_admin() && actor.id == target_user_id);
+    if allowed {
+        Ok(())
+    } else {
+        Err(ServerFnError::new(
+            "You may only manage your own case access.",
+        ))
     }
 }
 

@@ -45,7 +45,7 @@ pub async fn list_audit_page(
     limit: i64,
 ) -> Result<Page<ChangeLogEntry>, ServerFnError> {
     use crate::server::db::audit::{self, Entity};
-    use crate::server::permissions::{require_admin, require_cap, require_user};
+    use crate::server::permissions::{require_cap, require_site_admin, require_user};
     use crate::server_fns::capabilities::CaseCapability;
 
     /// Hard cap on how many audit rows a single request may return, regardless
@@ -58,7 +58,7 @@ pub async fn list_audit_page(
     let user = require_user().await?;
     let entity = match scope {
         AuditScope::User => {
-            require_admin(&user)?;
+            require_site_admin(&user)?;
             Entity::User
         }
         AuditScope::Case => {

@@ -1,21 +1,22 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::components::admin_requests::AdminRequestCenter;
 use crate::components::change_log::ChangeLog;
 use crate::components::email_failures::EmailFailureLog;
-use crate::components::guard::require_admin;
+use crate::components::guard::require_operations_admin;
 use crate::components::layout::Layout;
 use crate::server_fns::audit::AuditScope;
+use crate::server_fns::capabilities::{CaseCapability, CasePreset};
 use crate::server_fns::cases::CaseSummary;
 use crate::server_fns::err_text;
-use crate::server_fns::capabilities::{CaseCapability, CasePreset};
 use crate::server_fns::users::AccountRole;
 use crate::server_fns::users::User;
 use crate::state::AppState;
 
 /// How many users the admin list loads per "page" (each "Load more" click grows
 /// the visible window by this much).
-const PAGE_SIZE: i64 = 10;
+const PAGE_SIZE: i64 = 4;
 
 /// A single case assignment being edited in the admin capabilities "Edit" flow.
 /// Holds the working capability set and a "marked for removal" flag; nothing is
@@ -56,6 +57,7 @@ pub fn AdminDashboardPage() -> impl IntoView {
     let load_error = RwSignal::new(None::<String>);
     // Bumped after a mutation to force the current window to reload.
     let reload = RwSignal::new(0u32);
+    let requests_tab = RwSignal::new(false);
     // Whether the collapsible "Email delivery failures" panel is open. Mounting
     // the viewer only on open defers its fetch until the admin asks for it.
     let failures_open = RwSignal::new(false);
@@ -65,10 +67,13 @@ pub fn AdminDashboardPage() -> impl IntoView {
     // in the browser after hydration). We always fetch `[0, window)` so both
     // search changes and post-mutation refreshes are handled by one code path.
     Effect::new(move |_| {
+        if requests_tab.get() {
+            return;
+        }
         let count = window.get();
         let q = debounced_query.get();
         reload.track();
-        if !state.is_authenticated() {
+        if !state.has_operations_admin_permissions() {
             return;
         }
         loading.set(true);
@@ -85,7 +90,13 @@ pub fn AdminDashboardPage() -> impl IntoView {
         });
     });
 
-    require_admin(state, move || {
+    require_operations_admin(state, move || {
+        let actor = state
+            .current_user_summary
+            .get()
+            .expect("admin guard requires a current user");
+        let is_site_admin = actor.role.is_site_admin();
+        let actor_user_id = StoredValue::new(actor.id);
         let list = move || {
             if let Some(msg) = load_error.get() {
                 return view! {
@@ -104,7 +115,17 @@ pub fn AdminDashboardPage() -> impl IntoView {
             }
             items
                 .into_iter()
-                .map(|u| view! { <UserCard user=u reload=reload /> }.into_any())
+                .map(|u| {
+                    view! {
+                        <UserCard
+                            user=u
+                            reload=reload
+                            actor_user_id=actor_user_id.get_value()
+                            is_site_admin=is_site_admin
+                        />
+                    }
+                    .into_any()
+                })
                 .collect_view()
                 .into_any()
         };
@@ -142,41 +163,103 @@ pub fn AdminDashboardPage() -> impl IntoView {
 
         view! {
         <Layout title="Admin".to_string()>
-            <p class="mb-6 text-sm text-slate-400">
-                "Manage every user's global role and per-case capabilities."
-            </p>
-            <input
-                class="mb-4 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40"
-                placeholder="Search users by name or email"
-                prop:value=move || query.get()
-                on:input=move |ev| {
-                    let val = event_target_value(&ev);
-                    query.set(val.clone());
-                    on_search(val);
-                }
-            />
-            <div class="space-y-4">{list}</div>
-            {footer}
-            <div class="mb-6 rounded-xl border border-slate-800 bg-slate-900 p-5">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <h2 class="text-sm font-semibold text-slate-200">
-                            "Email delivery failures"
-                        </h2>
-                        <p class="mt-0.5 text-xs text-slate-500">
-                            "Outbound emails that failed to send, newest first \u{2014} check here instead of the server logs."
-                        </p>
-                    </div>
+            <div class="mb-6 border-b border-slate-800" role="tablist" aria-label="Admin sections">
+                <div class="flex gap-6">
                     <button
-                        on:click=move |_| failures_open.update(|o| *o = !*o)
-                        class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                        type="button"
+                        role="tab"
+                        aria-selected=move || (!requests_tab.get()).to_string()
+                        on:click=move |_| requests_tab.set(false)
+                        class=move || if requests_tab.get() {
+                            "border-b-2 border-transparent px-1 pb-3 text-sm font-medium text-slate-400 hover:text-slate-200"
+                        } else {
+                            "border-b-2 border-primary-400 px-1 pb-3 text-sm font-medium text-primary-300"
+                        }
                     >
-                        {move || if failures_open.get() { "Hide" } else { "Show" }}
+                        "Case access"
+                    </button>
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected=move || requests_tab.get().to_string()
+                        on:click=move |_| requests_tab.set(true)
+                        class=move || if requests_tab.get() {
+                            "border-b-2 border-primary-400 px-1 pb-3 text-sm font-medium text-primary-300"
+                        } else {
+                            "border-b-2 border-transparent px-1 pb-3 text-sm font-medium text-slate-400 hover:text-slate-200"
+                        }
+                    >
+                        <span class="inline-flex items-center gap-2">
+                            "Requests"
+                            {move || {
+                                let count = if is_site_admin {
+                                    state.admin_request_pending.get()
+                                } else {
+                                    0
+                                };
+                                (count > 0).then(|| view! {
+                                    <span class="inline-flex min-w-5 items-center justify-center rounded-full bg-primary-500 px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-white">
+                                        {count}
+                                    </span>
+                                })
+                            }}
+                        </span>
                     </button>
                 </div>
-                <Show when=move || failures_open.get()>
-                    <EmailFailureLog />
-                </Show>
+            </div>
+
+            <div role="tabpanel" class:hidden=move || requests_tab.get()>
+                <p class="mb-6 text-sm text-slate-400">
+                    {if is_site_admin {
+                        "Manage global roles and case capabilities."
+                    } else {
+                        "Manage your case access and request changes for other users."
+                    }}
+                </p>
+                <input
+                    class="mb-4 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40"
+                    placeholder="Search users by name or email"
+                    prop:value=move || query.get()
+                    on:input=move |ev| {
+                        let val = event_target_value(&ev);
+                        query.set(val.clone());
+                        on_search(val);
+                    }
+                />
+                <div class="space-y-4">{list}</div>
+                {footer}
+                <div class="mb-6 rounded-xl border border-slate-800 bg-slate-900 p-5">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <h2 class="text-sm font-semibold text-slate-200">
+                                "Email delivery failures"
+                            </h2>
+                            <p class="mt-0.5 text-xs text-slate-500">
+                                "Outbound emails that failed to send, newest first \u{2014} check here instead of the server logs."
+                            </p>
+                        </div>
+                        <button
+                            on:click=move |_| failures_open.update(|o| *o = !*o)
+                            class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                        >
+                            {move || if failures_open.get() { "Hide" } else { "Show" }}
+                        </button>
+                    </div>
+                    <Show when=move || failures_open.get()>
+                        <EmailFailureLog />
+                    </Show>
+                </div>
+            </div>
+
+            <div role="tabpanel" class:hidden=move || !requests_tab.get()>
+                <p class="mb-6 text-sm text-slate-400">
+                    {if is_site_admin {
+                        "Review active operations-admin requests and browse past decisions."
+                    } else {
+                        "Track active requests you submitted and browse their history."
+                    }}
+                </p>
+                <AdminRequestCenter is_site_admin=is_site_admin reload=reload />
             </div>
         </Layout>
     }
@@ -188,31 +271,67 @@ pub fn AdminDashboardPage() -> impl IntoView {
 /// the parent list refetches the current window and the card re-renders with
 /// fresh data (assignments, role, audit log).
 #[component]
-fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
+fn UserCard(
+    user: User,
+    reload: RwSignal<u32>,
+    actor_user_id: String,
+    is_site_admin: bool,
+) -> impl IntoView {
     let user_id = user.id.clone();
+    let current_role = user.role;
+    let can_edit_capabilities_directly = is_site_admin || user_id == actor_user_id;
+    let can_request_changes = !is_site_admin && user_id != actor_user_id;
 
     // --- global role ---
-    let role_change = {
-        let user_id = user_id.clone();
-        move |ev| {
-            if let Some(r) = AccountRole::from_slug(&event_target_value(&ev)) {
-                let user_id = user_id.clone();
-                spawn_local(async move {
-                    if crate::server_fns::users::set_user_role(user_id, r)
-                        .await
-                        .is_ok()
-                    {
-                        reload.update(|n| *n += 1);
-                    }
-                });
-            }
+    let role_change_target = StoredValue::new(user_id.clone());
+    let role_change = move |ev| {
+        if let Some(r) = AccountRole::from_slug(&event_target_value(&ev)) {
+            let user_id = role_change_target.get_value();
+            spawn_local(async move {
+                if crate::server_fns::users::set_user_role(user_id, r)
+                    .await
+                    .is_ok()
+                {
+                    reload.update(|n| *n += 1);
+                }
+            });
         }
+    };
+    let requested_role = RwSignal::new(current_role.slug().to_string());
+    let role_request_note = RwSignal::new(String::new());
+    let role_requesting = RwSignal::new(false);
+    let role_request_feedback = RwSignal::new(None::<Result<String, String>>);
+    let role_request_target = StoredValue::new(user_id.clone());
+    let submit_role_request = move |_: leptos::ev::MouseEvent| {
+        let Some(role) = AccountRole::from_slug(&requested_role.get_untracked()) else {
+            return;
+        };
+        if role == current_role || role_requesting.get_untracked() {
+            return;
+        }
+        let target_id = role_request_target.get_value();
+        let note = role_request_note.get_untracked();
+        role_requesting.set(true);
+        role_request_feedback.set(None);
+        spawn_local(async move {
+            match crate::server_fns::admin_requests::request_user_role_change(target_id, role, note)
+                .await
+            {
+                Ok(_) => {
+                    role_request_feedback.set(Some(Ok("Role request submitted.".to_string())));
+                    role_request_note.set(String::new());
+                    reload.update(|value| *value += 1);
+                }
+                Err(error) => role_request_feedback.set(Some(Err(err_text(error)))),
+            }
+            role_requesting.set(false);
+        });
     };
 
     // --- add assignment (case typeahead + preset) ---
     // `new_case` holds the *selected* case id; `new_case_label` its display name.
-    // The picker searches all cases server-side (admin-only), so it scales to
-    // tens of thousands of cases without ever loading them into the browser.
+    // The picker searches all cases server-side behind the operations-admin
+    // gate, so it scales without loading them all into the browser.
     let new_case = RwSignal::new(String::new());
     let new_case_label = RwSignal::new(String::new());
     let new_preset = RwSignal::new(CasePreset::Viewer.slug().to_string());
@@ -289,7 +408,6 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
             .unwrap_or_else(|| case_id.to_string())
     };
 
-    let current_role = user.role;
     let full_name = user.full_name();
     let email = user.email.clone();
 
@@ -298,6 +416,8 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
     let draft: RwSignal<Vec<DraftAssignment>> = RwSignal::new(Vec::new());
     let save_error = RwSignal::new(String::new());
     let saving = RwSignal::new(false);
+    let capability_request_note = RwSignal::new(String::new());
+    let capability_note_id = StoredValue::new(format!("capability-note-{user_id}"));
 
     let begin_edit = move |_| {
         let rows = originals
@@ -307,6 +427,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
             .collect::<Vec<_>>();
         draft.set(rows);
         save_error.set(String::new());
+        capability_request_note.set(String::new());
         picker_open.set(false);
         new_case.set(String::new());
         new_case_label.set(String::new());
@@ -317,6 +438,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
     let cancel_edit = move |_| {
         editing.set(false);
         save_error.set(String::new());
+        capability_request_note.set(String::new());
         picker_open.set(false);
         new_case.set(String::new());
         new_case_label.set(String::new());
@@ -389,13 +511,29 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
         }
         saving.set(true);
         spawn_local(async move {
-            match crate::server_fns::users::save_case_capabilities(user_id, changes).await {
-                Ok(()) => {
-                    save_error.set(String::new());
-                    editing.set(false);
-                    reload.update(|n| *n += 1);
+            if can_edit_capabilities_directly {
+                match crate::server_fns::users::save_case_capabilities(user_id, changes).await {
+                    Ok(()) => {
+                        save_error.set(String::new());
+                        editing.set(false);
+                        reload.update(|n| *n += 1);
+                    }
+                    Err(e) => save_error.set(err_text(e)),
                 }
-                Err(e) => save_error.set(err_text(e)),
+            } else {
+                let note = capability_request_note.get_untracked();
+                match crate::server_fns::admin_requests::request_user_case_capabilities(
+                    user_id, changes, note,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        save_error.set(String::new());
+                        editing.set(false);
+                        reload.update(|n| *n += 1);
+                    }
+                    Err(error) => save_error.set(err_text(error)),
+                }
             }
             saving.set(false);
         });
@@ -465,7 +603,17 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
                     prop:disabled=move || saving.get()
                     class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
                 >
-                    {move || if saving.get() { "Saving\u{2026}" } else { "Save" }}
+                    {move || if saving.get() {
+                        if can_edit_capabilities_directly {
+                            "Saving\u{2026}"
+                        } else {
+                            "Submitting\u{2026}"
+                        }
+                    } else if can_edit_capabilities_directly {
+                        "Save"
+                    } else {
+                        "Submit requests"
+                    }}
                 </button>
                 <button
                     on:click=cancel_edit
@@ -532,6 +680,25 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
                     </button>
                 </div>
             };
+            let request_note = (!can_edit_capabilities_directly).then(|| view! {
+                <div class="mt-3">
+                    <label
+                        class="mb-1 block text-xs font-medium text-slate-400"
+                        for=capability_note_id.get_value()
+                    >
+                        "Request reason (optional)"
+                    </label>
+                    <textarea
+                        id=capability_note_id.get_value()
+                        rows="2"
+                        maxlength="1000"
+                        class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+                        placeholder="Context for the site admin reviewing this request"
+                        prop:value=move || capability_request_note.get()
+                        on:input=move |event| capability_request_note.set(event_target_value(&event))
+                    ></textarea>
+                </div>
+            });
 
             view! {
                 <Show
@@ -639,6 +806,7 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
                     </div>
                 </Show>
                 {add_control}
+                {request_note}
             }
             .into_any()
         } else {
@@ -714,47 +882,106 @@ fn UserCard(user: User, reload: RwSignal<u32>) -> impl IntoView {
 
     view! {
         <div class="rounded-xl border border-slate-800 bg-slate-900 p-5">
-            <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <p class="font-medium text-slate-100">{full_name}</p>
                     <p class="text-xs text-slate-500">{email}</p>
                 </div>
-                <div class="flex items-center gap-2">
+                <div class="flex flex-wrap items-center justify-end gap-2">
                     <span class=badge(current_role.badge_classes())>{current_role.label()}</span>
-                    <select
-                        class=input_class
-                        on:change=role_change
-                    >
-                        {AccountRole::ALL
-                            .into_iter()
-                            .map(|r| {
-                                view! {
-                                    <option value=r.slug() selected=r == current_role>
-                                        {r.label()}
-                                    </option>
-                                }
-                            })
-                            .collect_view()}
-                    </select>
+                    <Show when=move || editing.get()>
+                        {if is_site_admin {
+                            view! {
+                                <select class=input_class on:change=role_change>
+                                    {AccountRole::ALL
+                                        .into_iter()
+                                        .map(|role| view! {
+                                            <option value=role.slug() selected=role == current_role>
+                                                {role.label()}
+                                            </option>
+                                        })
+                                        .collect_view()}
+                                </select>
+                            }
+                            .into_any()
+                        } else if can_request_changes {
+                            view! {
+                                <div class="flex max-w-full flex-wrap items-center justify-end gap-2">
+                                    <select
+                                        class=input_class
+                                        prop:value=move || requested_role.get()
+                                        on:change=move |event| requested_role.set(event_target_value(&event))
+                                    >
+                                        {AccountRole::ALL
+                                            .into_iter()
+                                            .map(|role| view! {
+                                                <option value=role.slug()>{role.label()}</option>
+                                            })
+                                            .collect_view()}
+                                    </select>
+                                    <input
+                                        class="min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500"
+                                        placeholder="Reason (optional)"
+                                        maxlength="1000"
+                                        prop:value=move || role_request_note.get()
+                                        on:input=move |event| role_request_note.set(event_target_value(&event))
+                                    />
+                                    <button
+                                        type="button"
+                                        on:click=submit_role_request
+                                        prop:disabled=move || {
+                                            role_requesting.get()
+                                                || requested_role.get() == current_role.slug()
+                                        }
+                                        class="rounded-lg border border-primary-500/50 px-3 py-1.5 text-sm font-semibold text-primary-300 hover:bg-primary-500/10 disabled:opacity-50"
+                                >
+                                        {move || if role_requesting.get() {
+                                            "Submitting\u{2026}"
+                                        } else {
+                                            "Request role"
+                                        }}
+                                    </button>
+                                </div>
+                            }
+                            .into_any()
+                        } else {
+                            ().into_any()
+                        }}
+                    </Show>
                 </div>
             </div>
+
+            <Show when=move || role_request_feedback.get().is_some()>
+                {move || role_request_feedback.get().map(|feedback| match feedback {
+                    Ok(message) => view! {
+                        <p class="mt-2 text-xs text-emerald-300">{message}</p>
+                    }
+                    .into_any(),
+                    Err(message) => view! {
+                        <p class="mt-2 text-xs text-rose-300">{message}</p>
+                    }
+                    .into_any(),
+                })}
+            </Show>
 
             <div class="mt-4">
                 {capabilities_section}
             </div>
 
-            <div class="mt-4">
-                <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
-                    <button
-                        on:click=move |_| log_open.update(|o| *o = !*o)
-                        class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
-                    >
-                        {move || if log_open.get() { "Hide" } else { "Open change log" }}
-                    </button>
+            {is_site_admin.then(|| view! {
+                <div class="mt-4">
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
+                        <button
+                            on:click=move |_| log_open.update(|o| *o = !*o)
+                            class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                        >
+                            {move || if log_open.get() { "Hide" } else { "Open change log" }}
+                        </button>
+                    </div>
+                    {log_section}
                 </div>
-                {log_section}
-            </div>
+            })}
         </div>
     }
     .into_any()

@@ -2,20 +2,23 @@
 //! read-only view of a colleague's profile at `/profile/:id`.
 //!
 //! Profiles are **need-to-know**, not public: a profile is only readable by its
-//! owner, by an administrator, or by someone who shares a case with that user
-//! (both hold the `view_case` capability on the same case, or own it).
+//! owner, by a user with operations-admin permissions, or by someone who shares
+//! a case with that user (both hold the `view_case` capability on the same case,
+//! or own it).
 //!
 //! What a reader sees is narrower still. Name and role identify a colleague and
 //! are shown to anyone who may open the profile at all; the contact details
 //! (email, phone, home address) are personal information and are sent **only**
-//! to the profile's owner and to administrators. That filtering happens
-//! server-side in [`load_profile`] — [`UserProfile::contact`] is simply absent
-//! from the response for everyone else, so the details never reach the browser.
+//! to the profile's owner and to users with operations-admin permissions. That
+//! filtering happens server-side in [`load_profile`] — [`UserProfile::contact`]
+//! is simply absent from the response for everyone else, so the details never
+//! reach the browser.
 //!
 //! Editing is strictly self-service: [`save_my_profile`] always writes the
 //! caller's own row. Account-level fields that are *not* the user's to change
 //! (their email, which identifies the account for sign-in, and their role) stay
-//! read-only here and remain admin-managed in [`crate::server_fns::users`].
+//! read-only here and remain Site-Admin-managed in
+//! [`crate::server_fns::users`].
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -24,7 +27,7 @@ use crate::server_fns::users::{AccountRole, User};
 use crate::server_fns::volunteer_hours::VolunteerHours;
 
 /// The personal contact details on a profile. Only ever populated for the
-/// profile's owner and for administrators; omitted entirely otherwise.
+/// profile's owner and viewers with operations-admin permissions.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProfileContact {
     pub email: String,
@@ -40,19 +43,19 @@ pub struct UserProfile {
     pub last_name: String,
     pub role: AccountRole,
     /// Contact details, present only when the viewer is the profile's owner or
-    /// an administrator.
+    /// has operations-admin permissions.
     #[serde(default)]
     pub contact: Option<ProfileContact>,
     /// Volunteer hours, present only for a volunteer-access account when the
-    /// viewer owns this profile or is an administrator.
+    /// viewer owns this profile or has operations-admin permissions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volunteer_hours: Option<VolunteerHours>,
     /// Whether this profile belongs to the caller (drives the edit affordances).
     #[serde(default)]
     pub is_self: bool,
     /// Whether the viewer works a case with this user — the reason a colleague's
-    /// profile is visible. Always false on your own profile, and false for an
-    /// admin viewing someone they share no case with.
+    /// profile is visible. Always false on your own profile, and false for a
+    /// viewer with operations-admin permissions who shares no case with them.
     #[serde(default)]
     pub shares_case: bool,
 }
@@ -63,12 +66,13 @@ impl UserProfile {
     ///
     /// This is the one place the privacy rule lives, and it is deliberately a
     /// *constructor* rather than a filter applied afterwards: you cannot get a
-    /// `UserProfile` at all without first answering "is this the owner or an
-    /// admin?", so a caller cannot forget to strip the contact block.
+    /// `UserProfile` at all without first answering whether this is the owner
+    /// or a viewer with operations-admin permissions, so a caller cannot forget
+    /// to strip the contact block.
     pub fn for_viewer(
         user: User,
         is_self: bool,
-        is_admin: bool,
+        has_operations_admin_permissions: bool,
         shares_case: bool,
         volunteer_hours: Option<VolunteerHours>,
     ) -> Self {
@@ -87,7 +91,7 @@ impl UserProfile {
             first_name,
             last_name,
             role,
-            contact: (is_self || is_admin).then_some(ProfileContact {
+            contact: (is_self || has_operations_admin_permissions).then_some(ProfileContact {
                 email,
                 phone,
                 home_address,
@@ -175,12 +179,12 @@ pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError>
             .await
             .map_err(ServerFnError::new)?
     };
-    let is_admin = viewer.role.is_admin();
-    if !is_self && !shares_case && !is_admin {
+    let has_operations_admin_permissions = viewer.role.has_operations_admin_permissions();
+    if !is_self && !shares_case && !has_operations_admin_permissions {
         return Err(ServerFnError::new(UNAVAILABLE));
     }
 
-    let hours = if (is_self || is_admin) && has_volunteer_access(&record) {
+    let hours = if (is_self || has_operations_admin_permissions) && has_volunteer_access(&record) {
         Some(
             volunteer_hours::list_for_user(&record.id)
                 .await
@@ -193,7 +197,7 @@ pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError>
     Ok(UserProfile::for_viewer(
         record,
         is_self,
-        is_admin,
+        has_operations_admin_permissions,
         shares_case,
         hours,
     ))

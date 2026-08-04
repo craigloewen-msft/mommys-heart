@@ -1,5 +1,5 @@
 //! User/admin server functions: role changes and per-case capability
-//! assignments. All require administrator rights.
+//! assignments. All require operations-admin permissions.
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -8,9 +8,9 @@ use crate::server_fns::pagination::Page;
 use crate::server_fns::capabilities::{CaseAssignment, CaseCapability};
 
 /// The global account type a user has. This controls app-level access (e.g.
-/// only an `Admin` reaches the Admin dashboard). It is intentionally separate
-/// from per-case capabilities: all account types view and work cases the same
-/// way; what differs per case is their set of
+/// operations and site admins can reach the Admin dashboard). It is
+/// intentionally separate from per-case capabilities: all account types view
+/// and work cases the same way; what differs per case is their set of
 /// [`CaseCapability`](crate::server_fns::capabilities::CaseCapability)s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,22 +19,27 @@ pub enum AccountRole {
     Client,
     /// A volunteer working cases on behalf of clients.
     Volunteer,
-    /// An administrator who manages users and their capabilities.
-    Admin,
+    /// An operations administrator who may manage their own case access and
+    /// request changes to other users.
+    OperationsAdmin,
+    /// A site administrator with unrestricted administrative access.
+    SiteAdmin,
 }
 
 impl AccountRole {
-    pub const ALL: [AccountRole; 3] = [
+    pub const ALL: [AccountRole; 4] = [
         AccountRole::Client,
         AccountRole::Volunteer,
-        AccountRole::Admin,
+        AccountRole::OperationsAdmin,
+        AccountRole::SiteAdmin,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             AccountRole::Client => "Client",
             AccountRole::Volunteer => "Volunteer",
-            AccountRole::Admin => "Admin",
+            AccountRole::OperationsAdmin => "Operations admin",
+            AccountRole::SiteAdmin => "Site admin",
         }
     }
 
@@ -42,7 +47,8 @@ impl AccountRole {
         match self {
             AccountRole::Client => "client",
             AccountRole::Volunteer => "volunteer",
-            AccountRole::Admin => "admin",
+            AccountRole::OperationsAdmin => "operations_admin",
+            AccountRole::SiteAdmin => "site_admin",
         }
     }
 
@@ -50,14 +56,30 @@ impl AccountRole {
         Self::ALL.into_iter().find(|r| r.slug() == s)
     }
 
-    /// Only admins reach the Admin dashboard and can manage other users.
-    pub fn is_admin(self) -> bool {
-        matches!(self, AccountRole::Admin)
+    /// Whether this is exactly the site-administrator role.
+    pub fn is_site_admin(self) -> bool {
+        matches!(self, AccountRole::SiteAdmin)
+    }
+
+    /// Whether this is exactly the operations-administrator role.
+    pub fn is_operations_admin(self) -> bool {
+        matches!(self, AccountRole::OperationsAdmin)
+    }
+
+    /// Whether this role may perform operations-admin actions.
+    /// Site administrators inherit these permissions.
+    pub fn has_operations_admin_permissions(self) -> bool {
+        self.is_operations_admin() || self.is_site_admin()
+    }
+
+    pub fn has_volunteer_privileges(self) -> bool {
+        matches!(self, AccountRole::Volunteer | AccountRole::OperationsAdmin | AccountRole::SiteAdmin)
     }
 
     pub fn badge_classes(self) -> &'static str {
         match self {
-            AccountRole::Admin => "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/30",
+            AccountRole::SiteAdmin => "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/30",
+            AccountRole::OperationsAdmin => "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30",
             AccountRole::Volunteer => "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
             AccountRole::Client => "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30",
         }
@@ -131,23 +153,24 @@ impl From<User> for UserSummary {
     }
 }
 
-/// Server-side typeahead search over users for the case owner-picker. Admin
-/// only: it returns other users' names, which are confidential, and its sole
-/// consumer (owner reassignment) is itself admin-only.
+/// Server-side typeahead search over users for the case owner-picker. Requires
+/// operations-admin permissions because it returns other users' confidential
+/// names and its sole consumer is owner reassignment.
 #[server(prefix = "/api")]
 pub async fn search_users(query: String) -> Result<Vec<UserSummary>, ServerFnError> {
     use crate::server::db::users;
-    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::permissions::{require_operations_admin, require_user};
 
     let actor = require_user().await?;
-    require_admin(&actor)?;
+    require_operations_admin(&actor)?;
     users::search_user_summaries(&query, 10)
         .await
         .map_err(ServerFnError::new)
 }
 
 /// One page of users for the admin management screen, ordered by id, with an
-/// optional case-insensitive search over id/name/email. Admin only.
+/// optional case-insensitive search over id/name/email. Requires
+/// operations-admin permissions.
 ///
 /// Backs the admin dashboard's server-side pagination ("Load more") so the UI
 /// never has to pull every user into the browser.
@@ -158,10 +181,10 @@ pub async fn list_users_page(
     search: String,
 ) -> Result<Page<User>, ServerFnError> {
     use crate::server::db::users;
-    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::permissions::{require_operations_admin, require_user};
 
     let actor = require_user().await?;
-    require_admin(&actor)?;
+    require_operations_admin(&actor)?;
     users::page(offset, limit, &search)
         .await
         .map_err(ServerFnError::new)
@@ -171,10 +194,10 @@ pub async fn list_users_page(
 #[server(prefix = "/api")]
 pub async fn set_user_role(user_id: String, role: AccountRole) -> Result<(), ServerFnError> {
     use crate::server::db::users;
-    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::permissions::{require_site_admin, require_user};
 
     let actor = require_user().await?;
-    require_admin(&actor)?;
+    require_site_admin(&actor)?;
     users::set_role(&user_id, role, &actor.full_name())
         .await
         .map_err(ServerFnError::new)
@@ -188,11 +211,11 @@ pub async fn assign_case(
     capabilities: Vec<CaseCapability>,
 ) -> Result<(), ServerFnError> {
     use crate::server::db::users;
-    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::permissions::{require_case_access_management, require_user};
     use crate::server_fns::capabilities::validate_capabilities;
 
     let actor = require_user().await?;
-    require_admin(&actor)?;
+    require_case_access_management(&actor, &user_id)?;
     validate_capabilities(&capabilities).map_err(ServerFnError::new)?;
     let was_assigned = users::is_assigned(&user_id, &case_id)
         .await
@@ -219,10 +242,10 @@ pub async fn toggle_capability(
     enabled: bool,
 ) -> Result<(), ServerFnError> {
     use crate::server::db::users;
-    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::permissions::{require_case_access_management, require_user};
 
     let actor = require_user().await?;
-    require_admin(&actor)?;
+    require_case_access_management(&actor, &user_id)?;
     users::toggle_capability(&user_id, &case_id, capability, enabled, &actor.full_name())
         .await
         .map_err(ServerFnError::new)
@@ -232,10 +255,10 @@ pub async fn toggle_capability(
 #[server(prefix = "/api")]
 pub async fn unassign_case(user_id: String, case_id: String) -> Result<(), ServerFnError> {
     use crate::server::db::users;
-    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::permissions::{require_case_access_management, require_user};
 
     let actor = require_user().await?;
-    require_admin(&actor)?;
+    require_case_access_management(&actor, &user_id)?;
     users::unassign(&user_id, &case_id, &actor.full_name())
         .await
         .map_err(ServerFnError::new)
@@ -251,11 +274,11 @@ pub async fn save_case_capabilities(
     changes: Vec<(String, Option<Vec<CaseCapability>>)>,
 ) -> Result<(), ServerFnError> {
     use crate::server::db::users;
-    use crate::server::permissions::{require_admin, require_user};
+    use crate::server::permissions::{require_case_access_management, require_user};
     use crate::server_fns::capabilities::validate_capabilities;
 
     let actor = require_user().await?;
-    require_admin(&actor)?;
+    require_case_access_management(&actor, &user_id)?;
     for (_, caps) in &changes {
         if let Some(caps) = caps {
             validate_capabilities(caps).map_err(ServerFnError::new)?;

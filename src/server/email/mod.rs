@@ -7,8 +7,8 @@
 //! - [`communicationservice`] signs and POSTs a message to Azure Communication Services;
 //! - [`preview`] renders every template to disk for offline design iteration.
 //!
-//! The delivery entry point [`send_email`] and its [`EmailMessage`] input are
-//! re-exported here so callers use `crate::server::email::{send_email, EmailMessage}`.
+//! The delivery entry point [`send_email`] and its message types are re-exported
+//! here so callers use `crate::server::email` rather than the transport module.
 
 pub mod auth_notifications;
 pub mod communicationservice;
@@ -16,4 +16,6 @@ pub mod palette;
 pub mod preview;
 pub mod templates;
 
-pub use communicationservice::{send_email, EmailMessage};
+pub use communicationservice::{
+    send_email, EmailMessage, EmailRecipient, EmailRecipients, MAX_RECIPIENTS_PER_MESSAGE,
+};

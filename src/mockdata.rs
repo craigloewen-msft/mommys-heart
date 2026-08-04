@@ -16,7 +16,6 @@ use crate::server_fns::capabilities::{CaseAssignment, CasePreset};
 use crate::server_fns::cases::{Case, CaseNote, CaseStatus};
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::evidence::Evidence;
-use crate::server_fns::grants::Grant;
 use crate::server_fns::message::Message;
 use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::users::{AccountRole, User};
@@ -38,19 +37,20 @@ struct SeedUser {
     assignments: &'static [(u32, CasePreset)],
 }
 
-use AccountRole::{Admin, Client, Volunteer};
+use AccountRole::{Client, OperationsAdmin, SiteAdmin, Volunteer};
 use CasePreset::{Contributor, Manager, Viewer};
 
-/// The eight demo users: one admin, three volunteers, four clients. Their
+/// The nine demo users: one site admin, three volunteers, four clients, and one
+/// operations admin. Their
 /// assignments cross-link them to the cases below so no case or user is an
 /// island.
-const USERS: [SeedUser; 8] = [
+const USERS: [SeedUser; 9] = [
     SeedUser {
         first: "Maria",
         last: "Nguyen",
         email: "admin@mommysheart.org",
         password: "admin123",
-        role: Admin,
+        role: SiteAdmin,
         assignments: &[(1, Manager), (3, Manager), (5, Viewer), (7, Viewer)],
     },
     SeedUser {
@@ -109,6 +109,14 @@ const USERS: [SeedUser; 8] = [
         role: Client,
         assignments: &[(5, Contributor), (3, Viewer)],
     },
+    SeedUser {
+        first: "Owen",
+        last: "Brooks",
+        email: "operations@mommysheart.org",
+        password: "operations123",
+        role: OperationsAdmin,
+        assignments: &[(2, Manager), (4, Viewer)],
+    },
 ];
 
 /// The id of the `i`th demo user.
@@ -162,22 +170,6 @@ pub fn users() -> Vec<(User, String)> {
             (user, su.password.to_string())
         })
         .collect()
-}
-
-/// A handful of funding grants (an admin-only feature).
-pub fn grants() -> Vec<Grant> {
-    [
-        "Family Stability Fund",
-        "Legal Aid Access Grant",
-        "Community Housing Initiative",
-    ]
-    .iter()
-    .enumerate()
-    .map(|(i, name)| Grant {
-        id: format!("g-{}", i + 1),
-        name: (*name).into(),
-    })
-    .collect()
 }
 
 /// A note recorded against a case: `(author, body, created_at)`.

@@ -38,15 +38,18 @@ pub enum NotificationKind {
     EvidenceChanged,
     /// The recipient was assigned to a case.
     Assigned,
+    /// An administrative request needs review or the recipient's request was decided.
+    AdminRequests,
 }
 
 impl NotificationKind {
-    pub const ALL: [NotificationKind; 5] = [
+    pub const ALL: [NotificationKind; 6] = [
         NotificationKind::NewMessage,
         NotificationKind::CaseData,
         NotificationKind::NoteAdded,
         NotificationKind::EvidenceChanged,
         NotificationKind::Assigned,
+        NotificationKind::AdminRequests,
     ];
 
     pub fn label(self) -> &'static str {
@@ -56,6 +59,7 @@ impl NotificationKind {
             NotificationKind::NoteAdded => "Note added",
             NotificationKind::EvidenceChanged => "Evidence changed",
             NotificationKind::Assigned => "Assigned to a case",
+            NotificationKind::AdminRequests => "Admin request updates",
         }
     }
 
@@ -71,6 +75,9 @@ impl NotificationKind {
             NotificationKind::NoteAdded => "A note is added to a case you're on.",
             NotificationKind::EvidenceChanged => "Evidence is added to or removed from a case.",
             NotificationKind::Assigned => "You are given access to a new case.",
+            NotificationKind::AdminRequests => {
+                "An operations-admin request needs your review or a request you filed is decided."
+            }
         }
     }
 
@@ -81,6 +88,7 @@ impl NotificationKind {
             NotificationKind::NoteAdded => "note_added",
             NotificationKind::EvidenceChanged => "evidence_changed",
             NotificationKind::Assigned => "assigned",
+            NotificationKind::AdminRequests => "admin_requests",
         }
     }
 
@@ -102,6 +110,7 @@ pub struct NotificationSettings {
     pub note_added: bool,
     pub evidence_changed: bool,
     pub assigned: bool,
+    pub admin_requests: bool,
 }
 
 impl Default for NotificationSettings {
@@ -121,6 +130,7 @@ impl NotificationSettings {
             note_added: true,
             evidence_changed: true,
             assigned: true,
+            admin_requests: true,
         }
     }
 
@@ -132,6 +142,7 @@ impl NotificationSettings {
             NotificationKind::NoteAdded => self.note_added,
             NotificationKind::EvidenceChanged => self.evidence_changed,
             NotificationKind::Assigned => self.assigned,
+            NotificationKind::AdminRequests => self.admin_requests,
         }
     }
 
@@ -143,6 +154,7 @@ impl NotificationSettings {
             NotificationKind::NoteAdded => &mut self.note_added,
             NotificationKind::EvidenceChanged => &mut self.evidence_changed,
             NotificationKind::Assigned => &mut self.assigned,
+            NotificationKind::AdminRequests => &mut self.admin_requests,
         }
     }
 

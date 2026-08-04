@@ -16,6 +16,7 @@
 //! cannot use same-origin server functions.
 
 pub mod audit;
+pub mod admin_requests;
 pub mod auth;
 pub mod capabilities;
 pub mod cases;
@@ -23,7 +24,6 @@ pub mod channel_notifications;
 pub mod channels;
 pub mod email_failures;
 pub mod evidence;
-pub mod grants;
 pub mod message;
 pub mod pagination;
 pub mod profile;

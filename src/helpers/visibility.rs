@@ -38,9 +38,9 @@ pub enum Visibility {
 }
 
 impl Visibility {
-    /// Every visibility, in display order: the team's own working record first
-    /// for the staff who can see it, then the client-facing record.
-    pub const ALL: [Visibility; 2] = [Visibility::VolunteerOnly, Visibility::Shared];
+    /// Every visibility, in display order: the client-facing record first,
+    /// followed by the team's own working record for staff who can see it.
+    pub const ALL: [Visibility; 2] = [Visibility::Shared, Visibility::VolunteerOnly];
 
     /// The stored representation. Matches [`ChannelKind::slug`] for the
     /// equivalent audience on purpose.

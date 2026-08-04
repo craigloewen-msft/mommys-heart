@@ -6,13 +6,13 @@
 //! Axum state handle to thread a pool through).
 
 pub mod audit;
+pub mod admin_requests;
 pub mod capabilities;
 pub mod cases;
 pub mod channel_notifications;
 pub mod channels;
 pub mod email_failures;
 pub mod evidence;
-pub mod grants;
 pub mod ids;
 pub mod messages;
 pub mod mfa;

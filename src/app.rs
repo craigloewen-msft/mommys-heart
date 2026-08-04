@@ -7,7 +7,6 @@ use crate::pages::{
     admin::AdminDashboardPage,
     cases::{CaseHomePage, NewCasePage},
     forgot_password::ForgotPasswordPage,
-    grants::GrantHomePage,
     inbox::InboxPage,
     login::LoginPage,
     mfa::MfaVerifyPage,
@@ -117,7 +116,6 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/cases") view=CaseHomePage />
                 <Route path=path!("/cases/new") view=NewCasePage />
                 <Route path=path!("/inbox") view=InboxPage />
-                <Route path=path!("/grants") view=GrantHomePage />
                 <Route path=path!("/settings") view=SettingsPage />
                 <Route path=path!("/profile") view=ProfilePage />
                 <Route path=path!("/profile/:id") view=ProfilePage />
