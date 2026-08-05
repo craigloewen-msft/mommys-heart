@@ -38,7 +38,7 @@ pub enum NotificationKind {
     EvidenceChanged,
     /// The recipient was assigned to a case.
     Assigned,
-    /// An administrative request needs review or the recipient's request was decided.
+    /// An administrative request changes or a customer completes a case signup.
     AdminRequests,
 }
 
@@ -59,7 +59,7 @@ impl NotificationKind {
             NotificationKind::NoteAdded => "Note added",
             NotificationKind::EvidenceChanged => "Evidence changed",
             NotificationKind::Assigned => "Assigned to a case",
-            NotificationKind::AdminRequests => "Admin request updates",
+            NotificationKind::AdminRequests => "Administrative updates",
         }
     }
 
@@ -76,7 +76,7 @@ impl NotificationKind {
             NotificationKind::EvidenceChanged => "Evidence is added to or removed from a case.",
             NotificationKind::Assigned => "You are given access to a new case.",
             NotificationKind::AdminRequests => {
-                "An operations-admin request needs your review or a request you filed is decided."
+                "A customer completes a case signup, an admin request needs review, or a request you filed is decided."
             }
         }
     }

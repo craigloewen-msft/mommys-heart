@@ -280,6 +280,53 @@ pub fn admin_request_decided(brand: &Brand, request: &AdminRequest) -> RenderedE
     }
 }
 
+/// Build the administrator notification for a verified customer case signup.
+pub fn case_signup(
+    brand: &Brand,
+    customer_name: &str,
+    customer_email: &str,
+    case_name: &str,
+) -> RenderedEmail {
+    let theme = Theme {
+        accent: palette::color("emerald-300"),
+        emoji: "\u{1F4E5}",
+    };
+    let subject = format!("[{}] New case signup: {}", brand.name, case_name);
+    let callout = format!(
+        "<strong>{customer}</strong> ({email}) created an account and signed up for the case <strong>{case}</strong>.",
+        customer = escape(customer_name),
+        email = escape(customer_email),
+        case = escape(case_name),
+    );
+    let cta_href = cta_url(brand, "/cases");
+    let footer = notification_footer(brand);
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: &format!("{customer_name} signed up for \u{201C}{case_name}\u{201D}."),
+            eyebrow: "New case signup",
+            heading: "A customer signed up",
+            callout_html: &callout,
+            cta: cta_href.as_deref().map(|url| (url, "View cases")),
+            body_note: &format!("Sign in to the {} CRM to review the new case.", brand.name),
+            footer_html: &footer,
+        },
+    );
+    let plain_text = plain(
+        brand,
+        &format!(
+            "{customer_name} ({customer_email}) created an account and signed up for the case \u{201C}{case_name}\u{201D}."
+        ),
+        "/cases",
+    );
+    RenderedEmail {
+        subject,
+        html,
+        plain_text,
+    }
+}
+
 /// The full CTA url for an in-app path, or `None` when no public app URL is
 /// configured (so the layout renders no button).
 fn cta_url(brand: &Brand, path: &str) -> Option<String> {
@@ -648,6 +695,11 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
         key: NotificationKind::Assigned.slug().to_string(),
         label: NotificationKind::Assigned.label().to_string(),
         email: assignment(brand, case, actor),
+    });
+    samples.push(Sample {
+        key: "case_signup".to_string(),
+        label: "New case signup".to_string(),
+        email: case_signup(brand, "Elena Rivera", "elena@example.org", case),
     });
 
     // Transactional auth emails (not tied to a NotificationKind).

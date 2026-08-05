@@ -155,6 +155,34 @@ pub fn notify_admin_request_decided(request: AdminRequest) {
     });
 }
 
+/// Notify site and operations administrators after a customer verifies their
+/// email and their new account and case have been committed.
+pub fn notify_case_signup(customer_name: String, customer_email: String, case_name: String) {
+    let Some(cfg) = configured_email() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let mut recipients = match settings::recipients_for_admins().await {
+            Ok(recipients) => recipients,
+            Err(error) => {
+                tracing::warn!("case signup recipient lookup failed: {error}");
+                return;
+            }
+        };
+        recipients.retain(|recipient| recipient.settings.wants(NotificationKind::AdminRequests));
+        if recipients.is_empty() {
+            return;
+        }
+        let email = templates::case_signup(
+            &Brand::from_env(),
+            &customer_name,
+            &customer_email,
+            &case_name,
+        );
+        dispatch(&cfg, recipients, &email, "Case signup notification").await;
+    });
+}
+
 /// Send one direct message or BCC chunks when the rendered content is shared.
 async fn dispatch(
     cfg: &EmailConfig,

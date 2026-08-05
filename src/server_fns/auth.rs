@@ -540,6 +540,13 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
         .case_signup
         .as_ref()
         .map(|signup| signup.agreement_blob_path.clone());
+    let signup_notification_details = pending.case_signup.as_ref().map(|signup| {
+        (
+            account.full_name(),
+            account.email.clone(),
+            signup.case_name.clone(),
+        )
+    });
 
     // Guard against the email having been claimed while the code was in flight.
     let email_exists: bool = sqlx::query_scalar(
@@ -602,6 +609,14 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
         .map_err(ServerFnError::new)?;
     }
     tx.commit().await.map_err(ServerFnError::new)?;
+
+    if let Some((customer_name, customer_email, case_name)) = signup_notification_details {
+        crate::server::notifications::notify_case_signup(
+            customer_name,
+            customer_email,
+            case_name,
+        );
+    }
 
     let user = users::get(&id)
         .await

@@ -215,3 +215,27 @@ pub async fn recipients_for_site_admins() -> Result<Vec<Recipient>, sqlx::Error>
     .await?;
     Ok(rows.into_iter().map(recipient_from_row).collect())
 }
+
+/// Every site or operations administrator with an email address and their
+/// notification preferences.
+pub async fn recipients_for_admins() -> Result<Vec<Recipient>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, RecipientRow>(
+        "SELECT u.email, u.first_name, u.last_name,
+                COALESCE(s.notification_emails_enabled,   true),
+                COALESCE(s.notification_new_message,      true),
+                COALESCE(s.notification_case_data,        true),
+                COALESCE(s.notification_note_added,       true),
+                COALESCE(s.notification_evidence_changed, true),
+                COALESCE(s.notification_assigned,         true),
+                COALESCE(s.notification_admin_requests,   true)
+         FROM users u
+         LEFT JOIN user_settings s ON s.user_id = u.id
+         WHERE u.role IN ($1, $2) AND u.email <> ''
+         ORDER BY u.id",
+    )
+    .bind(AccountRole::SiteAdmin.slug())
+    .bind(AccountRole::OperationsAdmin.slug())
+    .fetch_all(pool())
+    .await?;
+    Ok(rows.into_iter().map(recipient_from_row).collect())
+}
