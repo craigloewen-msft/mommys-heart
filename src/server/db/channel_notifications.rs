@@ -12,8 +12,8 @@
 //! window (see [`purge_expired`] / [`start_retention_task`]).
 
 use crate::server::db::pool;
-use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::channel_notifications::ChannelUnread;
+use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::users::AccountRole;
 
 /// How long an unread notification is retained before the background task prunes
@@ -22,8 +22,7 @@ use crate::server_fns::users::AccountRole;
 const RETENTION_YEARS: i64 = 10;
 
 /// How often the background retention task runs.
-const RETENTION_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(30 * 24 * 60 * 60);
+const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
 #[derive(sqlx::FromRow)]
 struct UnreadRow {
@@ -82,11 +81,12 @@ pub async fn record_for_channel_message(
 /// Clear a user's unread notifications for a single channel — called when they
 /// open it. Returns the number of rows removed.
 pub async fn mark_channel_read(user_id: &str, channel_id: &str) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM channel_notifications WHERE user_id = $1 AND channel_id = $2")
-        .bind(user_id)
-        .bind(channel_id)
-        .execute(pool())
-        .await?;
+    let result =
+        sqlx::query("DELETE FROM channel_notifications WHERE user_id = $1 AND channel_id = $2")
+            .bind(user_id)
+            .bind(channel_id)
+            .execute(pool())
+            .await?;
     Ok(result.rows_affected())
 }
 
@@ -109,11 +109,12 @@ pub async fn unread_for_user(user_id: &str) -> Result<Vec<ChannelUnread>, sqlx::
 /// Delete notifications left unread past the retention window
 /// ([`RETENTION_YEARS`]), returning the number of rows removed.
 pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
-    let result =
-        sqlx::query("DELETE FROM channel_notifications WHERE created_at < now() - make_interval(years => $1)")
-            .bind(RETENTION_YEARS as i32)
-            .execute(pool)
-            .await?;
+    let result = sqlx::query(
+        "DELETE FROM channel_notifications WHERE created_at < now() - make_interval(years => $1)",
+    )
+    .bind(RETENTION_YEARS as i32)
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected())
 }
 

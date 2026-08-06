@@ -155,9 +155,9 @@ pub fn notify_admin_request_decided(request: AdminRequest) {
     });
 }
 
-/// Notify site and operations administrators after a customer verifies their
+/// Notify site and operations administrators after a client verifies their
 /// email and their new account and case have been committed.
-pub fn notify_case_signup(customer_name: String, customer_email: String, case_name: String) {
+pub fn notify_case_signup(client_name: String, client_email: String, case_name: String) {
     let Some(cfg) = configured_email() else {
         return;
     };
@@ -173,12 +173,8 @@ pub fn notify_case_signup(customer_name: String, customer_email: String, case_na
         if recipients.is_empty() {
             return;
         }
-        let email = templates::case_signup(
-            &Brand::from_env(),
-            &customer_name,
-            &customer_email,
-            &case_name,
-        );
+        let email =
+            templates::case_signup(&Brand::from_env(), &client_name, &client_email, &case_name);
         dispatch(&cfg, recipients, &email, "Case signup notification").await;
     });
 }

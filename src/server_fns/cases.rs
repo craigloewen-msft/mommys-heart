@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::helpers::case_intake::CaseIntake;
 use crate::server_fns::capabilities::CaseCapability;
+use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::evidence::Evidence;
 use crate::server_fns::message::Message;
 use crate::server_fns::pagination::Page;
-use crate::server_fns::case_properties::CaseProperty;
 
 /// The lifecycle status of a case.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +151,7 @@ pub async fn load_case_summaries_for_user(
 #[server(prefix = "/api")]
 pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
     use crate::server::db::cases;
-    use crate::server::permissions::{require_cap, require_user, has_volunteer_access};
+    use crate::server::permissions::{has_volunteer_access, require_cap, require_user};
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::ViewCase).await?;
@@ -205,6 +205,7 @@ pub async fn create_case(
     if name.is_empty() {
         return Err(ServerFnError::new("Case name is required."));
     }
+    intake.validate().map_err(ServerFnError::new)?;
     let properties = intake.properties();
     for property in &properties {
         require_visibility(&user, property.visibility)?;

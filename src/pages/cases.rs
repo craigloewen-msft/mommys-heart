@@ -9,15 +9,15 @@ use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::components::profile_link::ProfileLink;
-use crate::server_fns::audit::AuditScope;
-use crate::server_fns::capabilities::CaseCapability;
 use crate::helpers::format::human_size;
 use crate::helpers::sections;
 use crate::helpers::visibility::Visibility;
+use crate::server_fns::audit::AuditScope;
+use crate::server_fns::capabilities::CaseCapability;
+use crate::server_fns::case_properties::{self, CaseProperty};
 use crate::server_fns::cases::{self, Case, CaseStatus, CaseSummary};
 use crate::server_fns::err_text;
 use crate::server_fns::evidence::{self, Evidence};
-use crate::server_fns::case_properties::{self, CaseProperty};
 use crate::server_fns::users::{search_users, UserSummary};
 use crate::state::AppState;
 
@@ -65,7 +65,10 @@ fn group_case_information(
     Visibility::ALL
         .into_iter()
         .filter_map(|visibility| {
-            let props = case.properties.iter().filter(|p| p.visibility == visibility);
+            let props = case
+                .properties
+                .iter()
+                .filter(|p| p.visibility == visibility);
             let files = case.evidence.iter().filter(|e| e.visibility == visibility);
 
             let mut order: Vec<String> = Vec::new();
@@ -85,10 +88,16 @@ fn group_case_information(
             let sections = order
                 .into_iter()
                 .map(|name| {
-                    let in_section: Vec<CaseProperty> =
-                        props.clone().filter(|p| p.section == name).cloned().collect();
-                    let file_rows: Vec<Evidence> =
-                        files.clone().filter(|e| e.section == name).cloned().collect();
+                    let in_section: Vec<CaseProperty> = props
+                        .clone()
+                        .filter(|p| p.section == name)
+                        .cloned()
+                        .collect();
+                    let file_rows: Vec<Evidence> = files
+                        .clone()
+                        .filter(|e| e.section == name)
+                        .cloned()
+                        .collect();
                     (name, in_section, file_rows)
                 })
                 .collect();
@@ -466,6 +475,10 @@ pub fn NewCasePage() -> impl IntoView {
                 let status =
                     CaseStatus::from_slug(&status.get_untracked()).unwrap_or(CaseStatus::Open);
                 let intake = intake.value();
+                if let Err(message) = intake.validate() {
+                    error.set(message);
+                    return;
+                }
                 let note = first_note.get_untracked();
                 let note = if note.trim().is_empty() {
                     None
@@ -520,7 +533,7 @@ pub fn NewCasePage() -> impl IntoView {
                     <div class="border-t border-slate-800 pt-5">
                         <div class="mb-5">
                             <h2 class="text-sm font-semibold text-slate-200">"Case intake"</h2>
-                            <p class="mt-1 text-sm text-slate-400">"Every field in this section is optional."</p>
+                            <p class="mt-1 text-sm text-slate-400">"Fields marked with * are required."</p>
                         </div>
                         <CaseIntakeFields state=intake />
                     </div>
@@ -645,24 +658,20 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
     let row_seq = RwSignal::new(0usize);
     let file_forms = StoredValue::new(Vec::<SectionFileForm>::new());
 
-    let make_row = move |
-        key: String,
-        value: String,
-        section: String,
-        visibility: Visibility,
-    | -> PropRow {
-        let id = row_seq.get_untracked();
-        row_seq.set(id + 1);
-        owner.with_value(|o| {
-            o.with(|| PropRow {
-                id,
-                key: RwSignal::new(key),
-                value: RwSignal::new(value),
-                section: RwSignal::new(section),
-                visibility,
+    let make_row =
+        move |key: String, value: String, section: String, visibility: Visibility| -> PropRow {
+            let id = row_seq.get_untracked();
+            row_seq.set(id + 1);
+            owner.with_value(|o| {
+                o.with(|| PropRow {
+                    id,
+                    key: RwSignal::new(key),
+                    value: RwSignal::new(value),
+                    section: RwSignal::new(section),
+                    visibility,
+                })
             })
-        })
-    };
+        };
 
     let begin_edit = move |_| {
         if let Some(c) = live_case() {
@@ -769,12 +778,9 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                             visibility,
                         })
                         .collect();
-                    if let Err(e) = case_properties::set_case_properties(
-                        case_id.clone(),
-                        visibility,
-                        rows,
-                    )
-                    .await
+                    if let Err(e) =
+                        case_properties::set_case_properties(case_id.clone(), visibility, rows)
+                            .await
                     {
                         props_error.set(err_text(e));
                         return;
@@ -1040,19 +1046,17 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
 
     // The read-only rendering of one visibility: its sections, each listing that
     // section's properties and then its files.
-    let sections_view = move |
-        visibility: Visibility,
-        groups: Vec<(String, Vec<CaseProperty>, Vec<Evidence>)>,
-    | {
-        if groups.is_empty() {
-            return view! {
-                <p class="px-4 py-5 text-sm text-slate-500">
-                    "No information has been added yet."
-                </p>
+    let sections_view =
+        move |visibility: Visibility, groups: Vec<(String, Vec<CaseProperty>, Vec<Evidence>)>| {
+            if groups.is_empty() {
+                return view! {
+                    <p class="px-4 py-5 text-sm text-slate-500">
+                        "No information has been added yet."
+                    </p>
+                }
+                .into_any();
             }
-            .into_any();
-        }
-        groups
+            groups
             .into_iter()
             .map(|(name, props, files)| {
                 let heading = sections::label(&name).to_string();
@@ -1155,7 +1159,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
             })
             .collect_view()
             .into_any()
-    };
+        };
 
     // Case information: everything recorded about the case, grouped by who can
     // see it and then by section. Anything the viewer may not see never reaches

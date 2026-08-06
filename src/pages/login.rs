@@ -114,7 +114,7 @@ pub fn LoginPage() -> impl IntoView {
                         </A>
                     </p>
                     <p class="mt-3 text-center text-sm text-slate-400">
-                        "New customer with a case? "
+                        "New client with a case? "
                         <A
                             href="/case-signup"
                             attr:class="font-medium text-primary-400 hover:text-primary-300"

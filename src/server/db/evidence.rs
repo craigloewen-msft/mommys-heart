@@ -319,11 +319,12 @@ pub async fn download_meta(
 /// Remove a piece of evidence from a case. Returns the blob path that backed it
 /// (empty when it had no file) so the caller can delete the blob too.
 pub async fn delete(case_id: &str, evidence_id: &str) -> Result<String, sqlx::Error> {
-    let blob_path: Option<String> =
-        sqlx::query_scalar("DELETE FROM evidence WHERE case_id = $1 AND id = $2 RETURNING blob_path")
-            .bind(case_id)
-            .bind(evidence_id)
-            .fetch_optional(pool())
-            .await?;
+    let blob_path: Option<String> = sqlx::query_scalar(
+        "DELETE FROM evidence WHERE case_id = $1 AND id = $2 RETURNING blob_path",
+    )
+    .bind(case_id)
+    .bind(evidence_id)
+    .fetch_optional(pool())
+    .await?;
     Ok(blob_path.unwrap_or_default())
 }

@@ -280,11 +280,11 @@ pub fn admin_request_decided(brand: &Brand, request: &AdminRequest) -> RenderedE
     }
 }
 
-/// Build the administrator notification for a verified customer case signup.
+/// Build the administrator notification for a verified client case signup.
 pub fn case_signup(
     brand: &Brand,
-    customer_name: &str,
-    customer_email: &str,
+    client_name: &str,
+    client_email: &str,
     case_name: &str,
 ) -> RenderedEmail {
     let theme = Theme {
@@ -293,9 +293,9 @@ pub fn case_signup(
     };
     let subject = format!("[{}] New case signup: {}", brand.name, case_name);
     let callout = format!(
-        "<strong>{customer}</strong> ({email}) created an account and signed up for the case <strong>{case}</strong>.",
-        customer = escape(customer_name),
-        email = escape(customer_email),
+        "<strong>{client}</strong> ({email}) created an account and signed up for the case <strong>{case}</strong>.",
+        client = escape(client_name),
+        email = escape(client_email),
         case = escape(case_name),
     );
     let cta_href = cta_url(brand, "/cases");
@@ -304,9 +304,9 @@ pub fn case_signup(
         brand,
         &theme,
         &LayoutParts {
-            preheader: &format!("{customer_name} signed up for \u{201C}{case_name}\u{201D}."),
+            preheader: &format!("{client_name} signed up for \u{201C}{case_name}\u{201D}."),
             eyebrow: "New case signup",
-            heading: "A customer signed up",
+            heading: "A client signed up",
             callout_html: &callout,
             cta: cta_href.as_deref().map(|url| (url, "View cases")),
             body_note: &format!("Sign in to the {} CRM to review the new case.", brand.name),
@@ -316,7 +316,7 @@ pub fn case_signup(
     let plain_text = plain(
         brand,
         &format!(
-            "{customer_name} ({customer_email}) created an account and signed up for the case \u{201C}{case_name}\u{201D}."
+            "{client_name} ({client_email}) created an account and signed up for the case \u{201C}{case_name}\u{201D}."
         ),
         "/cases",
     );

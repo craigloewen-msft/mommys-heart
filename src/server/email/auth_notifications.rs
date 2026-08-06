@@ -17,7 +17,13 @@ use crate::server::email::{send_email, EmailMessage};
 pub async fn send_mfa_code(to_email: &str, to_name: &str, code: &str) -> Result<(), String> {
     let brand = Brand::from_env();
     let rendered = templates::auth_code(&brand, code);
-    deliver(to_email, to_name, &rendered, &format!("verification code {code}")).await
+    deliver(
+        to_email,
+        to_name,
+        &rendered,
+        &format!("verification code {code}"),
+    )
+    .await
 }
 
 /// Email a new registrant their one-time email-verification code

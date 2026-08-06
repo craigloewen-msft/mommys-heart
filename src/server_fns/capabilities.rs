@@ -94,11 +94,7 @@ impl CaseCapability {
             UploadEvidence => &[ViewCase, ViewEvidence],
             DeleteEvidence => &[ViewCase, ViewEvidence, UploadEvidence],
             SendMessages => &[ViewCase],
-            ManageChannels => &[
-                ViewCase,
-                EditCase,
-                SendMessages,
-            ],
+            ManageChannels => &[ViewCase, EditCase, SendMessages],
         }
     }
 }
@@ -114,11 +110,7 @@ pub fn validate_capabilities(capabilities: &[CaseCapability]) -> Result<(), Stri
         }
         for &req in cap.requires() {
             if !capabilities.contains(&req) {
-                return Err(format!(
-                    "\"{}\" requires \"{}\".",
-                    cap.label(),
-                    req.label()
-                ));
+                return Err(format!("\"{}\" requires \"{}\".", cap.label(), req.label()));
             }
         }
     }

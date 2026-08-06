@@ -5,13 +5,13 @@ use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::components::profile_link::ProfileLink;
+use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::cases::{load_case_summaries_for_user, CaseSummary};
 use crate::server_fns::channels::{
     create_channel, delete_channel, list_channels, normalize_channel_name, Channel,
 };
 use crate::server_fns::err_text;
 use crate::server_fns::message::Message;
-use crate::server_fns::capabilities::CaseCapability;
 use crate::state::AppState;
 
 /// Case Chat: one chat thread per case. Reading and posting both require the
@@ -741,14 +741,12 @@ fn CaseChat(
             }
             .into_any()
         }
-        None if loading_channels.get() => {
-            view! {
-                <div class="flex-1 p-4">
-                    <Loading label="Loading channels\u{2026}" />
-                </div>
-            }
-            .into_any()
+        None if loading_channels.get() => view! {
+            <div class="flex-1 p-4">
+                <Loading label="Loading channels\u{2026}" />
+            </div>
         }
+        .into_any(),
         None => view! {
             <div class="flex-1 p-8 text-center text-sm text-slate-500">
                 "This case has no channels to show."
@@ -840,9 +838,9 @@ fn ChannelThread(
         let channel_id = channel_id.clone();
         Effect::new(move |_| {
             let channel_id = channel_id.clone();
-            let is_unread = state.unread.with_untracked(|list| {
-                list.iter().any(|item| item.channel_id == channel_id)
-            });
+            let is_unread = state
+                .unread
+                .with_untracked(|list| list.iter().any(|item| item.channel_id == channel_id));
             if !is_unread {
                 return;
             }

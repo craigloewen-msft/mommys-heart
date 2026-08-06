@@ -10,7 +10,10 @@ use std::collections::HashMap;
 
 /// The capabilities `user_id` holds on a single `case_id`, read from
 /// `case_assignments` (empty when the user is unassigned).
-pub async fn get_single_case(user_id: &str, case_id: &str) -> Result<Vec<CaseCapability>, sqlx::Error> {
+pub async fn get_single_case(
+    user_id: &str,
+    case_id: &str,
+) -> Result<Vec<CaseCapability>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT capability FROM case_assignments WHERE user_id = $1 AND case_id = $2",
     )

@@ -15,8 +15,7 @@ use crate::server_fns::pagination::Page;
 const RETENTION_YEARS: i64 = 10;
 
 /// How often the background retention task runs.
-const RETENTION_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(30 * 24 * 60 * 60);
+const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
 #[derive(sqlx::FromRow)]
 struct FailureRow {

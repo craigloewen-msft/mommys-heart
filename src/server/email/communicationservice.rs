@@ -169,8 +169,9 @@ async fn try_send(
     let content_hash = content_hash(serialized);
     let string_to_sign = format!("POST\n{path_and_query}\n{date};{host};{content_hash}");
     let signature = sign(&cfg.access_key, &string_to_sign).map_err(SendError::Permanent)?;
-    let authorization =
-        format!("HMAC-SHA256 SignedHeaders=x-ms-date;host;x-ms-content-sha256&Signature={signature}");
+    let authorization = format!(
+        "HMAC-SHA256 SignedHeaders=x-ms-date;host;x-ms-content-sha256&Signature={signature}"
+    );
 
     let client = reqwest::Client::new();
     let resp = client
@@ -202,7 +203,10 @@ async fn try_send(
 /// The `host` component (authority) of an endpoint URL, used both in the
 /// request `host` header and the string-to-sign.
 fn host_of(endpoint: &str) -> Result<String, String> {
-    let after_scheme = endpoint.split_once("://").map(|(_, rest)| rest).unwrap_or(endpoint);
+    let after_scheme = endpoint
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(endpoint);
     let host = after_scheme.split('/').next().unwrap_or("");
     if host.is_empty() {
         return Err(format!("invalid ACS_EMAIL_ENDPOINT: {endpoint}"));
@@ -222,8 +226,7 @@ fn sign(access_key: &str, string_to_sign: &str) -> Result<String, String> {
     let key = STANDARD
         .decode(access_key)
         .map_err(|e| format!("invalid ACS_EMAIL_ACCESS_KEY (not base64): {e}"))?;
-    let mut mac =
-        HmacSha256::new_from_slice(&key).map_err(|e| format!("HMAC key error: {e}"))?;
+    let mut mac = HmacSha256::new_from_slice(&key).map_err(|e| format!("HMAC key error: {e}"))?;
     mac.update(string_to_sign.as_bytes());
     Ok(STANDARD.encode(mac.finalize().into_bytes()))
 }

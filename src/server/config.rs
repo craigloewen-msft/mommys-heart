@@ -71,9 +71,7 @@ impl EmailConfig {
     /// Whether all ACS Email settings are present. When `false`, email delivery
     /// is skipped (a graceful no-op) rather than erroring.
     pub fn is_configured(&self) -> bool {
-        !self.endpoint.is_empty()
-            && !self.access_key.is_empty()
-            && !self.sender_address.is_empty()
+        !self.endpoint.is_empty() && !self.access_key.is_empty() && !self.sender_address.is_empty()
     }
 }
 
@@ -100,7 +98,9 @@ impl Brand {
     pub fn from_env() -> Self {
         Self {
             name: env("BRAND_NAME", "Mommy's Heart"),
-            app_url: env("APP_URL", "https://crm.example.org").trim_end_matches('/').to_string(),
+            app_url: env("APP_URL", "https://crm.example.org")
+                .trim_end_matches('/')
+                .to_string(),
             support_email: env("SUPPORT_EMAIL", "support@example.org"),
         }
     }

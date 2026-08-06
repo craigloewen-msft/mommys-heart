@@ -182,10 +182,7 @@ pub async fn replace(
 }
 
 /// The properties a case holds at one visibility, in display order.
-async fn get_at(
-    case_id: &str,
-    visibility: Visibility,
-) -> Result<Vec<CaseProperty>, sqlx::Error> {
+async fn get_at(case_id: &str, visibility: Visibility) -> Result<Vec<CaseProperty>, sqlx::Error> {
     let rows: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT key, value, section FROM case_properties
          WHERE case_id = $1 AND visibility = $2 ORDER BY ord ASC",

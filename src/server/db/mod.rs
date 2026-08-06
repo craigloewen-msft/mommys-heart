@@ -5,9 +5,10 @@
 //! [`crate::api_client`] calls the service/repository layer directly (it has no
 //! Axum state handle to thread a pool through).
 
-pub mod audit;
 pub mod admin_requests;
+pub mod audit;
 pub mod capabilities;
+pub mod case_properties;
 pub mod cases;
 pub mod channel_notifications;
 pub mod channels;
@@ -18,7 +19,6 @@ pub mod messages;
 pub mod mfa;
 pub mod password_reset;
 pub mod pending_registrations;
-pub mod case_properties;
 pub mod seed;
 pub mod sessions;
 pub mod settings;

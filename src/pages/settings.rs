@@ -74,7 +74,10 @@ pub fn SettingsPage() -> impl IntoView {
 
     require_login(state, move || {
         let master = Signal::derive(move || {
-            settings.get().map(|s| s.notifications.emails_enabled).unwrap_or(true)
+            settings
+                .get()
+                .map(|s| s.notifications.emails_enabled)
+                .unwrap_or(true)
         });
         let set_master = move |on: bool| {
             settings.update(|opt| {
@@ -90,7 +93,10 @@ pub fn SettingsPage() -> impl IntoView {
                 .into_iter()
                 .map(|kind| {
                     let checked = Signal::derive(move || {
-                        settings.get().map(|s| s.notifications.category(kind)).unwrap_or(true)
+                        settings
+                            .get()
+                            .map(|s| s.notifications.category(kind))
+                            .unwrap_or(true)
                     });
                     let on_toggle = move |on: bool| {
                         settings.update(|opt| {

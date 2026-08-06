@@ -168,12 +168,14 @@ pub async fn account_for(challenge_token: &str) -> Result<Option<PendingAccount>
     .bind(hash(challenge_token))
     .fetch_optional(pool())
     .await?;
-    Ok(row.map(|(first_name, last_name, email, password_hash)| PendingAccount {
-        first_name,
-        last_name,
-        email,
-        password_hash,
-    }))
+    Ok(row.map(
+        |(first_name, last_name, email, password_hash)| PendingAccount {
+            first_name,
+            last_name,
+            email,
+            password_hash,
+        },
+    ))
 }
 
 /// The outcome of verifying a submitted code against a pending registration.
@@ -280,9 +282,9 @@ pub async fn delete(challenge_token: &str) -> Result<Option<String>, sqlx::Error
         "DELETE FROM pending_registrations WHERE challenge_hash = $1
          RETURNING CASE WHEN create_case THEN agreement_blob_path ELSE NULL END",
     )
-        .bind(hash(challenge_token))
-        .fetch_optional(pool())
-        .await?;
+    .bind(hash(challenge_token))
+    .fetch_optional(pool())
+    .await?;
     Ok(path.flatten())
 }
 

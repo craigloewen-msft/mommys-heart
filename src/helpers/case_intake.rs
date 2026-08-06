@@ -17,6 +17,19 @@ pub enum IntakeInput {
     Rate,
 }
 
+/// Whether an intake field must have an answer before a case can be created.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntakeRequirement {
+    Required,
+    Optional,
+}
+
+impl IntakeRequirement {
+    pub const fn is_required(self) -> bool {
+        matches!(self, Self::Required)
+    }
+}
+
 /// One entry of the intake questionnaire, in the order it is shown on the form
 /// and stored on the case.
 ///
@@ -33,6 +46,7 @@ pub enum IntakeItem {
         key: &'static str,
         label: &'static str,
         input: IntakeInput,
+        requirement: IntakeRequirement,
     },
     /// The repeatable list of judges. `heading` labels the form section; each
     /// judge is stored under its own numbered key ("Judge 1", ...).
@@ -48,45 +62,51 @@ pub const INTAKE_ITEMS: &[IntakeItem] = &[
         key: "Is the case in litigation?",
         label: "Is the case in litigation?",
         input: IntakeInput::Select(&["Yes", "No"]),
+        requirement: IntakeRequirement::Required,
     },
     IntakeItem::Field {
         key: "What is the action sought?",
         label: "What is the action sought? (divorce, custody, both, other)",
         input: IntakeInput::Select(&["Divorce", "Custody", "Both", "Other"]),
+        requirement: IntakeRequirement::Required,
     },
     IntakeItem::Field {
         key: "Client's attorney",
-        label: "Client's attorney (if any):",
+        label: "Client's attorney:",
         input: IntakeInput::Text,
+        requirement: IntakeRequirement::Optional,
     },
     IntakeItem::Field {
         key: "Hourly rate of client's attorney",
         label: "Hourly rate of client's attorney:",
         input: IntakeInput::Rate,
+        requirement: IntakeRequirement::Optional,
     },
     IntakeItem::Field {
         key: "Opponent's attorney",
         label: "Opponent's attorney:",
         input: IntakeInput::Text,
+        requirement: IntakeRequirement::Optional,
     },
     IntakeItem::Field {
         key: "Hourly rate of opponent's attorney",
         label: "Hourly rate of opponent's attorney:",
         input: IntakeInput::Rate,
+        requirement: IntakeRequirement::Optional,
     },
     IntakeItem::Field {
         key: "Occupation of client",
         label: "Occupation of client:",
         input: IntakeInput::Text,
+        requirement: IntakeRequirement::Required,
     },
     IntakeItem::Field {
         key: "Occupation of opponent",
         label: "Occupation of opponent:",
         input: IntakeInput::Text,
+        requirement: IntakeRequirement::Optional,
     },
-    IntakeItem::Judges {
-        heading: "Judges",
-    },
+    IntakeItem::Judges { heading: "Judges" },
     IntakeItem::Courts {
         heading: "Courts and docket numbers",
     },
@@ -94,11 +114,13 @@ pub const INTAKE_ITEMS: &[IntakeItem] = &[
         key: "Attorney for the Child",
         label: "Attorney for the Child:",
         input: IntakeInput::Text,
+        requirement: IntakeRequirement::Optional,
     },
     IntakeItem::Field {
         key: "Hourly rate of Attorney for the Child",
-        label: "Hourly rate of Attorney for the Child (if any):",
+        label: "Hourly rate of Attorney for the Child:",
         input: IntakeInput::Rate,
+        requirement: IntakeRequirement::Optional,
     },
 ];
 
@@ -146,6 +168,26 @@ pub struct CaseIntake {
 }
 
 impl CaseIntake {
+    pub fn validate(&self) -> Result<(), String> {
+        for item in INTAKE_ITEMS {
+            let IntakeItem::Field {
+                key, requirement, ..
+            } = item
+            else {
+                continue;
+            };
+            if requirement.is_required()
+                && self
+                    .fields
+                    .get(*key)
+                    .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(format!("Please complete the required field \"{key}\"."));
+            }
+        }
+        Ok(())
+    }
+
     /// The case properties this intake becomes, in [`INTAKE_ITEMS`] order.
     pub fn properties(&self) -> Vec<CaseProperty> {
         let property = |key: &str, value: &str| CaseProperty {
@@ -158,7 +200,11 @@ impl CaseIntake {
         for item in INTAKE_ITEMS {
             match item {
                 IntakeItem::Field { key, .. } => {
-                    let value = self.fields.get(*key).map(String::as_str).unwrap_or_default();
+                    let value = self
+                        .fields
+                        .get(*key)
+                        .map(String::as_str)
+                        .unwrap_or_default();
                     properties.push(property(key, value));
                 }
                 IntakeItem::Judges { .. } => {

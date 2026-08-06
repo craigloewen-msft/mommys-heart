@@ -37,7 +37,10 @@ pub fn ResetPasswordPage() -> impl IntoView {
             return;
         }
         spawn_local(async move {
-            match auth::reset_password(token, password).await.map_err(err_text) {
+            match auth::reset_password(token, password)
+                .await
+                .map_err(err_text)
+            {
                 Ok(()) => {
                     error.set(String::new());
                     done.set(true);

@@ -15,7 +15,7 @@ pub fn VerifyEmailPage() -> impl IntoView {
     verification_screen(false)
 }
 
-/// Verification screen for a pending customer account plus case signup.
+/// Verification screen for a pending client account plus case signup.
 #[component]
 pub fn CaseSignupVerifyPage() -> impl IntoView {
     verification_screen(true)

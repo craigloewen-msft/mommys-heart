@@ -4,8 +4,8 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::server_fns::pagination::Page;
 use crate::server_fns::capabilities::{CaseAssignment, CaseCapability};
+use crate::server_fns::pagination::Page;
 
 /// The global account type a user has. This controls app-level access (e.g.
 /// operations and site admins can reach the Admin dashboard). It is
@@ -73,13 +73,20 @@ impl AccountRole {
     }
 
     pub fn has_volunteer_privileges(self) -> bool {
-        matches!(self, AccountRole::Volunteer | AccountRole::OperationsAdmin | AccountRole::SiteAdmin)
+        matches!(
+            self,
+            AccountRole::Volunteer | AccountRole::OperationsAdmin | AccountRole::SiteAdmin
+        )
     }
 
     pub fn badge_classes(self) -> &'static str {
         match self {
-            AccountRole::SiteAdmin => "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/30",
-            AccountRole::OperationsAdmin => "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30",
+            AccountRole::SiteAdmin => {
+                "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/30"
+            }
+            AccountRole::OperationsAdmin => {
+                "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"
+            }
             AccountRole::Volunteer => "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
             AccountRole::Client => "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30",
         }
@@ -217,9 +224,7 @@ pub async fn assign_case(
     let actor = require_user().await?;
     require_case_access_management(&actor, &user_id)?;
     validate_capabilities(&capabilities).map_err(ServerFnError::new)?;
-    let was_assigned = users::is_assigned(&user_id, &case_id)
-        .await
-        .unwrap_or(true);
+    let was_assigned = users::is_assigned(&user_id, &case_id).await.unwrap_or(true);
     users::assign_capabilities(&user_id, &case_id, &capabilities, &actor.full_name())
         .await
         .map_err(ServerFnError::new)?;
@@ -288,9 +293,7 @@ pub async fn save_case_capabilities(
     for (case_id, caps) in changes {
         match caps {
             Some(caps) => {
-                let was_assigned = users::is_assigned(&user_id, &case_id)
-                    .await
-                    .unwrap_or(true);
+                let was_assigned = users::is_assigned(&user_id, &case_id).await.unwrap_or(true);
                 users::assign_capabilities(&user_id, &case_id, &caps, &actor_name)
                     .await
                     .map_err(ServerFnError::new)?;

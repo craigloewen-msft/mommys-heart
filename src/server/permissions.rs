@@ -50,9 +50,7 @@ pub fn require_operations_admin(user: &User) -> Result<(), ServerFnError> {
     if user.role.has_operations_admin_permissions() {
         Ok(())
     } else {
-        Err(ServerFnError::new(
-            "Operations-admin permissions required.",
-        ))
+        Err(ServerFnError::new("Operations-admin permissions required."))
     }
 }
 

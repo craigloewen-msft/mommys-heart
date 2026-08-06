@@ -152,7 +152,7 @@ pub fn RegisterPage() -> impl IntoView {
                             href="/case-signup"
                             attr:class="font-medium text-primary-400 hover:text-primary-300"
                         >
-                            "Start customer case signup"
+                            "Start client case signup"
                         </A>
                     </p>
                 </div>

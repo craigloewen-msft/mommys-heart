@@ -205,7 +205,9 @@ impl ConnectionString {
             match key.trim() {
                 "AccountName" => account_name = Some(value.trim().to_string()),
                 "AccountKey" => account_key = Some(value.trim().to_string()),
-                "BlobEndpoint" => blob_endpoint = Some(value.trim().trim_end_matches('/').to_string()),
+                "BlobEndpoint" => {
+                    blob_endpoint = Some(value.trim().trim_end_matches('/').to_string())
+                }
                 "DefaultEndpointsProtocol" => protocol = value.trim().to_string(),
                 "EndpointSuffix" => suffix = value.trim().to_string(),
                 _ => {}
@@ -216,8 +218,8 @@ impl ConnectionString {
             .ok_or_else(|| "AZURE_STORAGE_CONNECTION_STRING is missing AccountName".to_string())?;
         let account_key = account_key
             .ok_or_else(|| "AZURE_STORAGE_CONNECTION_STRING is missing AccountKey".to_string())?;
-        let blob_endpoint = blob_endpoint
-            .unwrap_or_else(|| format!("{protocol}://{account_name}.blob.{suffix}"));
+        let blob_endpoint =
+            blob_endpoint.unwrap_or_else(|| format!("{protocol}://{account_name}.blob.{suffix}"));
 
         Ok(Self {
             account_name,

@@ -2,13 +2,13 @@
 
 use crate::helpers::new_case_fields;
 use crate::server::db::{
-    audit, capabilities, channels, evidence, ids, now_stamp, pool, case_properties, users,
+    audit, capabilities, case_properties, channels, evidence, ids, now_stamp, pool, users,
 };
+use crate::server_fns::capabilities::CaseCapability;
+use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::cases::{Case, CaseNote, CaseStatus, CaseSummary};
 use crate::server_fns::channels::ChannelKind;
-use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::pagination::Page;
-use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::users::AccountRole;
 
 #[derive(sqlx::FromRow)]
@@ -363,8 +363,7 @@ pub async fn create(
             .await?;
         }
     }
-    users::assign_capabilities_in(&mut tx, owner_id, &id, &CaseCapability::ALL, owner_name)
-        .await?;
+    users::assign_capabilities_in(&mut tx, owner_id, &id, &CaseCapability::ALL, owner_name).await?;
     tx.commit().await?;
     Ok(id)
 }

@@ -473,7 +473,9 @@ pub(crate) fn validate_docx(bytes: &[u8]) -> Result<&'static str, String> {
     }
     let archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|_| "The signed agreement must be a valid .docx file.".to_string())?;
-    let has_content_types = archive.file_names().any(|name| name == "[Content_Types].xml");
+    let has_content_types = archive
+        .file_names()
+        .any(|name| name == "[Content_Types].xml");
     let has_relationships = archive.file_names().any(|name| name == "_rels/.rels");
     let has_document = archive.file_names().any(|name| name == "word/document.xml");
     if !has_content_types || !has_relationships || !has_document {

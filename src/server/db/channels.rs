@@ -87,13 +87,15 @@ pub async fn create(case_id: &str, name: &str, actor: &str) -> Result<Channel, s
     let id = ids::next(pool(), "ch").await?;
     // `ord` 1 groups every standard channel after the pinned volunteer-only
     // channel (`ord` 0); ties break on `seq`, i.e. creation order.
-    sqlx::query("INSERT INTO case_channels (id, case_id, name, kind, ord) VALUES ($1, $2, $3, $4, 1)")
-        .bind(&id)
-        .bind(case_id)
-        .bind(name)
-        .bind(ChannelKind::Standard.slug())
-        .execute(pool())
-        .await?;
+    sqlx::query(
+        "INSERT INTO case_channels (id, case_id, name, kind, ord) VALUES ($1, $2, $3, $4, 1)",
+    )
+    .bind(&id)
+    .bind(case_id)
+    .bind(name)
+    .bind(ChannelKind::Standard.slug())
+    .execute(pool())
+    .await?;
     audit::record(
         pool(),
         audit::Entity::Case,

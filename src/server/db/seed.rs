@@ -3,7 +3,7 @@
 //! logins keep working. Runs only when the database is empty.
 
 use crate::server::auth::hash_password;
-use crate::server::db::{channels, evidence, ids, messages, pool, case_properties, users};
+use crate::server::db::{case_properties, channels, evidence, ids, messages, pool, users};
 use crate::server_fns::audit::ChangeLogEntry;
 use crate::server_fns::channels::{ChannelKind, DEFAULT_CHANNEL_NAME, VOLUNTEER_CHANNEL_NAME};
 use crate::server_fns::users::User;
@@ -225,16 +225,96 @@ struct SeedAudit {
 async fn seed_audit_fixtures() -> Result<(), sqlx::Error> {
     let pool = pool();
     let mut fixtures = [
-        SeedAudit { entity_type: "case", entity_id: "c-1", days_ago: 41, actor: "Maria Nguyen", field: "status", old_value: "Open", new_value: "Monitor" },
-        SeedAudit { entity_type: "user", entity_id: "u-2", days_ago: 33, actor: "Maria Nguyen", field: "role", old_value: "Client", new_value: "Volunteer" },
-        SeedAudit { entity_type: "case", entity_id: "c-2", days_ago: 28, actor: "Dana Patel", field: "owner", old_value: "James Garcia", new_value: "Dana Patel" },
-        SeedAudit { entity_type: "user", entity_id: "u-1", days_ago: 20, actor: "Maria Nguyen", field: "permissions on c-3", old_value: "Viewer", new_value: "Manager" },
-        SeedAudit { entity_type: "case", entity_id: "c-1", days_ago: 12, actor: "Dana Patel", field: "name", old_value: "Maria-Nguyen custody matter", new_value: "Nguyen custody matter" },
-        SeedAudit { entity_type: "case", entity_id: "c-3", days_ago: 9, actor: "Maria Nguyen", field: "status", old_value: "Monitor", new_value: "Closed" },
-        SeedAudit { entity_type: "user", entity_id: "u-2", days_ago: 5, actor: "Maria Nguyen", field: "permissions on c-1", old_value: "none", new_value: "Contributor" },
-        SeedAudit { entity_type: "case", entity_id: "c-2", days_ago: 2, actor: "Dana Patel", field: "Docket", old_value: "FC-2026-0002", new_value: "FC-2026-0002-A" },
-        SeedAudit { entity_type: "user", entity_id: "u-1", days_ago: 1, actor: "Maria Nguyen", field: "role", old_value: "Volunteer", new_value: "Site admin" },
-        SeedAudit { entity_type: "case", entity_id: "c-1", days_ago: 0, actor: "Maria Nguyen", field: "status", old_value: "Monitor", new_value: "Open" },
+        SeedAudit {
+            entity_type: "case",
+            entity_id: "c-1",
+            days_ago: 41,
+            actor: "Maria Nguyen",
+            field: "status",
+            old_value: "Open",
+            new_value: "Monitor",
+        },
+        SeedAudit {
+            entity_type: "user",
+            entity_id: "u-2",
+            days_ago: 33,
+            actor: "Maria Nguyen",
+            field: "role",
+            old_value: "Client",
+            new_value: "Volunteer",
+        },
+        SeedAudit {
+            entity_type: "case",
+            entity_id: "c-2",
+            days_ago: 28,
+            actor: "Dana Patel",
+            field: "owner",
+            old_value: "James Garcia",
+            new_value: "Dana Patel",
+        },
+        SeedAudit {
+            entity_type: "user",
+            entity_id: "u-1",
+            days_ago: 20,
+            actor: "Maria Nguyen",
+            field: "permissions on c-3",
+            old_value: "Viewer",
+            new_value: "Manager",
+        },
+        SeedAudit {
+            entity_type: "case",
+            entity_id: "c-1",
+            days_ago: 12,
+            actor: "Dana Patel",
+            field: "name",
+            old_value: "Maria-Nguyen custody matter",
+            new_value: "Nguyen custody matter",
+        },
+        SeedAudit {
+            entity_type: "case",
+            entity_id: "c-3",
+            days_ago: 9,
+            actor: "Maria Nguyen",
+            field: "status",
+            old_value: "Monitor",
+            new_value: "Closed",
+        },
+        SeedAudit {
+            entity_type: "user",
+            entity_id: "u-2",
+            days_ago: 5,
+            actor: "Maria Nguyen",
+            field: "permissions on c-1",
+            old_value: "none",
+            new_value: "Contributor",
+        },
+        SeedAudit {
+            entity_type: "case",
+            entity_id: "c-2",
+            days_ago: 2,
+            actor: "Dana Patel",
+            field: "Docket",
+            old_value: "FC-2026-0002",
+            new_value: "FC-2026-0002-A",
+        },
+        SeedAudit {
+            entity_type: "user",
+            entity_id: "u-1",
+            days_ago: 1,
+            actor: "Maria Nguyen",
+            field: "role",
+            old_value: "Volunteer",
+            new_value: "Site admin",
+        },
+        SeedAudit {
+            entity_type: "case",
+            entity_id: "c-1",
+            days_ago: 0,
+            actor: "Maria Nguyen",
+            field: "status",
+            old_value: "Monitor",
+            new_value: "Open",
+        },
     ];
     // Oldest first so the newest change ends up with the highest `seq`.
     fixtures.sort_by_key(|f| std::cmp::Reverse(f.days_ago));

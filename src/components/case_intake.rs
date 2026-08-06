@@ -4,7 +4,7 @@ use leptos::prelude::*;
 
 use crate::helpers::case_intake::{
     court_label, docket_number_label, field_keys, judge_label, CaseIntake, CourtDocket,
-    IntakeInput, IntakeItem, EXTRA_NOTES_LABEL, INTAKE_ITEMS,
+    IntakeInput, IntakeItem, IntakeRequirement, EXTRA_NOTES_LABEL, INTAKE_ITEMS,
 };
 
 #[derive(Clone, Copy)]
@@ -76,11 +76,21 @@ pub fn CaseIntakeFields(state: CaseIntakeState) -> impl IntoView {
     // one responsive grid, while judges and courts each get their own section.
     // The first block sits flush; every later block gets a top divider.
     let mut blocks: Vec<AnyView> = Vec::new();
-    let mut run: Vec<(&'static str, &'static str, &'static IntakeInput)> = Vec::new();
+    let mut run: Vec<(
+        &'static str,
+        &'static str,
+        &'static IntakeInput,
+        IntakeRequirement,
+    )> = Vec::new();
 
     for item in INTAKE_ITEMS {
         match item {
-            IntakeItem::Field { key, label, input } => run.push((*key, *label, input)),
+            IntakeItem::Field {
+                key,
+                label,
+                input,
+                requirement,
+            } => run.push((*key, *label, input, *requirement)),
             IntakeItem::Judges { heading } | IntakeItem::Courts { heading } => {
                 if !run.is_empty() {
                     let separated = !blocks.is_empty();
@@ -106,7 +116,12 @@ pub fn CaseIntakeFields(state: CaseIntakeState) -> impl IntoView {
 
 /// A responsive grid of scalar questions.
 fn fields_grid(
-    fields: Vec<(&'static str, &'static str, &'static IntakeInput)>,
+    fields: Vec<(
+        &'static str,
+        &'static str,
+        &'static IntakeInput,
+        IntakeRequirement,
+    )>,
     separated: bool,
     state: CaseIntakeState,
 ) -> AnyView {
@@ -119,7 +134,9 @@ fn fields_grid(
         <div class=class>
             {fields
                 .into_iter()
-                .map(|(key, label, input)| field_control(key, label, input, state))
+                .map(|(key, label, input, requirement)| {
+                    field_control(key, label, input, requirement, state)
+                })
                 .collect_view()}
         </div>
     }
@@ -131,15 +148,18 @@ fn field_control(
     key: &'static str,
     label: &'static str,
     input: &'static IntakeInput,
+    requirement: IntakeRequirement,
     state: CaseIntakeState,
 ) -> AnyView {
     let signal = state.field(key);
+    let required = requirement.is_required();
     let control = match input {
         IntakeInput::Select(options) => {
             let options = *options;
             view! {
                 <select
                     class=INPUT_CLASS
+                    required=required
                     on:change=move |event| signal.set(event_target_value(&event))
                 >
                     <option value="">"Select an answer"</option>
@@ -157,6 +177,7 @@ fn field_control(
         IntakeInput::Text => view! {
             <input
                 class=INPUT_CLASS
+                required=required
                 prop:value=move || signal.get()
                 on:input=move |event| signal.set(event_target_value(&event))
             />
@@ -166,6 +187,7 @@ fn field_control(
             <input
                 class=INPUT_CLASS
                 inputmode="decimal"
+                required=required
                 prop:value=move || signal.get()
                 on:input=move |event| signal.set(event_target_value(&event))
             />
@@ -174,7 +196,16 @@ fn field_control(
     };
     view! {
         <div>
-            <label class=LABEL_CLASS>{label}</label>
+            <label class=LABEL_CLASS>
+                {label}
+                {if required {
+                    view! { <span class="text-rose-400" aria-hidden="true">" *"</span> }
+                        .into_any()
+                } else {
+                    view! { <span class="font-normal text-slate-500">" (optional)"</span> }
+                        .into_any()
+                }}
+            </label>
             {control}
         </div>
     }
@@ -207,7 +238,10 @@ fn judges_section(heading: &'static str, separated: bool, state: CaseIntakeState
     view! {
         <div class=class>
             <div class="mb-3">
-                <h3 class="text-sm font-semibold text-slate-200">{heading}</h3>
+                <h3 class="text-sm font-semibold text-slate-200">
+                    {heading}
+                    <span class="font-normal text-slate-500">" (optional)"</span>
+                </h3>
             </div>
             <div class="grid gap-4 sm:grid-cols-2">
                 <For
@@ -246,7 +280,10 @@ fn courts_section(heading: &'static str, separated: bool, state: CaseIntakeState
     view! {
         <div class=class>
             <div class="mb-3">
-                <h3 class="text-sm font-semibold text-slate-200">{heading}</h3>
+                <h3 class="text-sm font-semibold text-slate-200">
+                    {heading}
+                    <span class="font-normal text-slate-500">" (optional)"</span>
+                </h3>
             </div>
             <div class="space-y-4">
                 <For

@@ -112,6 +112,10 @@ pub fn CaseSignupPage() -> impl IntoView {
                 password_confirmation: password_confirmation.get_untracked(),
             };
             let intake = intake.value();
+            if let Err(message) = intake.validate() {
+                error.set(message);
+                return;
+            }
             let navigate = navigate.clone();
             pending.set(true);
             error.set(String::new());
@@ -137,7 +141,7 @@ pub fn CaseSignupPage() -> impl IntoView {
                         </span>
                         <div>
                             <p class="text-sm font-medium text-slate-400">"Mommy's Heart"</p>
-                            <h1 class="text-2xl font-semibold text-slate-100">"Customer case signup"</h1>
+                            <h1 class="text-2xl font-semibold text-slate-100">"Prospective client case signup"</h1>
                         </div>
                     </div>
                     <A href="/login" attr:class="text-sm font-medium text-primary-500 hover:text-primary-600">
@@ -157,7 +161,7 @@ pub fn CaseSignupPage() -> impl IntoView {
                             <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary-500 text-sm font-bold text-white">"1"</span>
                             <div>
                                 <h2 class="text-lg font-semibold text-slate-100">"Provide case info"</h2>
-                                <p class="mt-1 text-sm text-slate-400">"Every field in this section is optional."</p>
+                                <p class="mt-1 text-sm text-slate-400">"Fields marked with * are required."</p>
                             </div>
                         </div>
 

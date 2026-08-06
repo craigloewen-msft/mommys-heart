@@ -12,7 +12,7 @@ use crate::server_fns::users::{User, UserSummary};
 /// The result of a successful password check
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum LoginOutcome {
-    /// Password *and* second factor satisfied 
+    /// Password *and* second factor satisfied
     Authenticated(User),
     /// Password correct, but an emailed one-time code is still required. The
     /// client should route to the MFA screen and call [`verify_mfa`].
@@ -167,10 +167,15 @@ pub async fn verify_mfa(code: String, remember_device: bool) -> Result<User, Ser
         ServerFnError::new("Your verification session expired. Please sign in again.")
     })?;
 
-    let user_id = match mfa::verify(&challenge, code).await.map_err(ServerFnError::new)? {
+    let user_id = match mfa::verify(&challenge, code)
+        .await
+        .map_err(ServerFnError::new)?
+    {
         mfa::Verify::Ok(uid) => uid,
         mfa::Verify::WrongCode => {
-            return Err(ServerFnError::new("That code is incorrect. Please try again."));
+            return Err(ServerFnError::new(
+                "That code is incorrect. Please try again.",
+            ));
         }
         mfa::Verify::Expired => {
             append_cookie(clear_mfa_cookie())?;
@@ -251,7 +256,9 @@ pub async fn register(
     email: String,
     password: String,
 ) -> Result<(), ServerFnError> {
-    use crate::server::auth::{build_register_cookie, generate_code, generate_token, hash_password, REGISTER_COOKIE_NAME};
+    use crate::server::auth::{
+        build_register_cookie, generate_code, generate_token, hash_password, REGISTER_COOKIE_NAME,
+    };
     use crate::server::db::pending_registrations::{self, PendingAccount};
     use crate::server::db::{throttle, users};
     use crate::server::email::auth_notifications as auth_email;
@@ -303,7 +310,9 @@ pub async fn register(
     pending_registrations::create(&challenge, &account, &code)
         .await
         .map_err(ServerFnError::new)?;
-    if let Err(error) = auth_email::send_email_verification(&email, &account.full_name(), &code).await {
+    if let Err(error) =
+        auth_email::send_email_verification(&email, &account.full_name(), &code).await
+    {
         let _ = pending_registrations::delete(&challenge).await;
         tracing::warn!("failed to send verification code to {email}: {error}");
         return Err(ServerFnError::new(
@@ -319,13 +328,15 @@ pub async fn register(
     Ok(())
 }
 
-/// Begin a customer signup that will create both an account and a case after
+/// Begin a client signup that will create both an account and a case after
 /// email verification. The signed agreement is staged at its final blob path;
 /// its database row remains pending until [`verify_registration`] commits the
 /// complete account and case transaction.
 #[server(prefix = "/api", input = MultipartFormData)]
 pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnError> {
-    use crate::server::auth::{build_register_cookie, generate_code, generate_token, hash_password, REGISTER_COOKIE_NAME};
+    use crate::server::auth::{
+        build_register_cookie, generate_code, generate_token, hash_password, REGISTER_COOKIE_NAME,
+    };
     use crate::server::db::pending_registrations::{self, PendingAccount, PendingCaseSignup};
     use crate::server::db::{evidence, ids, pool, throttle, users};
     use crate::server::email::auth_notifications as auth_email;
@@ -356,7 +367,8 @@ pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnErr
         let file_name = field.file_name().map(str::to_owned);
         match field_name.as_deref() {
             Some("agreement") => {
-                agreement_filename = Some(file_name.unwrap_or_else(|| "agreement.docx".to_string()));
+                agreement_filename =
+                    Some(file_name.unwrap_or_else(|| "agreement.docx".to_string()));
                 agreement_bytes = Some(
                     field
                         .bytes()
@@ -394,6 +406,7 @@ pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnErr
     }
     let intake: CaseIntake = serde_json::from_str(&intake_json)
         .map_err(|_| ServerFnError::new("The case information could not be read."))?;
+    intake.validate().map_err(ServerFnError::new)?;
     let intake_json = serde_json::to_string(&intake).map_err(ServerFnError::new)?;
 
     let (agreement_filename, agreement_bytes) = match (agreement_filename, agreement_bytes) {
@@ -406,8 +419,8 @@ pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnErr
             "The signed agreement must be uploaded as a .docx file.",
         ));
     }
-    let content_type = crate::server_fns::evidence::validate_docx(&agreement_bytes)
-        .map_err(ServerFnError::new)?;
+    let content_type =
+        crate::server_fns::evidence::validate_docx(&agreement_bytes).map_err(ServerFnError::new)?;
     if !storage::is_configured() {
         return Err(ServerFnError::new(
             "Agreement storage is not configured on this server.",
@@ -425,7 +438,10 @@ pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnErr
         )));
     }
     let _ = throttle::record_failure(throttle::Action::Register, &email).await;
-    if users::email_exists(&email).await.map_err(ServerFnError::new)? {
+    if users::email_exists(&email)
+        .await
+        .map_err(ServerFnError::new)?
+    {
         return Err(ServerFnError::new(
             "An account with that email already exists.",
         ));
@@ -471,12 +487,16 @@ pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnErr
     };
     let challenge = generate_token();
     let code = generate_code();
-    if let Err(error) = pending_registrations::create_case_signup(&challenge, &account, &signup, &code).await {
+    if let Err(error) =
+        pending_registrations::create_case_signup(&challenge, &account, &signup, &code).await
+    {
         let _ = storage::delete(&agreement_blob_path).await;
         return Err(ServerFnError::new(error));
     }
 
-    if let Err(error) = auth_email::send_email_verification(&email, &account.full_name(), &code).await {
+    if let Err(error) =
+        auth_email::send_email_verification(&email, &account.full_name(), &code).await
+    {
         let _ = pending_registrations::delete(&challenge).await;
         let _ = storage::delete(&agreement_blob_path).await;
         tracing::warn!("failed to send verification code to {email}: {error}");
@@ -500,9 +520,7 @@ pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnErr
 /// the account is created, immediately signed in, and returned.
 #[server(prefix = "/api")]
 pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
-    use crate::server::auth::{
-        build_session_cookie, clear_register_cookie, REGISTER_COOKIE_NAME,
-    };
+    use crate::server::auth::{build_session_cookie, clear_register_cookie, REGISTER_COOKIE_NAME};
     use crate::server::db::pending_registrations::{self, Verify};
     use crate::server::db::{cases, evidence, pool, sessions, throttle, users};
     use crate::server_fns::users::AccountRole;
@@ -520,7 +538,9 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
         Verify::Ok(pending) => pending,
         Verify::WrongCode => {
             tx.commit().await.map_err(ServerFnError::new)?;
-            return Err(ServerFnError::new("That code is incorrect. Please try again."));
+            return Err(ServerFnError::new(
+                "That code is incorrect. Please try again.",
+            ));
         }
         Verify::Expired(blob_path) => {
             tx.commit().await.map_err(ServerFnError::new)?;
@@ -549,19 +569,19 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
     });
 
     // Guard against the email having been claimed while the code was in flight.
-    let email_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE lower(email) = lower($1))",
-    )
-    .bind(&account.email)
-    .fetch_one(&mut *tx)
-        .await
-        .map_err(ServerFnError::new)?
-    ;
+    let email_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE lower(email) = lower($1))")
+            .bind(&account.email)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(ServerFnError::new)?;
     if email_exists {
         tx.commit().await.map_err(ServerFnError::new)?;
         if let Some(staged_blob) = staged_blob {
             if let Err(error) = crate::server::storage::delete(&staged_blob).await {
-                tracing::warn!("failed to clean claimed-email signup blob '{staged_blob}': {error}");
+                tracing::warn!(
+                    "failed to clean claimed-email signup blob '{staged_blob}': {error}"
+                );
             }
         }
         append_cookie(clear_register_cookie())?;
@@ -610,12 +630,8 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
     }
     tx.commit().await.map_err(ServerFnError::new)?;
 
-    if let Some((customer_name, customer_email, case_name)) = signup_notification_details {
-        crate::server::notifications::notify_case_signup(
-            customer_name,
-            customer_email,
-            case_name,
-        );
+    if let Some((client_name, client_email, case_name)) = signup_notification_details {
+        crate::server::notifications::notify_case_signup(client_name, client_email, case_name);
     }
 
     let user = users::get(&id)
@@ -665,7 +681,10 @@ pub async fn resend_registration_code() -> Result<(), ServerFnError> {
     auth_email::send_email_verification(&account.email, &account.full_name(), &code)
         .await
         .map_err(|e| {
-            tracing::warn!("failed to resend verification code to {}: {e}", account.email);
+            tracing::warn!(
+                "failed to resend verification code to {}: {e}",
+                account.email
+            );
             ServerFnError::new("We couldn't resend your code. Please try again.")
         })?;
     Ok(())
