@@ -61,15 +61,6 @@ impl Visibility {
         }
     }
 
-    /// The name of the standing top-level file folder for this audience. Every
-    /// case has exactly one folder per audience at the top of its file tree.
-    pub fn folder_name(self) -> &'static str {
-        match self {
-            Visibility::Shared => "Shared with client",
-            Visibility::VolunteerOnly => "Volunteer only",
-        }
-    }
-
     /// One-line explanation of who can see this, shown under the heading.
     pub fn description(self) -> &'static str {
         match self {

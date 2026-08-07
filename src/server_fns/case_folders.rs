@@ -1,9 +1,11 @@
 //! Case file folders: the tree a case's files are organized into.
 //!
 //! A case's files live in folders rather than in one flat list. The tree is
-//! rooted in exactly two standing folders, one per audience — see
-//! [`Visibility::folder_name`] — created with the case and never removed.
-//! Everything else is a folder somebody made inside one of them.
+//! rooted in a set of standing top-level folders — defined by
+//! [`NEW_CASE_FOLDERS`](crate::helpers::new_case_folders::NEW_CASE_FOLDERS) and
+//! created with the case — each of which names the audience for everything
+//! filed under it. They cannot be deleted ([`CaseFolder::is_root`] guards the
+//! delete path). Everything else is a folder somebody made inside one of them.
 //!
 //! The root a folder hangs from decides its audience, and a file's audience is
 //! its folder's. That is the whole access-control story for the tree: moving a

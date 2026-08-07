@@ -1,15 +1,11 @@
 //! Case folder persistence (SSR only): the `case_folders` tree a case's files
 //! are organized into.
 //!
-//! Two invariants live here and nowhere else, because every write to the tree
-//! goes through this module:
-//!
-//! * A folder's `case_id` and `visibility` are copied from its parent, never
-//!   supplied by a caller. The two roots are the only rows that decide an
-//!   audience, and they are created with the case.
-//! * A folder's *path* — the chain of names from its root down to it — is
-//!   derived, not stored ([`path_of`]). It is what a file's blob name is built
-//!   from, so it has exactly one definition.
+//! One invariant lives here and nowhere else, because every write to the tree
+//! goes through this module: a folder's `case_id` and `visibility` are copied
+//! from its parent, never supplied by a caller. The standing top-level folders
+//! are the only rows that decide an audience, and they are created with the
+//! case.
 
 use crate::helpers::new_case_folders;
 use crate::helpers::visibility::Visibility;
