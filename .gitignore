@@ -13,3 +13,4 @@
 .idea
 .vscode/*
 !.vscode/extensions.json
+.phoenix
