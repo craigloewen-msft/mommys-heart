@@ -9,11 +9,56 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use serde::{Deserialize, Serialize};
+
 use crate::server_fns::auth::LoginOutcome;
-use crate::server_fns::badges;
 use crate::server_fns::channel_notifications::{self, ChannelUnread};
 use crate::server_fns::users::{AccountRole, UserSummary};
 use crate::server_fns::{auth, err_text};
+
+/// The counts the app chrome badges. A view over several tables rather than an
+/// entity, so it lives with the state it feeds instead of in `server_fns`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppBadges {
+    pub unread: Vec<ChannelUnread>,
+    pub admin_requests_pending: i64,
+    pub cases_pending_review: i64,
+}
+
+/// Load every badge count for the signed-in user in one round trip. Counts the
+/// caller may not see are zero rather than an error.
+#[server(prefix = "/api")]
+pub async fn load_app_badges() -> Result<AppBadges, ServerFnError> {
+    use crate::server::db::{admin_requests, cases, channel_notifications};
+    use crate::server::permissions::require_user;
+
+    let user = require_user().await?;
+
+    let unread = channel_notifications::unread_for_user(&user.id)
+        .await
+        .map_err(ServerFnError::new)?;
+    let admin_requests_pending = if user.role.is_site_admin() {
+        admin_requests::pending_count()
+            .await
+            .map_err(ServerFnError::new)?
+    } else {
+        0
+    };
+    // Any admin may review a case, unlike approval requests.
+    let cases_pending_review = if user.role.has_operations_admin_permissions() {
+        cases::pending_review_count()
+            .await
+            .map_err(ServerFnError::new)?
+    } else {
+        0
+    };
+
+    Ok(AppBadges {
+        unread,
+        admin_requests_pending,
+        cases_pending_review,
+    })
+}
 
 /// Current local date-time as `YYYY-MM-DD HH:MM`, read from the browser clock.
 /// Retained for any client-side display needs; persisted timestamps are now
@@ -119,7 +164,7 @@ impl AppState {
             return;
         }
         spawn_local(async move {
-            if let Ok(badges) = badges::load_app_badges().await {
+            if let Ok(badges) = load_app_badges().await {
                 self.unread.set(badges.unread);
                 self.admin_request_pending
                     .set(badges.admin_requests_pending);
