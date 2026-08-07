@@ -14,11 +14,12 @@ use crate::helpers::sections;
 use crate::helpers::visibility::Visibility;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::capabilities::CaseCapability;
+use crate::server_fns::case_folders::{self, CaseFolder};
 use crate::server_fns::case_properties::{self, CaseProperty};
 use crate::server_fns::cases::{self, Case, CaseStatus, CaseSummary};
 use crate::server_fns::err_text;
 use crate::server_fns::evidence::{self, Evidence};
-use crate::server_fns::users::{search_users, UserSummary};
+use crate::server_fns::users::{search_users, AccountRole, UserSummary};
 use crate::state::AppState;
 
 /// How many cases the list loads per "page" (each "Load more" click grows the
@@ -35,8 +36,7 @@ struct PropRow {
     visibility: Visibility,
 }
 
-/// The "add a file" form belonging to one visibility. Each visibility gets its
-/// own so a half-typed entry in one does not leak into the other.
+/// The "add a file" form for the folder currently open in the file browser.
 #[derive(Clone, Copy)]
 struct FileForm {
     name: RwSignal<String>,
@@ -46,22 +46,15 @@ struct FileForm {
     file_ref: NodeRef<leptos::html::Input>,
 }
 
-#[derive(Clone)]
-struct SectionFileForm {
-    visibility: Visibility,
-    section: String,
-    form: FileForm,
-}
-
-/// The case's properties and files arranged for display: visibility first, then
-/// section, with properties before files inside each section.
+/// The case's properties arranged for display: visibility first, then section.
 ///
 /// Section order is the order each name first appears in the case's own row
 /// order, so the intake/outtake fields a case was created with keep the order
 /// they were defined in and anything added later follows.
-fn group_case_information(
-    case: &Case,
-) -> Vec<(Visibility, Vec<(String, Vec<CaseProperty>, Vec<Evidence>)>)> {
+///
+/// Files are *not* here: they live in the case's folder tree instead, which the
+/// file browser renders on its own.
+fn group_case_properties(case: &Case) -> Vec<(Visibility, Vec<(String, Vec<CaseProperty>)>)> {
     Visibility::ALL
         .into_iter()
         .filter_map(|visibility| {
@@ -69,14 +62,9 @@ fn group_case_information(
                 .properties
                 .iter()
                 .filter(|p| p.visibility == visibility);
-            let files = case.evidence.iter().filter(|e| e.visibility == visibility);
 
             let mut order: Vec<String> = Vec::new();
-            for name in props
-                .clone()
-                .map(|p| p.section.clone())
-                .chain(files.clone().map(|e| e.section.clone()))
-            {
+            for name in props.clone().map(|p| p.section.clone()) {
                 if !order.contains(&name) {
                     order.push(name);
                 }
@@ -93,17 +81,36 @@ fn group_case_information(
                         .filter(|p| p.section == name)
                         .cloned()
                         .collect();
-                    let file_rows: Vec<Evidence> = files
-                        .clone()
-                        .filter(|e| e.section == name)
-                        .cloned()
-                        .collect();
-                    (name, in_section, file_rows)
+                    (name, in_section)
                 })
                 .collect();
             Some((visibility, sections))
         })
         .collect()
+}
+
+/// The chain of folders from the top-level folder down to `folder` itself.
+fn folder_ancestry(folders: &[CaseFolder], folder: &CaseFolder) -> Vec<CaseFolder> {
+    let mut chain = vec![folder.clone()];
+    let mut parent_id = folder.parent_id.clone();
+    while let Some(id) = parent_id {
+        let Some(parent) = folders.iter().find(|f| f.id == id) else {
+            break;
+        };
+        parent_id = parent.parent_id.clone();
+        chain.push(parent.clone());
+    }
+    chain.reverse();
+    chain
+}
+
+/// A folder's full path for display, e.g. `Intake / Service Agreement`.
+fn folder_path_label(folders: &[CaseFolder], folder: &CaseFolder) -> String {
+    folder_ancestry(folders, folder)
+        .iter()
+        .map(|f| f.name.clone())
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 fn badge(classes: &str) -> String {
@@ -118,9 +125,9 @@ fn badge(classes: &str) -> String {
 /// fast UX feedback.
 ///
 /// `fields` are the accompanying text parts, which decide where the bytes land:
-/// an `evidence_id` puts them into an existing entry, a `case_id` (plus `name`,
-/// `section`, `visibility`) creates a new one. Returns `Ok(None)` when no file
-/// was chosen, so callers can decide whether that is an error or simply means
+/// an `evidence_id` puts them into an existing entry, a `folder_id` (plus
+/// `name`) creates a new one in that folder. Returns `Ok(None)` when no file was
+/// chosen, so callers can decide whether that is an error or simply means
 /// "create the entry with nothing in it".
 #[cfg(feature = "hydrate")]
 async fn upload_evidence_file(
@@ -158,17 +165,15 @@ async fn upload_evidence_file(
         .map_err(crate::server_fns::err_text)
 }
 
-/// Add a file to a case: upload the chosen file if there is one, or — when the
+/// Add a file to a folder: upload the chosen file if there is one, or — when the
 /// picker was left empty — create the entry with nothing in it, for somebody to
 /// upload into later.
 ///
 /// The two paths differ only in whether bytes were provided, so the caller does
 /// not have to decide up front which one it wants.
 async fn add_file_entry(
-    case_id: &str,
-    visibility: Visibility,
+    folder_id: &str,
     name: &str,
-    section: &str,
     description: &str,
     file_ref: NodeRef<leptos::html::Input>,
 ) -> Result<(), String> {
@@ -177,11 +182,9 @@ async fn add_file_entry(
         let uploaded = upload_evidence_file(
             file_ref,
             &[
-                ("case_id", case_id),
+                ("folder_id", folder_id),
                 ("name", name),
-                ("section", section),
                 ("description", description),
-                ("visibility", visibility.slug()),
             ],
         )
         .await?;
@@ -193,11 +196,9 @@ async fn add_file_entry(
     let _ = file_ref;
 
     evidence::add_case_file(
-        case_id.to_string(),
+        folder_id.to_string(),
         name.to_string(),
         description.to_string(),
-        section.to_string(),
-        visibility,
     )
     .await
     .map(|_id| ())
@@ -239,6 +240,9 @@ fn access_label(caps: &[CaseCapability]) -> Option<(&'static str, &'static str)>
 pub fn CaseHomePage() -> impl IntoView {
     let state = expect_context::<AppState>();
     let selected = RwSignal::new(None::<String>);
+    // The folder open in the selected case's file browser. Kept here so it
+    // survives the reload every case mutation triggers.
+    let open_folder = RwSignal::new(None::<String>);
 
     // The fetched window of case summaries plus the total match count. `query`
     // is bound to the input for instant feedback; `debounced_query` drives the
@@ -323,7 +327,10 @@ pub fn CaseHomePage() -> impl IntoView {
                     let owner = c.owner_full_name();
                     let select = {
                         let case_id = case_id.clone();
-                        move |_| selected.set(Some(case_id.clone()))
+                        move |_| {
+                            selected.set(Some(case_id.clone()));
+                            open_folder.set(None);
+                        }
                     };
                     view! {
                     <button
@@ -388,7 +395,10 @@ pub fn CaseHomePage() -> impl IntoView {
         .into_any(),
         Some(id) => {
             match cases.get().into_iter().find(|c| c.id == id) {
-                Some(c) => view! { <CaseDetail summary=c reload=reload /> }.into_any(),
+                Some(c) => view! {
+                    <CaseDetail summary=c reload=reload open_folder=open_folder />
+                }
+                .into_any(),
                 None => view! {
                     <p class="text-sm text-slate-400">"Case not found."</p>
                 }
@@ -574,7 +584,11 @@ pub fn NewCasePage() -> impl IntoView {
 
 /// The management panel for a single case.
 #[component]
-fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
+fn CaseDetail(
+    summary: CaseSummary,
+    reload: RwSignal<u32>,
+    open_folder: RwSignal<Option<String>>,
+) -> impl IntoView {
     let state = expect_context::<AppState>();
     let case_id = summary.id.clone();
 
@@ -590,6 +604,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
     let has_operations_admin_permissions =
         role.is_some_and(|role| role.has_operations_admin_permissions());
     let is_site_admin = role.is_some_and(|role| role.is_site_admin());
+    let is_client = matches!(role, Some(AccountRole::Client));
     let can_note = caps.contains(&CaseCapability::AddNotes);
     let can_view_evidence = caps.contains(&CaseCapability::ViewEvidence);
     let can_upload_evidence = caps.contains(&CaseCapability::UploadEvidence);
@@ -656,7 +671,28 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
     let edit_props: RwSignal<Vec<PropRow>> = RwSignal::new(Vec::new());
     let props_error = RwSignal::new(String::new());
     let row_seq = RwSignal::new(0usize);
-    let file_forms = StoredValue::new(Vec::<SectionFileForm>::new());
+
+    // --- file browser ---
+    // The folder currently open, or `None` for the top of the tree (where the
+    // only things to see are the case's two standing folders). It is owned by
+    // the page rather than this component because every mutation reloads the
+    // case list and rebuilds this panel — uploading a file should leave you
+    // looking at the folder you put it in.
+    let current_folder = open_folder;
+    let new_folder_name = RwSignal::new(String::new());
+    let folder_error = RwSignal::new(String::new());
+    // Deleting is destructive and irreversible, so it stays out of the way until
+    // somebody says that is what they came to do.
+    let removing = RwSignal::new(false);
+    let file_form = owner.with_value(|o| {
+        o.with(|| FileForm {
+            name: RwSignal::new(String::new()),
+            description: RwSignal::new(String::new()),
+            error: RwSignal::new(String::new()),
+            busy: RwSignal::new(false),
+            file_ref: NodeRef::new(),
+        })
+    });
 
     let make_row =
         move |key: String, value: String, section: String, visibility: Visibility| -> PropRow {
@@ -693,37 +729,6 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                             p.section.clone(),
                             p.visibility,
                         )
-                    })
-                    .collect(),
-            );
-
-            let mut section_keys = Vec::<(Visibility, String)>::new();
-            for (visibility, sections) in group_case_information(&c) {
-                for (section, _, _) in sections {
-                    section_keys.push((visibility, section));
-                }
-            }
-            for visibility in Visibility::ALL {
-                let allowed = !visibility.is_restricted() || state.is_volunteer_or_admin();
-                if allowed && !section_keys.iter().any(|(v, _)| *v == visibility) {
-                    section_keys.push((visibility, String::new()));
-                }
-            }
-            file_forms.set_value(
-                section_keys
-                    .into_iter()
-                    .map(|(visibility, section)| SectionFileForm {
-                        visibility,
-                        section,
-                        form: owner.with_value(|o| {
-                            o.with(|| FileForm {
-                                name: RwSignal::new(String::new()),
-                                description: RwSignal::new(String::new()),
-                                error: RwSignal::new(String::new()),
-                                busy: RwSignal::new(false),
-                                file_ref: NodeRef::new(),
-                            })
-                        }),
                     })
                     .collect(),
             );
@@ -834,20 +839,12 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         }
     };
 
-    // --- Case information: properties and files, grouped by visibility ---
-    let form_for = move |visibility: Visibility, section: &str| -> FileForm {
-        file_forms.with_value(|forms| {
-            forms
-                .iter()
-                .find(|entry| entry.visibility == visibility && entry.section == section)
-                .map(|entry| entry.form)
-                .expect("an evidence form exists for every visible section")
-        })
-    };
-
-    let add_file = move |visibility: Visibility, section: String| {
-        let form = form_for(visibility, &section);
-        let case_id = case_sv.get_value();
+    // --- Files: the case's folder tree ---
+    // Adding a file always happens inside the folder that is currently open,
+    // which is why there is no folder picker here: the browser you are looking
+    // at *is* the choice.
+    let add_file = move |folder_id: String| {
+        let form = file_form;
         let name = form.name.get_untracked().trim().to_string();
         let description = form.description.get_untracked().trim().to_string();
         form.error.set(String::new());
@@ -860,15 +857,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         }
         form.busy.set(true);
         spawn_local(async move {
-            let result = add_file_entry(
-                &case_id,
-                visibility,
-                &name,
-                &section,
-                &description,
-                form.file_ref,
-            )
-            .await;
+            let result = add_file_entry(&folder_id, &name, &description, form.file_ref).await;
             match result {
                 Ok(()) => {
                     form.name.set(String::new());
@@ -884,9 +873,43 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         });
     };
 
+    let add_folder = move |parent_id: String| {
+        let name = new_folder_name.get_untracked().trim().to_string();
+        folder_error.set(String::new());
+        spawn_local(async move {
+            match case_folders::create_case_folder(parent_id, name).await {
+                Ok(_) => {
+                    new_folder_name.set(String::new());
+                    reload.update(|n| *n += 1);
+                }
+                Err(e) => folder_error.set(err_text(e)),
+            }
+        });
+    };
+
+    let delete_folder = move |folder: CaseFolder| {
+        folder_error.set(String::new());
+        spawn_local(async move {
+            match case_folders::delete_case_folder(folder.id).await {
+                Ok(()) => reload.update(|n| *n += 1),
+                Err(e) => folder_error.set(err_text(e)),
+            }
+        });
+    };
+
+    let move_file = move |evidence_id: String, folder_id: String| {
+        folder_error.set(String::new());
+        spawn_local(async move {
+            match evidence::move_case_evidence(evidence_id, folder_id).await {
+                Ok(()) => reload.update(|n| *n += 1),
+                Err(e) => folder_error.set(err_text(e)),
+            }
+        });
+    };
+
     // Uploading into an entry that already exists: its own file input is the
-    // handle, and the server takes the case, name, section, and visibility from
-    // the stored row rather than from this request.
+    // handle, and the server takes the name and the folder from the stored row
+    // rather than from this request.
     let upload_into = move |evidence_id: String, file_ref: NodeRef<leptos::html::Input>| {
         let _ = (&evidence_id, file_ref);
         #[cfg(feature = "hydrate")]
@@ -915,9 +938,9 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
     // One file's row: its name and description, then either the download and
     // details of the file it holds, or an upload control for the file it is
     // still waiting on.
-    let file_row = move |e: Evidence| {
+    let file_row = move |e: Evidence, folders: Vec<CaseFolder>| {
         let evidence_id = e.id.clone();
-        let delete_btn = if can_delete_evidence && editing.get() {
+        let delete_btn = if can_delete_evidence && removing.get() {
             let id = evidence_id.clone();
             view! {
                 <button
@@ -926,6 +949,37 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                 >
                     "Remove"
                 </button>
+            }
+            .into_any()
+        } else {
+            ().into_any()
+        };
+
+        // Moving a file is a plain folder picker: the folder it lands in is also
+        // what decides who can see it, so this is the same control for both.
+        let move_control = if can_upload_evidence && folders.len() > 1 {
+            let id = evidence_id.clone();
+            let current = e.folder_id.clone();
+            let options = folders
+                .iter()
+                .map(|f| {
+                    let label = folder_path_label(&folders, f);
+                    let selected = f.id == current;
+                    view! {
+                        <option value=f.id.clone() selected=selected>
+                            {label}
+                        </option>
+                    }
+                })
+                .collect_view();
+            view! {
+                <select
+                    title="Move this file to another folder"
+                    on:change=move |ev| move_file(id.clone(), event_target_value(&ev))
+                    class="shrink-0 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-300"
+                >
+                    {options}
+                </select>
             }
             .into_any()
         } else {
@@ -954,7 +1008,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                 </div>
             }
             .into_any()
-        } else if can_upload_evidence && editing.get() {
+        } else if can_upload_evidence {
             let file_input: NodeRef<leptos::html::Input> =
                 owner.with_value(|o| o.with(NodeRef::new));
             let id = evidence_id.clone();
@@ -980,10 +1034,12 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
 
         let description = e.description.clone();
         view! {
-            <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
+            <div class="group rounded-lg border border-slate-800 bg-slate-950 p-3 transition-colors hover:border-slate-700 hover:bg-slate-900/60">
                 <div class="flex items-start justify-between gap-2">
-                    <p class="text-sm font-medium text-slate-200">{e.name.clone()}</p>
-                    {delete_btn}
+                    <p class="min-w-0 text-sm font-medium text-slate-200 transition-colors group-hover:text-slate-100">
+                        "\u{1f4c4} " {e.name.clone()}
+                    </p>
+                    <div class="flex shrink-0 items-center gap-2">{move_control} {delete_btn}</div>
                 </div>
                 <Show when={
                     let d = description.clone();
@@ -997,68 +1053,139 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         .into_any()
     };
 
-    // The per-section evidence form inherits its section and visibility from
-    // the panel containing it.
-    let file_form_view = move |visibility: Visibility, section: String| {
-        if !can_upload_evidence || !editing.get() {
-            return ().into_any();
-        }
-        let form = form_for(visibility, &section);
-        let add_section = section.clone();
-        view! {
-            <div class="mt-4 space-y-2 border-t border-slate-800 pt-3">
-                <input
-                    class=input_class
-                    placeholder="File name (e.g. Intake letter)"
-                    prop:value=move || form.name.get()
-                    on:input=move |ev| form.name.set(event_target_value(&ev))
-                />
-                <input
-                    class=input_class
-                    placeholder="Extra information (optional)"
-                    prop:value=move || form.description.get()
-                    on:input=move |ev| form.description.set(event_target_value(&ev))
-                />
-                <input
-                    node_ref=form.file_ref
-                    type="file"
-                    accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
-                    class="block w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-200 hover:file:bg-slate-700"
-                />
+    // One sub-folder inside the open folder: click to go in, plus the delete
+    // that only applies once it has been emptied.
+    let folder_row = move |folder: CaseFolder, file_count: usize, child_count: usize| {
+        let open = {
+            let id = folder.id.clone();
+            move |_| current_folder.set(Some(id.clone()))
+        };
+        let contents = match (file_count, child_count) {
+            (0, 0) => "Empty".to_string(),
+            (files, 0) => format!("{files} file{}", if files == 1 { "" } else { "s" }),
+            (0, folders) => format!("{folders} folder{}", if folders == 1 { "" } else { "s" }),
+            (files, folders) => format!(
+                "{files} file{} · {folders} folder{}",
+                if files == 1 { "" } else { "s" },
+                if folders == 1 { "" } else { "s" }
+            ),
+        };
+        let delete_btn = if can_delete_evidence && removing.get() && !folder.is_root() {
+            let f = folder.clone();
+            view! {
                 <button
-                    on:click=move |_| add_file(visibility, add_section.clone())
-                    prop:disabled=move || form.busy.get()
-                    class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                    on:click=move |_| delete_folder(f.clone())
+                    class="shrink-0 rounded-lg border border-rose-500/40 px-2 py-1 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
                 >
-                    {move || if form.busy.get() { "Saving…" } else { "Add file" }}
+                    "Delete"
                 </button>
-                <p class="text-xs text-slate-500">
-                    "This evidence will be added to this section. Leave the file empty to just list what the case is waiting on. \
-                     PDF, images, or Office documents · up to 25 MB"
-                </p>
-                <Show when=move || !form.error.get().is_empty()>
-                    <p class="text-xs text-rose-400">{move || form.error.get()}</p>
-                </Show>
+            }
+            .into_any()
+        } else {
+            ().into_any()
+        };
+        let restricted = folder.visibility.is_restricted();
+        view! {
+            <div class="group flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950 p-3 transition-colors hover:border-primary-500/40 hover:bg-slate-900">
+                <button
+                    on:click=open
+                    class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                >
+                    <span class="text-base transition-transform group-hover:scale-110">
+                        {if restricted { "\u{1f512}" } else { "\u{1f4c1}" }}
+                    </span>
+                    <span class="min-w-0">
+                        <span class="block truncate text-sm font-medium text-slate-200 transition-colors group-hover:text-primary-300">
+                            {folder.name.clone()}
+                        </span>
+                        <span class="block text-xs text-slate-500">{contents}</span>
+                    </span>
+                </button>
+                {delete_btn}
             </div>
         }
         .into_any()
     };
 
-    // The read-only rendering of one visibility: its sections, each listing that
-    // section's properties and then its files.
-    let sections_view =
-        move |visibility: Visibility, groups: Vec<(String, Vec<CaseProperty>, Vec<Evidence>)>| {
-            if groups.is_empty() {
-                return view! {
-                    <p class="px-4 py-5 text-sm text-slate-500">
-                        "No information has been added yet."
+    // Adding to the open folder: a new sub-folder, or a file (with or without
+    // the bytes to go in it yet).
+    let folder_tools = move |folder: CaseFolder, target_label: String| {
+        if !can_upload_evidence {
+            return ().into_any();
+        }
+        let form = file_form;
+        let folder_id = folder.id.clone();
+        let new_folder_parent = folder.id.clone();
+        view! {
+            <div class="mt-4 space-y-4 border-t border-slate-800 pt-4">
+                <div class="flex flex-col gap-2 sm:flex-row">
+                    <input
+                        class=input_class
+                        placeholder="New folder name"
+                        prop:value=move || new_folder_name.get()
+                        on:input=move |ev| new_folder_name.set(event_target_value(&ev))
+                    />
+                    <button
+                        on:click=move |_| add_folder(new_folder_parent.clone())
+                        class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                    >
+                        "+ New folder"
+                    </button>
+                </div>
+                <div class="space-y-2">
+                    <input
+                        class=input_class
+                        placeholder="File name (e.g. Intake letter)"
+                        prop:value=move || form.name.get()
+                        on:input=move |ev| form.name.set(event_target_value(&ev))
+                    />
+                    <input
+                        class=input_class
+                        placeholder="Extra information (optional)"
+                        prop:value=move || form.description.get()
+                        on:input=move |ev| form.description.set(event_target_value(&ev))
+                    />
+                    <input
+                        node_ref=form.file_ref
+                        type="file"
+                        accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+                        class="block w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-200 hover:file:bg-slate-700"
+                    />
+                    <button
+                        on:click=move |_| add_file(folder_id.clone())
+                        prop:disabled=move || form.busy.get()
+                        class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                    >
+                        {move || if form.busy.get() { "Saving…" } else { "Add file" }}
+                    </button>
+                    <p class="text-xs text-slate-500">
+                        "Saved in " {target_label}
+                        ". Leave the picker empty to just list what the case is waiting on. \
+                         PDF, images, or Office documents · up to 25 MB"
                     </p>
-                }
-                .into_any();
+                    <Show when=move || !form.error.get().is_empty()>
+                        <p class="text-xs text-rose-400">{move || form.error.get()}</p>
+                    </Show>
+                </div>
+            </div>
+        }
+        .into_any()
+    };
+
+    // The rendering of one visibility: its sections, each listing that section's
+    // properties.
+    let sections_view = move |visibility: Visibility, groups: Vec<(String, Vec<CaseProperty>)>| {
+        if groups.is_empty() {
+            return view! {
+                <p class="px-4 py-5 text-sm text-slate-500">
+                    "No information has been added yet."
+                </p>
             }
-            groups
+            .into_any();
+        }
+        groups
             .into_iter()
-            .map(|(name, props, files)| {
+            .map(|(name, props)| {
                 let heading = sections::label(&name).to_string();
                 let property_rows = if editing.get() && can_edit {
                     let row_section = name.clone();
@@ -1144,26 +1271,24 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                         .collect_view()
                         .into_any()
                 };
-                let file_rows = files.into_iter().map(file_row).collect_view();
                 view! {
                     <section class="border-t border-slate-800 px-4 py-5 first:border-t-0">
                         <h4 class="text-base font-semibold text-slate-100">
                             {heading}
                         </h4>
                         <div class="mt-2">{property_rows}</div>
-                        <div class="mt-3 space-y-2">{file_rows}</div>
-                        {file_form_view(visibility, name.clone())}
                     </section>
                 }
                 .into_any()
             })
             .collect_view()
             .into_any()
-        };
+    };
 
-    // Case information: everything recorded about the case, grouped by who can
-    // see it and then by section. Anything the viewer may not see never reaches
-    // the browser, so this renders only what they are allowed to know about.
+    // Case information: what is recorded about the case, grouped by who can see
+    // it and then by section. Anything the viewer may not see never reaches the
+    // browser, so this renders only what they are allowed to know about. The
+    // case's *files* are not here — they have their own folder tree below.
     let case_information = move || {
         if !can_view_evidence {
             return ().into_any();
@@ -1171,10 +1296,10 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         let Some(c) = live_case() else {
             return ().into_any();
         };
-        let mut grouped = group_case_information(&c);
+        let mut grouped = group_case_properties(&c);
         // A visibility with nothing in it yet still needs somewhere to add the
         // first entry, so every one the viewer may write to is shown.
-        if can_edit || can_upload_evidence {
+        if can_edit {
             for visibility in Visibility::ALL {
                 let allowed = !visibility.is_restricted() || state.is_volunteer_or_admin();
                 if allowed && !grouped.iter().any(|(v, _)| *v == visibility) {
@@ -1203,7 +1328,7 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                     ),
                 };
                 let section_groups = if groups.is_empty() && editing.get() {
-                    vec![(String::new(), Vec::new(), Vec::new())]
+                    vec![(String::new(), Vec::new())]
                 } else {
                     groups
                 };
@@ -1229,13 +1354,170 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                 <div class="mb-3">
                     <h2 class="text-lg font-semibold text-slate-100">"Case information"</h2>
                     <p class="mt-1 text-sm text-slate-500">
-                        "Information and files organized by who can see them."
+                        "Information organized by who can see it."
                     </p>
                 </div>
                 <div class="space-y-5">{groups}</div>
                 <Show when=move || !props_error.get().is_empty()>
                     <p class="mt-3 text-sm text-rose-400">{move || props_error.get()}</p>
                 </Show>
+            </div>
+        }
+        .into_any()
+    };
+
+    // Evidence: the case's folder tree, browsed one folder at a time.
+    //
+    // The top of the tree is the case's two standing folders — the team's own
+    // record and the one shared with the client — so the audience of anything
+    // put away here is decided by the folder it goes in, not by a setting
+    // somebody has to remember to change. A client simply never sees the
+    // volunteer-only ones.
+    let evidence_panel = move || {
+        if !can_view_evidence {
+            return ().into_any();
+        }
+        let Some(c) = live_case() else {
+            return ().into_any();
+        };
+        let folders = c.folders.clone();
+        let open = current_folder
+            .get()
+            .and_then(|id| folders.iter().find(|f| f.id == id).cloned());
+        let open_id = open.as_ref().map(|f| f.id.clone());
+
+        // Breadcrumbs back up the tree; the first one steps out to the top.
+        let mut trail = vec![("Evidence".to_string(), None)];
+        if let Some(folder) = &open {
+            for ancestor in folder_ancestry(&folders, folder) {
+                trail.push((ancestor.name.clone(), Some(ancestor.id.clone())));
+            }
+        }
+        let last = trail.len() - 1;
+        let crumbs = trail
+            .into_iter()
+            .enumerate()
+            .map(|(i, (label, target))| {
+                let is_current = i == last;
+                let separator = (i > 0)
+                    .then(|| view! { <span class="text-slate-600">"/"</span> }.into_any())
+                    .unwrap_or_else(|| ().into_any());
+                let crumb = if is_current {
+                    view! { <span class="font-medium text-slate-200">{label}</span> }.into_any()
+                } else {
+                    view! {
+                        <button
+                            on:click=move |_| current_folder.set(target.clone())
+                            class="text-slate-400 hover:text-slate-200"
+                        >
+                            {label}
+                        </button>
+                    }
+                    .into_any()
+                };
+                view! {
+                    <span class="flex items-center gap-2">{separator} {crumb}</span>
+                }
+                .into_any()
+            })
+            .collect_view();
+
+        let child_folders: Vec<CaseFolder> = folders
+            .iter()
+            .filter(|f| f.parent_id == open_id)
+            .cloned()
+            .collect();
+        let files: Vec<Evidence> = match &open_id {
+            Some(id) => c
+                .evidence
+                .iter()
+                .filter(|e| &e.folder_id == id)
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+
+        let folder_rows = child_folders
+            .iter()
+            .map(|f| {
+                let file_count = c.evidence.iter().filter(|e| e.folder_id == f.id).count();
+                let child_count = folders
+                    .iter()
+                    .filter(|other| other.parent_id.as_deref() == Some(f.id.as_str()))
+                    .count();
+                folder_row(f.clone(), file_count, child_count)
+            })
+            .collect_view();
+        let is_empty = child_folders.is_empty() && files.is_empty();
+        let file_rows = files
+            .into_iter()
+            .map(|e| file_row(e, folders.clone()))
+            .collect_view();
+
+        let empty_note = if is_empty {
+            view! {
+                <p class="text-sm text-slate-500">"This folder is empty."</p>
+            }
+            .into_any()
+        } else {
+            ().into_any()
+        };
+
+        let tools = match &open {
+            Some(folder) => {
+                let label = folder_path_label(&folders, folder);
+                folder_tools(folder.clone(), label)
+            }
+            // The top-level folders are the case's own filing scheme; a file has
+            // to go inside one of them, so there is nothing to add out here.
+            None => view! {
+                <p class="mt-4 border-t border-slate-800 pt-4 text-xs text-slate-500">
+                    "Open a folder to add files to it."
+                </p>
+            }
+            .into_any(),
+        };
+
+        let blurb = if is_client {
+            "The documents your case team has shared with you."
+        } else {
+            "Everything filed on this case. A file's folder decides who can see it."
+        };
+        let edit_toggle = if can_delete_evidence {
+            view! {
+                <button
+                    on:click=move |_| {
+                        folder_error.set(String::new());
+                        removing.update(|on| *on = !*on);
+                    }
+                    class="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                >
+                    {move || if removing.get() { "Done" } else { "Edit" }}
+                </button>
+            }
+            .into_any()
+        } else {
+            ().into_any()
+        };
+        view! {
+            <div>
+                <div class="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                        <h2 class="text-lg font-semibold text-slate-100">"Evidence"</h2>
+                        <p class="mt-1 text-sm text-slate-500">{blurb}</p>
+                    </div>
+                    {edit_toggle}
+                </div>
+                <div class=panel>
+                    <div class="flex flex-wrap items-center gap-2 text-sm">{crumbs}</div>
+                    <div class="mt-3 space-y-2">
+                        {folder_rows} {file_rows} {empty_note}
+                    </div>
+                    <Show when=move || !folder_error.get().is_empty()>
+                        <p class="mt-3 text-sm text-rose-400">{move || folder_error.get()}</p>
+                    </Show>
+                    {tools}
+                </div>
             </div>
         }
         .into_any()
@@ -1475,6 +1757,8 @@ fn CaseDetail(summary: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                 if detail_loading.get() { "hidden".to_string() } else { "space-y-6".to_string() }
             }>
             {details_section}
+
+            {evidence_panel}
 
             {case_information}
 

@@ -9,6 +9,8 @@
 //!   hashes it, streams it to Blob Storage, and records a file-backed row.
 //! * [`add_case_file`] — add a file entry with nothing in it yet, for a
 //!   document somebody is expected to provide later.
+//! * [`move_case_evidence`] — move a file into another folder, taking its bytes
+//!   with it.
 //! * [`delete_case_evidence`] — the delete (which also removes the backing
 //!   blob).
 //! * [`routes`] — a plain Axum **GET** download route. A binary file download
@@ -53,11 +55,12 @@ pub struct Evidence {
     /// Whether this evidence has a downloadable file backing it.
     #[serde(default)]
     pub has_file: bool,
-    /// Display grouping heading, e.g. "Intake". Free text; empty groups the row
-    /// under [`sections::DEFAULT_LABEL`](crate::helpers::sections::DEFAULT_LABEL).
+    /// The folder on the case this file sits in. Folders are the case's own
+    /// structure ([`crate::server_fns::case_folders`]) and the folder decides
+    /// [`visibility`](Self::visibility).
     #[serde(default)]
-    pub section: String,
-    /// Who may see this file.
+    pub folder_id: String,
+    /// Who may see this file, inherited from its folder.
     #[serde(default)]
     pub visibility: Visibility,
 }
@@ -94,12 +97,13 @@ const ALLOWED_MIME: &[&str] = &[
 /// The multipart body carries the `file` plus either:
 ///
 /// * `evidence_id` — put the file into an existing entry, typically one created
-///   with the case ("Intake letter" and friends). The entry keeps its name,
-///   section, and visibility: providing the file answers what the entry was
-///   already asking for rather than redefining it, and the case it belongs to is
-///   read from the database rather than taken from the request.
-/// * `case_id`, plus optional `name`, `description`, `section`, and
-///   `visibility` — create a new row.
+///   with the case ("Intake letter" and friends). The entry keeps its name and
+///   its folder: providing the file answers what the entry was already asking
+///   for rather than redefining it, and where it lands is read from the database
+///   rather than taken from the request.
+/// * `folder_id`, plus optional `name` and `description` — create a new entry in
+///   that folder. The folder decides the case and the audience, which is why
+///   there is nowhere to upload a file without first choosing one.
 ///
 /// The server re-validates every byte regardless of what the client claims:
 /// size cap, content-sniffed type allowlist, and a SHA-256 integrity hash. The
@@ -108,7 +112,7 @@ const ALLOWED_MIME: &[&str] = &[
 /// never leaves an orphaned blob or row.
 #[server(prefix = "/api", input = MultipartFormData)]
 pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnError> {
-    use crate::server::db::evidence as db;
+    use crate::server::db::{case_folders, evidence as db};
     use crate::server::permissions::{require_cap, require_user, require_visibility};
     use crate::server::storage;
     use crate::server_fns::capabilities::CaseCapability;
@@ -122,12 +126,10 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
         .into_inner()
         .ok_or_else(|| ServerFnError::new("Malformed upload."))?;
 
-    let mut case_id = String::new();
+    let mut folder_id = String::new();
     let mut target_id = String::new();
     let mut name = String::new();
     let mut description = String::new();
-    let mut section = String::new();
-    let mut visibility_slug = String::new();
     let mut filename: Option<String> = None;
     let mut bytes: Option<Vec<u8>> = None;
 
@@ -147,8 +149,8 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
                     .map_err(|e| ServerFnError::new(format!("Could not read file: {e}")))?;
                 bytes = Some(data.to_vec());
             }
-            Some("case_id") => {
-                case_id = field.text().await.unwrap_or_default();
+            Some("folder_id") => {
+                folder_id = field.text().await.unwrap_or_default();
             }
             Some("evidence_id") => {
                 target_id = field.text().await.unwrap_or_default();
@@ -159,12 +161,6 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
             Some("description") => {
                 description = field.text().await.unwrap_or_default();
             }
-            Some("section") => {
-                section = field.text().await.unwrap_or_default();
-            }
-            Some("visibility") => {
-                visibility_slug = field.text().await.unwrap_or_default();
-            }
             _ => {
                 let _ = field.bytes().await;
             }
@@ -172,7 +168,7 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
     }
 
     // An upload into an existing row takes everything about *where* it lands
-    // from that row, never from the request: the posted case id is not trusted.
+    // from that row's folder, never from the request.
     let target_id = target_id.trim().to_string();
     let target = if target_id.is_empty() {
         None
@@ -185,29 +181,20 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
         )
     };
 
-    let (case_id, section, visibility) = match &target {
-        Some(existing) => (
-            existing.case_id.clone(),
-            existing.section.clone(),
-            existing.visibility,
-        ),
-        None => {
-            let case_id = case_id.trim().to_string();
-            if case_id.is_empty() {
-                return Err(ServerFnError::new("Missing case id in upload."));
-            }
-            let visibility = if visibility_slug.trim().is_empty() {
-                Visibility::default()
-            } else {
-                Visibility::from_slug(visibility_slug.trim())
-                    .ok_or_else(|| ServerFnError::new("Unknown visibility."))?
-            };
-            (case_id, section.trim().to_string(), visibility)
-        }
+    let folder_id = match &target {
+        Some(existing) => existing.folder_id.clone(),
+        None => folder_id.trim().to_string(),
     };
+    if folder_id.is_empty() {
+        return Err(ServerFnError::new("Choose a folder to upload into."));
+    }
+    let folder = case_folders::get(&folder_id)
+        .await
+        .map_err(ServerFnError::new)?
+        .ok_or_else(|| ServerFnError::new("That folder no longer exists."))?;
 
-    require_cap(&user, &case_id, CaseCapability::UploadEvidence).await?;
-    require_visibility(&user, visibility)?;
+    require_cap(&user, &folder.case_id, CaseCapability::UploadEvidence).await?;
+    require_visibility(&user, folder.visibility)?;
 
     if !storage::is_configured() {
         return Err(ServerFnError::new(
@@ -242,6 +229,7 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
         Some(existing) => existing.id.clone(),
         None => db::reserve_id().await.map_err(ServerFnError::new)?,
     };
+    let case_id = folder.case_id.clone();
     let blob_path = storage::blob_path(&case_id, &evidence_id);
 
     let mut metadata = HashMap::new();
@@ -280,11 +268,9 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
                 &evidence_id,
                 &user.full_name(),
                 &db::NewEvidence {
-                    case_id: &case_id,
+                    folder: &folder,
                     name: &display_name,
                     description: description.trim(),
-                    section: &section,
-                    visibility,
                     file: Some(file),
                 },
             )
@@ -308,12 +294,12 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
         user.full_name(),
         crate::server_fns::settings::NotificationKind::EvidenceChanged,
         format!("uploaded \"{display_name}\""),
-        crate::server::notifications::audience_for(visibility),
+        crate::server::notifications::audience_for(folder.visibility),
     );
     Ok(evidence_id)
 }
 
-/// Add a file to a case without providing the file itself (requires the
+/// Add a file to a case folder without providing the file itself (requires the
 /// `UploadEvidence` capability) — a named entry listing a document the case is
 /// waiting on, which someone uploads into later. Returns the new evidence id.
 ///
@@ -321,19 +307,21 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
 /// demand means the list of expected paperwork is not frozen at case creation.
 #[server(prefix = "/api")]
 pub async fn add_case_file(
-    case_id: String,
+    folder_id: String,
     name: String,
     description: String,
-    section: String,
-    visibility: Visibility,
 ) -> Result<String, ServerFnError> {
-    use crate::server::db::{evidence as db, pool};
+    use crate::server::db::{case_folders, evidence as db, pool};
     use crate::server::permissions::{require_cap, require_user, require_visibility};
     use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
-    require_cap(&user, &case_id, CaseCapability::UploadEvidence).await?;
-    require_visibility(&user, visibility)?;
+    let folder = case_folders::get(&folder_id)
+        .await
+        .map_err(ServerFnError::new)?
+        .ok_or_else(|| ServerFnError::new("That folder no longer exists."))?;
+    require_cap(&user, &folder.case_id, CaseCapability::UploadEvidence).await?;
+    require_visibility(&user, folder.visibility)?;
 
     let name = name.trim().to_string();
     if name.is_empty() {
@@ -345,11 +333,9 @@ pub async fn add_case_file(
         &mut tx,
         &user.full_name(),
         &db::NewEvidence {
-            case_id: &case_id,
+            folder: &folder,
             name: &name,
             description: description.trim(),
-            section: section.trim(),
-            visibility,
             file: None,
         },
     )
@@ -358,14 +344,67 @@ pub async fn add_case_file(
     tx.commit().await.map_err(ServerFnError::new)?;
 
     crate::server::notifications::notify_case(
-        case_id,
+        folder.case_id,
         user.id.clone(),
         user.full_name(),
         crate::server_fns::settings::NotificationKind::EvidenceChanged,
         format!("asked for \"{name}\""),
-        crate::server::notifications::audience_for(visibility),
+        crate::server::notifications::audience_for(folder.visibility),
     );
     Ok(id)
+}
+
+/// Move a file into another folder on the same case (requires the
+/// `UploadEvidence` capability).
+///
+/// The destination folder is also what decides who can see the file, so the
+/// caller must be allowed to act on the audience it is coming *from* and the one
+/// it is going *to* — moving a volunteer-only document into the shared folder is
+/// a disclosure, and only someone who could have put it there directly may do it.
+///
+/// Nothing happens in Blob Storage: the folder tree lives in the database and
+/// the blob name is an opaque id, so a move is a single row update.
+#[server(prefix = "/api")]
+pub async fn move_case_evidence(
+    evidence_id: String,
+    folder_id: String,
+) -> Result<(), ServerFnError> {
+    use crate::server::db::{case_folders, evidence as db};
+    use crate::server::permissions::{require_cap, require_user, require_visibility};
+    use crate::server_fns::capabilities::CaseCapability;
+
+    let user = require_user().await?;
+    let existing = db::get(&evidence_id)
+        .await
+        .map_err(ServerFnError::new)?
+        .ok_or_else(|| ServerFnError::new("That file no longer exists."))?;
+    let folder = case_folders::get(&folder_id)
+        .await
+        .map_err(ServerFnError::new)?
+        .filter(|f| f.case_id == existing.case_id)
+        .ok_or_else(|| ServerFnError::new("That folder no longer exists."))?;
+
+    require_cap(&user, &existing.case_id, CaseCapability::UploadEvidence).await?;
+    require_visibility(&user, existing.visibility)?;
+    require_visibility(&user, folder.visibility)?;
+
+    if existing.folder_id == folder.id {
+        return Ok(());
+    }
+
+    db::move_to_folder(&evidence_id, &folder, &user.full_name())
+        .await
+        .map_err(ServerFnError::new)?;
+
+    crate::server::notifications::notify_case(
+        existing.case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::EvidenceChanged,
+        format!("moved \"{}\" into {}", existing.name, folder.name),
+        crate::server::notifications::audience_for(folder.visibility),
+    );
+    Ok(())
 }
 
 /// Remove a file from a case (requires the `DeleteEvidence` capability). Also

@@ -3,7 +3,7 @@
 //! logins keep working. Runs only when the database is empty.
 
 use crate::server::auth::hash_password;
-use crate::server::db::{case_properties, channels, evidence, ids, messages, pool, users};
+use crate::server::db::{case_folders, case_properties, channels, ids, messages, pool, users};
 use crate::server_fns::audit::ChangeLogEntry;
 use crate::server_fns::channels::{ChannelKind, DEFAULT_CHANNEL_NAME, VOLUNTEER_CHANNEL_NAME};
 use crate::server_fns::users::User;
@@ -28,7 +28,7 @@ pub async fn reseed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // resets the audit_log sequence so ids are reproducible across reseeds.
     sqlx::query(
         "TRUNCATE users, sessions, grants, cases, case_properties, case_notes,
-                  evidence, case_channels, messages, case_assignments, audit_log
+                  evidence, case_folders, case_channels, messages, case_assignments, audit_log
          RESTART IDENTITY CASCADE",
     )
     .execute(pool())
@@ -78,10 +78,11 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         channels::create_defaults(&mut conn, &c.id).await?;
         drop(conn);
 
-        // Seeded cases carry the same intake/outtake fields a case created
-        // through the app gets, so the demo data shows what a real case
+        // Seeded cases carry the same folders and intake/outtake fields a case
+        // created through the app gets, so the demo data shows what a real case
         // actually looks like rather than a simplified version of one.
         let mut tx = pool.begin().await?;
+        case_folders::create_for_new_case(&mut tx, &c.id).await?;
         case_properties::add_for_new_case(&mut tx, &c.id, c.properties.iter().cloned()).await?;
         tx.commit().await?;
 
@@ -99,11 +100,18 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await?;
         }
 
+        // The hand-written demo files are the client-facing kind, so they go in
+        // a folder the client can see.
+        let mut tx = pool.begin().await?;
+        let folder = case_folders::find_by_path_in(&mut tx, &c.id, &["Supporting Documents"])
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+        tx.commit().await?;
         for e in &c.evidence {
             sqlx::query(
                 "INSERT INTO evidence
                     (id, case_id, name, uploaded_by, uploaded_at, description,
-                     section, visibility)
+                     folder_id, visibility)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
             .bind(&e.id)
@@ -112,15 +120,11 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .bind(&e.uploaded_by)
             .bind(&e.uploaded_at)
             .bind(&e.description)
-            .bind(&e.section)
-            .bind(e.visibility.slug())
+            .bind(&folder.id)
+            .bind(folder.visibility.slug())
             .execute(pool)
             .await?;
         }
-
-        let mut tx = pool.begin().await?;
-        evidence::add_for_new_case(&mut tx, &c.id, &c.owner_id).await?;
-        tx.commit().await?;
 
         insert_audit(&c.id, "case", &Vec::<ChangeLogEntry>::new()).await?;
     }

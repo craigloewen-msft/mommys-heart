@@ -1,8 +1,9 @@
 //! Cases, sub properties of evidence and case_properties are their own files
 
-use crate::helpers::new_case_fields;
+use crate::helpers::new_case_folders;
 use crate::server::db::{
-    audit, capabilities, case_properties, channels, evidence, ids, now_stamp, pool, users,
+    audit, capabilities, case_folders, case_properties, channels, evidence, ids, now_stamp, pool,
+    users,
 };
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
@@ -298,6 +299,7 @@ pub async fn get(
         .collect();
 
     let evidence = evidence::get_case_evidence(id, has_volunteer_access).await?;
+    let folders = case_folders::list(id, has_volunteer_access).await?;
     let properties = case_properties::get_case_properties(id, has_volunteer_access).await?;
 
     Ok(Some(Case {
@@ -307,6 +309,7 @@ pub async fn get(
         owner_id: row.owner_id,
         notes,
         evidence,
+        folders,
         properties,
         message_count: 0,
         capabilities: capabilities::get_single_case(user_id, id).await?,
@@ -340,11 +343,14 @@ pub async fn create(
     // exist without somewhere to chat.
     channels::create_defaults(&mut *tx, &id).await?;
 
+    // Likewise its standing folder tree, which everything filed on the case
+    // hangs from.
+    case_folders::create_for_new_case(&mut tx, &id).await?;
+
     // The fields every case starts with come first, so the standing paperwork
     // sits above whatever the creator typed in.
     case_properties::add_for_new_case(&mut tx, &id, case_properties::clean(initial_properties))
         .await?;
-    evidence::add_for_new_case(&mut tx, &id, owner_name).await?;
 
     if let Some(body) = first_note {
         let body = body.trim().to_string();
@@ -388,18 +394,25 @@ pub async fn create_from_signup_in(
         .execute(&mut **tx)
         .await?;
     channels::create_defaults(&mut **tx, case_id).await?;
+    case_folders::create_for_new_case(tx, case_id).await?;
     case_properties::add_for_new_case(tx, case_id, case_properties::clean(initial_properties))
         .await?;
-    // A signup case is created with the same standard rows as any other, then the
-    // agreement staged during signup is dropped into its "Signed service
-    // agreement" slot — no signup-only evidence path.
-    evidence::add_for_new_case(tx, case_id, owner_name).await?;
-    evidence::set_file_in(
+    // A signup case is created with the same standard folders as any other, then
+    // the agreement staged during signup is filed in the one that holds it — no
+    // signup-only evidence path.
+    let folder =
+        case_folders::find_by_path_in(tx, case_id, &new_case_folders::SERVICE_AGREEMENT_PATH)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+    evidence::insert_in(
         tx,
-        case_id,
-        new_case_fields::SIGNED_SERVICE_AGREEMENT_LABEL,
         owner_name,
-        &agreement,
+        &evidence::NewEvidence {
+            folder: &folder,
+            name: new_case_folders::SIGNED_SERVICE_AGREEMENT_LABEL,
+            description: "",
+            file: Some(agreement),
+        },
     )
     .await?;
     users::assign_capabilities_in(tx, owner_id, case_id, &CaseCapability::ALL, owner_name).await?;

@@ -9,17 +9,21 @@
 //! provided, and [`set_file`] fills them in later. There is no second kind of
 //! evidence and no separate table — which is what lets a case be created already
 //! listing the documents it is waiting on.
+//!
+//! Every row lives in one of the case's folders ([`crate::server::db::case_folders`]),
+//! and the folder is what decides the row's case and audience: both are read off
+//! the folder on insert and on move, never taken from a caller.
 
-use crate::helpers::new_case_fields;
 use crate::helpers::visibility::Visibility;
 use crate::server::db::{audit, ids, now_stamp, pool};
+use crate::server_fns::case_folders::CaseFolder;
 use crate::server_fns::evidence::Evidence;
 
 /// The columns needed to hydrate an [`Evidence`], in a fixed order so every
 /// query selects exactly the same shape.
 const COLUMNS: &str = "id, name, case_id, uploaded_by, uploaded_at, description,
      original_filename, content_type, size_bytes, sha256, blob_path,
-     section, visibility";
+     folder_id, visibility";
 
 /// Flat row shape for hydrating [`Evidence`] from the `evidence` table.
 #[derive(sqlx::FromRow)]
@@ -35,7 +39,7 @@ struct EvidenceRow {
     size_bytes: i64,
     sha256: String,
     blob_path: String,
-    section: String,
+    folder_id: String,
     visibility: String,
 }
 
@@ -53,7 +57,7 @@ impl EvidenceRow {
             size_bytes: self.size_bytes,
             sha256: self.sha256,
             has_file: !self.blob_path.is_empty(),
-            section: self.section,
+            folder_id: self.folder_id,
             visibility: Visibility::from_slug(&self.visibility).unwrap_or_default(),
         }
     }
@@ -68,14 +72,15 @@ pub struct EvidenceFile<'a> {
     pub blob_path: &'a str,
 }
 
-/// A new piece of evidence on a case. `file` is `None` when it has been named
-/// but no file has been provided yet.
+/// A new piece of evidence, going into `folder`. `file` is `None` when it has
+/// been named but no file has been provided yet.
+///
+/// The folder carries the case and the audience, so neither can be passed in
+/// disagreeing with where the file actually lands.
 pub struct NewEvidence<'a> {
-    pub case_id: &'a str,
+    pub folder: &'a CaseFolder,
     pub name: &'a str,
     pub description: &'a str,
-    pub section: &'a str,
-    pub visibility: Visibility,
     pub file: Option<EvidenceFile<'a>>,
 }
 
@@ -123,7 +128,7 @@ pub async fn add(id: &str, added_by: &str, new: &NewEvidence<'_>) -> Result<(), 
     audit::record(
         pool(),
         audit::Entity::Case,
-        new.case_id,
+        &new.folder.case_id,
         added_by,
         "evidence",
         "",
@@ -156,11 +161,11 @@ async fn insert(
         "INSERT INTO evidence
             (id, case_id, name, uploaded_by, uploaded_at, description,
              original_filename, content_type, size_bytes, sha256, blob_path,
-             section, visibility)
+             folder_id, visibility)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(id)
-    .bind(new.case_id)
+    .bind(&new.folder.case_id)
     .bind(new.name)
     .bind(added_by)
     .bind(now_stamp())
@@ -170,81 +175,19 @@ async fn insert(
     .bind(file.map(|f| f.size_bytes).unwrap_or_default())
     .bind(file.map(|f| f.sha256).unwrap_or_default())
     .bind(file.map(|f| f.blob_path).unwrap_or_default())
-    .bind(new.section)
-    .bind(new.visibility.slug())
+    .bind(&new.folder.id)
+    .bind(new.folder.visibility.slug())
     .execute(&mut **tx)
     .await?;
     Ok(())
 }
 
-/// Add the evidence a new case starts with, from
-/// [`VOLUNTEER_ONLY_FIELDS`](crate::helpers::new_case_fields::VOLUNTEER_ONLY_FIELDS):
-/// each one named, with no file in it yet.
-pub async fn add_for_new_case(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    case_id: &str,
-    added_by: &str,
-) -> Result<(), sqlx::Error> {
-    for field in new_case_fields::volunteer_only_files() {
-        insert_in(
-            tx,
-            added_by,
-            &NewEvidence {
-                case_id,
-                name: field.label,
-                description: field.description,
-                section: field.section,
-                visibility: Visibility::VolunteerOnly,
-                file: None,
-            },
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-/// Put a file into an existing, still-empty evidence slot inside a transaction,
-/// identified by its case and name. The transaction-scoped sibling of
-/// [`set_file`]: it lets a case be created and one of its standing slots filled
-/// (public signup stages the signed agreement up front) in a single atomic step.
-/// Errors if the named slot does not exist so a staged file can never be
-/// silently dropped.
-pub async fn set_file_in(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    case_id: &str,
-    name: &str,
-    uploaded_by: &str,
-    file: &EvidenceFile<'_>,
-) -> Result<(), sqlx::Error> {
-    let affected = sqlx::query(
-        "UPDATE evidence SET uploaded_by = $3, uploaded_at = $4, original_filename = $5,
-                content_type = $6, size_bytes = $7, sha256 = $8, blob_path = $9
-         WHERE case_id = $1 AND name = $2",
-    )
-    .bind(case_id)
-    .bind(name)
-    .bind(uploaded_by)
-    .bind(now_stamp())
-    .bind(file.original_filename)
-    .bind(file.content_type)
-    .bind(file.size_bytes)
-    .bind(file.sha256)
-    .bind(file.blob_path)
-    .execute(&mut **tx)
-    .await?
-    .rows_affected();
-    if affected == 0 {
-        return Err(sqlx::Error::RowNotFound);
-    }
-    Ok(())
-}
-
 /// Put a file into an existing piece of evidence, auditing it.
 ///
-/// The row's `name`, `description`, `section`, and `visibility` are left alone:
-/// providing the file answers what the entry was already asking for, it does not
-/// redefine the entry. Returns the blob path the row held before (empty when it
-/// had no file), so a replacement upload can clean up the blob it superseded.
+/// The row's `name`, `description`, and folder are left alone: providing the
+/// file answers what the entry was already asking for, it does not redefine the
+/// entry. Returns the blob path the row held before (empty when it had no file),
+/// so a replacement upload can clean up the blob it superseded.
 pub async fn set_file(
     evidence_id: &str,
     uploaded_by: &str,
@@ -298,6 +241,40 @@ pub async fn blob_path(case_id: &str, evidence_id: &str) -> Result<Option<String
             .fetch_optional(pool())
             .await?;
     Ok(path)
+}
+
+/// Move a piece of evidence into another folder, auditing it.
+///
+/// The destination folder supplies the new audience, so a move is also how a
+/// file changes who can see it. The stored bytes are not involved: `blob_path`
+/// names them by id, not by where they sit in the tree.
+pub async fn move_to_folder(
+    evidence_id: &str,
+    folder: &CaseFolder,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let name: Option<String> = sqlx::query_scalar(
+        "UPDATE evidence SET folder_id = $2, visibility = $3
+         WHERE id = $1 RETURNING name",
+    )
+    .bind(evidence_id)
+    .bind(&folder.id)
+    .bind(folder.visibility.slug())
+    .fetch_optional(pool())
+    .await?;
+    let Some(name) = name else {
+        return Err(sqlx::Error::RowNotFound);
+    };
+    audit::record(
+        pool(),
+        audit::Entity::Case,
+        &folder.case_id,
+        actor,
+        "evidence",
+        &name,
+        &format!("{name} \u{2192} {}", folder.name),
+    )
+    .await
 }
 
 /// The download filename + content type recorded for a piece of evidence, used

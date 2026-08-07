@@ -528,7 +528,9 @@ pub fn cases() -> Vec<Case> {
                         size_bytes: 0,
                         sha256: String::new(),
                         has_file: false,
-                        section: String::new(),
+                        // The seeder resolves the real folder id when it writes
+                        // these rows; the fixtures themselves carry no ids.
+                        folder_id: String::new(),
                         visibility: Visibility::Shared,
                     }
                 })
@@ -540,6 +542,7 @@ pub fn cases() -> Vec<Case> {
                 owner_id: user_id((sc.owner - 1) as usize),
                 notes,
                 evidence,
+                folders: Vec::new(),
                 properties: vec![
                     prop("Court", "Springfield Family Court"),
                     prop("Docket", sc.docket),

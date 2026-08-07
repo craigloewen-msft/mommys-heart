@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::helpers::case_intake::CaseIntake;
 use crate::server_fns::capabilities::CaseCapability;
+use crate::server_fns::case_folders::CaseFolder;
 use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::evidence::Evidence;
 use crate::server_fns::message::Message;
@@ -79,6 +80,10 @@ pub struct Case {
     /// Evidence gathered for this case.
     #[serde(default)]
     pub evidence: Vec<Evidence>,
+    /// The folders the evidence is organized into, creation order. Only the
+    /// folders the viewer may see are included.
+    #[serde(default)]
+    pub folders: Vec<CaseFolder>,
     /// Free-form case properties (e.g. "Opposing attorney" -> "J. Smith").
     #[serde(default)]
     pub properties: Vec<CaseProperty>,

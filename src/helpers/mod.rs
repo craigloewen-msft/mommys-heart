@@ -12,5 +12,6 @@
 pub mod case_intake;
 pub mod format;
 pub mod new_case_fields;
+pub mod new_case_folders;
 pub mod sections;
 pub mod visibility;

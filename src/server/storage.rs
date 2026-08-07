@@ -42,6 +42,11 @@ pub fn container() -> Result<&'static BlobContainerClient, String> {
 /// The blob name for a piece of evidence: `cases/{case_id}/{evidence_id}`. Both
 /// components are server-issued opaque ids, so the name is collision-free and
 /// carries no user-controlled path segments.
+///
+/// It deliberately does *not* mirror the case's folder tree. Folders are what
+/// people organize, and they live in the database; the container is just where
+/// the bytes sit, which is what lets a file move between folders without
+/// touching storage at all.
 pub fn blob_path(case_id: &str, evidence_id: &str) -> String {
     format!("cases/{case_id}/{evidence_id}")
 }
