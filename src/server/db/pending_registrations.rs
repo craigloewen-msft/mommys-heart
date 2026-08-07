@@ -32,12 +32,10 @@ pub struct PendingCaseSignup {
     pub case_id: String,
     pub case_name: String,
     pub intake_json: String,
-    pub agreement_evidence_id: String,
-    pub agreement_original_filename: String,
-    pub agreement_content_type: String,
-    pub agreement_size_bytes: i64,
-    pub agreement_sha256: String,
-    pub agreement_blob_path: String,
+    /// The version of the Terms and Conditions the client accepted before
+    /// filling in the case form. Recorded against the user and case once the
+    /// email code verifies.
+    pub terms_version: String,
 }
 
 /// Everything needed to materialize a verified registration.
@@ -60,12 +58,7 @@ struct PendingRow {
     case_id: String,
     case_name: String,
     intake_json: String,
-    agreement_evidence_id: String,
-    agreement_original_filename: String,
-    agreement_content_type: String,
-    agreement_size_bytes: i64,
-    agreement_sha256: String,
-    agreement_blob_path: String,
+    terms_version: String,
 }
 
 impl PendingAccount {
@@ -120,7 +113,8 @@ pub async fn create(
     Ok(())
 }
 
-/// Persist a pending registration with its already-staged signed agreement.
+/// Persist a pending registration together with the case it will create and the
+/// terms version the client accepted on the way in.
 pub async fn create_case_signup(
     challenge_token: &str,
     account: &PendingAccount,
@@ -131,10 +125,8 @@ pub async fn create_case_signup(
     sqlx::query(
         "INSERT INTO pending_registrations
              (challenge_hash, first_name, last_name, email, password_hash, code_hash, expires_at,
-              create_case, case_id, case_name, intake_json, agreement_evidence_id,
-              agreement_original_filename, agreement_content_type, agreement_size_bytes,
-              agreement_sha256, agreement_blob_path)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+              create_case, case_id, case_name, intake_json, terms_version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11)",
     )
     .bind(hash(challenge_token))
     .bind(&account.first_name)
@@ -146,12 +138,7 @@ pub async fn create_case_signup(
     .bind(&signup.case_id)
     .bind(&signup.case_name)
     .bind(&signup.intake_json)
-    .bind(&signup.agreement_evidence_id)
-    .bind(&signup.agreement_original_filename)
-    .bind(&signup.agreement_content_type)
-    .bind(signup.agreement_size_bytes)
-    .bind(&signup.agreement_sha256)
-    .bind(&signup.agreement_blob_path)
+    .bind(&signup.terms_version)
     .execute(pool())
     .await?;
     Ok(())
@@ -187,7 +174,7 @@ pub enum Verify {
     WrongCode,
     /// No live challenge exists for this token (missing, expired, or already
     /// consumed / burned by too many attempts).
-    Expired(Option<String>),
+    Expired,
 }
 
 /// Verify `code` against the pending registration identified by
@@ -205,9 +192,7 @@ pub async fn verify_in(
     let row = sqlx::query_as::<_, PendingRow>(
         "SELECT first_name, last_name, email, password_hash, code_hash, attempts,
                 expires_at > now() AS is_live, create_case, case_id, case_name, intake_json,
-                agreement_evidence_id,
-                agreement_original_filename, agreement_content_type, agreement_size_bytes,
-                agreement_sha256, agreement_blob_path
+                terms_version
          FROM pending_registrations
          WHERE challenge_hash = $1
          FOR UPDATE",
@@ -217,7 +202,7 @@ pub async fn verify_in(
     .await?;
 
     let Some(row) = row else {
-        return Ok(Verify::Expired(None));
+        return Ok(Verify::Expired);
     };
 
     if !row.is_live {
@@ -225,9 +210,7 @@ pub async fn verify_in(
             .bind(&challenge_hash)
             .execute(&mut **tx)
             .await?;
-        return Ok(Verify::Expired(
-            row.create_case.then_some(row.agreement_blob_path),
-        ));
+        return Ok(Verify::Expired);
     }
 
     if row.code_hash == hash(code) {
@@ -239,12 +222,7 @@ pub async fn verify_in(
             case_id: row.case_id,
             case_name: row.case_name,
             intake_json: row.intake_json,
-            agreement_evidence_id: row.agreement_evidence_id,
-            agreement_original_filename: row.agreement_original_filename,
-            agreement_content_type: row.agreement_content_type,
-            agreement_size_bytes: row.agreement_size_bytes,
-            agreement_sha256: row.agreement_sha256,
-            agreement_blob_path: row.agreement_blob_path,
+            terms_version: row.terms_version,
         });
         return Ok(Verify::Ok(PendingRegistration {
             account: PendingAccount {
@@ -262,9 +240,7 @@ pub async fn verify_in(
             .bind(&challenge_hash)
             .execute(&mut **tx)
             .await?;
-        return Ok(Verify::Expired(
-            row.create_case.then_some(row.agreement_blob_path),
-        ));
+        return Ok(Verify::Expired);
     }
 
     sqlx::query(
@@ -277,25 +253,20 @@ pub async fn verify_in(
 }
 
 /// Delete a pending registration (best-effort cleanup, e.g. on abandon).
-pub async fn delete(challenge_token: &str) -> Result<Option<String>, sqlx::Error> {
-    let path = sqlx::query_scalar(
-        "DELETE FROM pending_registrations WHERE challenge_hash = $1
-         RETURNING CASE WHEN create_case THEN agreement_blob_path ELSE NULL END",
-    )
-    .bind(hash(challenge_token))
-    .fetch_optional(pool())
-    .await?;
-    Ok(path.flatten())
+pub async fn delete(challenge_token: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM pending_registrations WHERE challenge_hash = $1")
+        .bind(hash(challenge_token))
+        .execute(pool())
+        .await?;
+    Ok(())
 }
 
-/// Delete every expired pending registration, returning staged blob paths for
-/// opportunistic storage cleanup by the caller.
-pub async fn delete_expired() -> Result<Vec<String>, sqlx::Error> {
-    let paths: Vec<Option<String>> = sqlx::query_scalar(
-        "DELETE FROM pending_registrations WHERE expires_at <= now()
-         RETURNING CASE WHEN create_case THEN agreement_blob_path ELSE NULL END",
-    )
-    .fetch_all(pool())
-    .await?;
-    Ok(paths.into_iter().flatten().collect())
+/// Delete every expired pending registration. Nothing outside the row needs
+/// cleaning up any more: an abandoned signup now leaves no staged file behind,
+/// only the row itself.
+pub async fn delete_expired() -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM pending_registrations WHERE expires_at <= now()")
+        .execute(pool())
+        .await?;
+    Ok(())
 }

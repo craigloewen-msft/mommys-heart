@@ -53,6 +53,7 @@ web-sys = { version = "0.3", optional = true, features = [
     "FileList",
     "FormData",
     "HtmlInputElement",
+    "Storage",
 ] }
 
 serde = { version = "1", features = ["derive"] }

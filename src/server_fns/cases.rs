@@ -95,6 +95,12 @@ pub struct Case {
     /// read it directly rather than caching per-case rights in client state.
     #[serde(default)]
     pub capabilities: Vec<CaseCapability>,
+    /// When the client accepted the Terms and Conditions to open this case, and
+    /// which version they accepted — `None` for cases opened by staff, which
+    /// never went through the public signup. Pre-formatted for display because
+    /// it is only ever shown, never compared.
+    #[serde(default)]
+    pub terms_accepted: Option<String>,
 }
 
 /// A sparse view of a case for list/directory screens: the header fields only

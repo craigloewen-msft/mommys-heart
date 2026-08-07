@@ -2,7 +2,6 @@
 //! login, MFA verification, logout, and self-service password reset.
 
 use leptos::prelude::*;
-use leptos::server_fn::codec::{MultipartData, MultipartFormData};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "ssr")]
@@ -41,22 +40,15 @@ async fn request_cookie(name: &str) -> Option<String> {
         .and_then(|jar| jar.get(name).map(|c| c.value().to_string()))
 }
 
-/// Opportunistically remove abandoned registration rows and their staged
-/// agreement blobs whenever somebody starts a fresh signup.
+/// Opportunistically remove abandoned registration rows whenever somebody starts
+/// a fresh signup. An abandoned signup no longer leaves a staged file behind, so
+/// deleting the row is the whole cleanup.
 #[cfg(feature = "ssr")]
 async fn cleanup_expired_registrations() {
     use crate::server::db::pending_registrations;
-    use crate::server::storage;
 
-    match pending_registrations::delete_expired().await {
-        Ok(paths) => {
-            for path in paths {
-                if let Err(error) = storage::delete(&path).await {
-                    tracing::warn!("failed to clean abandoned signup blob '{path}': {error}");
-                }
-            }
-        }
-        Err(error) => tracing::warn!("failed to prune expired registrations: {error}"),
+    if let Err(error) = pending_registrations::delete_expired().await {
+        tracing::warn!("failed to prune expired registrations: {error}");
     }
 }
 
@@ -262,7 +254,6 @@ pub async fn register(
     use crate::server::db::pending_registrations::{self, PendingAccount};
     use crate::server::db::{throttle, users};
     use crate::server::email::auth_notifications as auth_email;
-    use crate::server::storage;
 
     cleanup_expired_registrations().await;
 
@@ -320,78 +311,35 @@ pub async fn register(
         ));
     }
     if let Some(previous_challenge) = request_cookie(REGISTER_COOKIE_NAME).await {
-        if let Ok(Some(previous_blob)) = pending_registrations::delete(&previous_challenge).await {
-            let _ = storage::delete(&previous_blob).await;
-        }
+        let _ = pending_registrations::delete(&previous_challenge).await;
     }
     append_cookie(build_register_cookie(challenge))?;
     Ok(())
 }
 
-/// Begin a client signup that will create both an account and a case after
-/// email verification. The signed agreement is staged at its final blob path;
-/// its database row remains pending until [`verify_registration`] commits the
-/// complete account and case transaction.
-#[server(prefix = "/api", input = MultipartFormData)]
-pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnError> {
+/// Begin a client signup that will create both an account and a case after email
+/// verification. The client has already accepted the Terms and Conditions to
+/// reach this form; `terms_version` says which wording they were shown, and is
+/// carried on the pending row so the acceptance is recorded only if the
+/// registration actually completes.
+#[server(prefix = "/api")]
+pub async fn register_case_signup(
+    first_name: String,
+    last_name: String,
+    email: String,
+    password: String,
+    password_confirmation: String,
+    intake_json: String,
+    terms_version: String,
+) -> Result<(), ServerFnError> {
     use crate::server::auth::{
         build_register_cookie, generate_code, generate_token, hash_password, REGISTER_COOKIE_NAME,
     };
     use crate::server::db::pending_registrations::{self, PendingAccount, PendingCaseSignup};
-    use crate::server::db::{evidence, ids, pool, throttle, users};
+    use crate::server::db::{ids, pool, throttle, users};
     use crate::server::email::auth_notifications as auth_email;
-    use crate::server::storage;
-    use sha2::{Digest, Sha256};
-    use std::collections::HashMap;
 
     cleanup_expired_registrations().await;
-
-    let mut multipart = data
-        .into_inner()
-        .ok_or_else(|| ServerFnError::new("Malformed signup form."))?;
-    let mut first_name = String::new();
-    let mut last_name = String::new();
-    let mut email = String::new();
-    let mut password = String::new();
-    let mut password_confirmation = String::new();
-    let mut intake_json = String::new();
-    let mut agreement_filename = None;
-    let mut agreement_bytes = None;
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|error| ServerFnError::new(format!("Malformed signup form: {error}")))?
-    {
-        let field_name = field.name().map(str::to_owned);
-        let file_name = field.file_name().map(str::to_owned);
-        match field_name.as_deref() {
-            Some("agreement") => {
-                agreement_filename =
-                    Some(file_name.unwrap_or_else(|| "agreement.docx".to_string()));
-                agreement_bytes = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map_err(|error| {
-                            ServerFnError::new(format!("Could not read signed agreement: {error}"))
-                        })?
-                        .to_vec(),
-                );
-            }
-            Some("first_name") => first_name = field.text().await.unwrap_or_default(),
-            Some("last_name") => last_name = field.text().await.unwrap_or_default(),
-            Some("email") => email = field.text().await.unwrap_or_default(),
-            Some("password") => password = field.text().await.unwrap_or_default(),
-            Some("password_confirmation") => {
-                password_confirmation = field.text().await.unwrap_or_default()
-            }
-            Some("intake_json") => intake_json = field.text().await.unwrap_or_default(),
-            _ => {
-                let _ = field.bytes().await;
-            }
-        }
-    }
 
     let first_name = first_name.trim().to_string();
     let last_name = last_name.trim().to_string();
@@ -404,28 +352,20 @@ pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnErr
     if password != password_confirmation {
         return Err(ServerFnError::new("The passwords do not match."));
     }
+
+    // Consent is checked here, not just in the browser: a form posted without
+    // the current terms version never saw the wording it claims to accept.
+    if !crate::helpers::terms::is_current(terms_version.trim()) {
+        return Err(ServerFnError::new(
+            "Please read and accept the Terms and Conditions before submitting your case.",
+        ));
+    }
+    let terms_version = terms_version.trim().to_string();
+
     let intake: CaseIntake = serde_json::from_str(&intake_json)
         .map_err(|_| ServerFnError::new("The case information could not be read."))?;
     intake.validate().map_err(ServerFnError::new)?;
     let intake_json = serde_json::to_string(&intake).map_err(ServerFnError::new)?;
-
-    let (agreement_filename, agreement_bytes) = match (agreement_filename, agreement_bytes) {
-        (Some(filename), Some(bytes)) => (filename, bytes),
-        _ => return Err(ServerFnError::new("Please upload the signed agreement.")),
-    };
-    let agreement_filename = crate::server_fns::evidence::sanitize_filename(&agreement_filename);
-    if !agreement_filename.to_ascii_lowercase().ends_with(".docx") {
-        return Err(ServerFnError::new(
-            "The signed agreement must be uploaded as a .docx file.",
-        ));
-    }
-    let content_type =
-        crate::server_fns::evidence::validate_docx(&agreement_bytes).map_err(ServerFnError::new)?;
-    if !storage::is_configured() {
-        return Err(ServerFnError::new(
-            "Agreement storage is not configured on this server.",
-        ));
-    }
 
     if let Some(seconds) = throttle::seconds_locked(throttle::Action::Register, &email)
         .await
@@ -455,50 +395,22 @@ pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnErr
         password_hash,
     };
     let case_id = ids::next(pool(), "c").await.map_err(ServerFnError::new)?;
-    let agreement_evidence_id = evidence::reserve_id().await.map_err(ServerFnError::new)?;
-    let agreement_blob_path = storage::blob_path(&case_id, &agreement_evidence_id);
-    let agreement_sha256 = hex::encode(Sha256::digest(&agreement_bytes));
-    let agreement_size_bytes = agreement_bytes.len() as i64;
-
-    let mut metadata = HashMap::new();
-    metadata.insert("case_id".to_string(), case_id.clone());
-    metadata.insert("evidence_id".to_string(), agreement_evidence_id.clone());
-    metadata.insert("uploaded_by".to_string(), account.full_name());
-    metadata.insert("sha256".to_string(), agreement_sha256.clone());
-    storage::put(
-        &agreement_blob_path,
-        agreement_bytes,
-        content_type,
-        metadata,
-    )
-    .await
-    .map_err(|error| ServerFnError::new(format!("Storage error: {error}")))?;
-
     let signup = PendingCaseSignup {
         case_id,
         case_name: format!("{} case", account.full_name()),
         intake_json,
-        agreement_evidence_id,
-        agreement_original_filename: agreement_filename,
-        agreement_content_type: content_type.to_string(),
-        agreement_size_bytes,
-        agreement_sha256,
-        agreement_blob_path: agreement_blob_path.clone(),
+        terms_version,
     };
     let challenge = generate_token();
     let code = generate_code();
-    if let Err(error) =
-        pending_registrations::create_case_signup(&challenge, &account, &signup, &code).await
-    {
-        let _ = storage::delete(&agreement_blob_path).await;
-        return Err(ServerFnError::new(error));
-    }
+    pending_registrations::create_case_signup(&challenge, &account, &signup, &code)
+        .await
+        .map_err(ServerFnError::new)?;
 
     if let Err(error) =
         auth_email::send_email_verification(&email, &account.full_name(), &code).await
     {
         let _ = pending_registrations::delete(&challenge).await;
-        let _ = storage::delete(&agreement_blob_path).await;
         tracing::warn!("failed to send verification code to {email}: {error}");
         return Err(ServerFnError::new(
             "We couldn't send your verification code. Please try again.",
@@ -506,11 +418,7 @@ pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnErr
     }
 
     if let Some(previous_challenge) = request_cookie(REGISTER_COOKIE_NAME).await {
-        if let Ok(Some(previous_blob)) = pending_registrations::delete(&previous_challenge).await {
-            if previous_blob != agreement_blob_path {
-                let _ = storage::delete(&previous_blob).await;
-            }
-        }
+        let _ = pending_registrations::delete(&previous_challenge).await;
     }
     append_cookie(build_register_cookie(challenge))?;
     Ok(())
@@ -522,7 +430,7 @@ pub async fn register_case_signup(data: MultipartData) -> Result<(), ServerFnErr
 pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
     use crate::server::auth::{build_session_cookie, clear_register_cookie, REGISTER_COOKIE_NAME};
     use crate::server::db::pending_registrations::{self, Verify};
-    use crate::server::db::{cases, evidence, pool, sessions, throttle, users};
+    use crate::server::db::{cases, pool, sessions, throttle, users};
     use crate::server_fns::users::AccountRole;
 
     let code = code.trim();
@@ -542,13 +450,8 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
                 "That code is incorrect. Please try again.",
             ));
         }
-        Verify::Expired(blob_path) => {
+        Verify::Expired => {
             tx.commit().await.map_err(ServerFnError::new)?;
-            if let Some(blob_path) = blob_path {
-                if let Err(error) = crate::server::storage::delete(&blob_path).await {
-                    tracing::warn!("failed to clean expired signup blob '{blob_path}': {error}");
-                }
-            }
             append_cookie(clear_register_cookie())?;
             return Err(ServerFnError::new(
                 "Your code has expired. Please register again.",
@@ -556,10 +459,6 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
         }
     };
     let account = &pending.account;
-    let staged_blob = pending
-        .case_signup
-        .as_ref()
-        .map(|signup| signup.agreement_blob_path.clone());
     let signup_notification_details = pending.case_signup.as_ref().map(|signup| {
         (
             account.full_name(),
@@ -577,13 +476,6 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
             .map_err(ServerFnError::new)?;
     if email_exists {
         tx.commit().await.map_err(ServerFnError::new)?;
-        if let Some(staged_blob) = staged_blob {
-            if let Err(error) = crate::server::storage::delete(&staged_blob).await {
-                tracing::warn!(
-                    "failed to clean claimed-email signup blob '{staged_blob}': {error}"
-                );
-            }
-        }
         append_cookie(clear_register_cookie())?;
         return Err(ServerFnError::new(
             "An account with that email already exists.",
@@ -617,13 +509,7 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
             &account.full_name(),
             &signup.case_name,
             intake.properties(),
-            evidence::EvidenceFile {
-                original_filename: &signup.agreement_original_filename,
-                content_type: &signup.agreement_content_type,
-                size_bytes: signup.agreement_size_bytes,
-                sha256: &signup.agreement_sha256,
-                blob_path: &signup.agreement_blob_path,
-            },
+            &signup.terms_version,
         )
         .await
         .map_err(ServerFnError::new)?;
@@ -665,9 +551,7 @@ pub async fn resend_registration_code() -> Result<(), ServerFnError> {
     {
         Some(account) => account,
         None => {
-            if let Ok(Some(path)) = pending_registrations::delete(&challenge).await {
-                let _ = crate::server::storage::delete(&path).await;
-            }
+            let _ = pending_registrations::delete(&challenge).await;
             return Err(ServerFnError::new(
                 "Your sign-up session expired. Please register again.",
             ));

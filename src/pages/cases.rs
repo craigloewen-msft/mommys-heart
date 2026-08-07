@@ -1539,6 +1539,7 @@ fn CaseDetail(
         if !editing.get() || !can_edit {
             let owner_name = owner_name.get_value();
             let status = c.status;
+            let terms_accepted = c.terms_accepted.clone();
             let edit_controls = if editing.get() {
                 view! {
                     <div class="flex shrink-0 items-center gap-2">
@@ -1579,6 +1580,11 @@ fn CaseDetail(
                                 "Filed by "
                                 <ProfileLink user_id=c.owner_id.clone() name=owner_name />
                             </p>
+                            {terms_accepted.map(|accepted| view! {
+                                <p class="mt-1 text-xs text-slate-500">
+                                    "Terms accepted " {accepted}
+                                </p>
+                            })}
                         </div>
                         <div class="flex shrink-0 items-center gap-2">
                             <span class=badge(status.badge_classes())>{status.label()}</span>

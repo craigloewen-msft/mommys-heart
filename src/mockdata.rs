@@ -549,6 +549,7 @@ pub fn cases() -> Vec<Case> {
                 ],
                 message_count: MESSAGES.iter().filter(|(case, ..)| *case == n).count(),
                 capabilities: Vec::new(),
+                terms_accepted: None,
             }
         })
         .collect()

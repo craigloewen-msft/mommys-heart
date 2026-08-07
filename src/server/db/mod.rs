@@ -23,6 +23,7 @@ pub mod pending_registrations;
 pub mod seed;
 pub mod sessions;
 pub mod settings;
+pub mod terms_acceptances;
 pub mod throttle;
 pub mod trusted_devices;
 pub mod users;

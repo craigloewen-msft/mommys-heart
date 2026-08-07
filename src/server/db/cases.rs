@@ -1,9 +1,8 @@
 //! Cases, sub properties of evidence and case_properties are their own files
 
-use crate::helpers::new_case_folders;
 use crate::server::db::{
     audit, capabilities, case_folders, case_properties, channels, evidence, ids, now_stamp, pool,
-    users,
+    terms_acceptances, users,
 };
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
@@ -301,6 +300,16 @@ pub async fn get(
     let evidence = evidence::get_case_evidence(id, has_volunteer_access).await?;
     let folders = case_folders::list(id, has_volunteer_access).await?;
     let properties = case_properties::get_case_properties(id, has_volunteer_access).await?;
+    let terms_accepted = terms_acceptances::for_case(id).await?.map(|acceptance| {
+        format!(
+            "{} (version {})",
+            acceptance
+                .accepted_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M"),
+            acceptance.terms_version
+        )
+    });
 
     Ok(Some(Case {
         id: row.id,
@@ -313,6 +322,7 @@ pub async fn get(
         properties,
         message_count: 0,
         capabilities: capabilities::get_single_case(user_id, id).await?,
+        terms_accepted,
     }))
 }
 
@@ -374,9 +384,8 @@ pub async fn create(
     Ok(id)
 }
 
-/// Materialize the case reserved during public signup inside the caller's
-/// account-verification transaction.
-#[allow(clippy::too_many_arguments)]
+/// Create the case a verified public signup asked for, inside the same
+/// transaction that creates the account.
 pub async fn create_from_signup_in(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     case_id: &str,
@@ -384,7 +393,7 @@ pub async fn create_from_signup_in(
     owner_name: &str,
     name: &str,
     initial_properties: Vec<CaseProperty>,
-    agreement: evidence::EvidenceFile<'_>,
+    terms_version: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("INSERT INTO cases (id, name, status, owner_id) VALUES ($1, $2, $3, $4)")
         .bind(case_id)
@@ -397,24 +406,7 @@ pub async fn create_from_signup_in(
     case_folders::create_for_new_case(tx, case_id).await?;
     case_properties::add_for_new_case(tx, case_id, case_properties::clean(initial_properties))
         .await?;
-    // A signup case is created with the same standard folders as any other, then
-    // the agreement staged during signup is filed in the one that holds it — no
-    // signup-only evidence path.
-    let folder =
-        case_folders::find_by_path_in(tx, case_id, &new_case_folders::SERVICE_AGREEMENT_PATH)
-            .await?
-            .ok_or(sqlx::Error::RowNotFound)?;
-    evidence::insert_in(
-        tx,
-        owner_name,
-        &evidence::NewEvidence {
-            folder: &folder,
-            name: new_case_folders::SIGNED_SERVICE_AGREEMENT_LABEL,
-            description: "",
-            file: Some(agreement),
-        },
-    )
-    .await?;
+    terms_acceptances::insert_in(tx, owner_id, Some(case_id), terms_version).await?;
     users::assign_capabilities_in(tx, owner_id, case_id, &CaseCapability::ALL, owner_name).await?;
     Ok(())
 }

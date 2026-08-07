@@ -6,7 +6,210 @@ use leptos_router::hooks::use_navigate;
 use crate::components::case_intake::{CaseIntakeFields, CaseIntakeState};
 use crate::helpers::case_intake::CaseIntake;
 #[cfg(feature = "hydrate")]
+use crate::helpers::terms::TERMS_VERSION;
+use crate::helpers::terms::{TERMS_ATTESTATION, TERMS_MINOR_NOTICE, TERMS_SECTIONS};
+#[cfg(feature = "hydrate")]
 use crate::server_fns::{auth, err_text};
+
+/// Where the browser remembers that the terms were accepted, so the details form
+/// knows it was reached the long way round. This is a convenience for the user,
+/// not a security boundary — the server independently refuses any submission
+/// that does not carry the current terms version.
+#[cfg(feature = "hydrate")]
+const ACCEPTED_KEY: &str = "case-signup-terms-accepted";
+
+/// Record acceptance of the current terms for this browser session.
+fn remember_acceptance() {
+    #[cfg(feature = "hydrate")]
+    if let Some(storage) = session_storage() {
+        let _ = storage.set_item(ACCEPTED_KEY, TERMS_VERSION);
+    }
+}
+
+/// Whether this browser session has accepted the terms currently in force.
+fn has_accepted() -> bool {
+    #[cfg(feature = "hydrate")]
+    {
+        session_storage()
+            .and_then(|storage| storage.get_item(ACCEPTED_KEY).ok().flatten())
+            .is_some_and(|version| version == TERMS_VERSION)
+    }
+    // Server-rendered markup is identical either way; the check runs once the
+    // page hydrates, and redirects then if the terms were skipped.
+    #[cfg(not(feature = "hydrate"))]
+    true
+}
+
+#[cfg(feature = "hydrate")]
+fn session_storage() -> Option<web_sys::Storage> {
+    web_sys::window().and_then(|window| window.session_storage().ok().flatten())
+}
+
+/// The page header shared by both signup steps.
+#[component]
+fn SignupHeader(#[prop(into)] title: String) -> impl IntoView {
+    view! {
+        <header class="mb-7 flex items-center justify-between gap-4">
+            <div class="flex items-center gap-3">
+                <span class="grid h-10 w-10 place-items-center rounded-lg bg-primary-500/15 text-2xl text-primary-500">
+                    "\u{2665}"
+                </span>
+                <div>
+                    <p class="text-sm font-medium text-slate-400">"Mommy's Heart"</p>
+                    <h1 class="text-2xl font-semibold text-slate-100">{title}</h1>
+                </div>
+            </div>
+            <A href="/login" attr:class="text-sm font-medium text-primary-500 hover:text-primary-600">
+                "Sign in"
+            </A>
+        </header>
+    }
+}
+
+/// Step one of a prospective client signup: read the Terms and Conditions and
+/// accept them. Nothing is sent to the server here — acceptance is carried
+/// forward and recorded only if the signup itself completes, so a visitor who
+/// reads the terms and leaves creates no record at all.
+#[component]
+pub fn CaseSignupTermsPage() -> impl IntoView {
+    let navigate = use_navigate();
+    let accepted = RwSignal::new(false);
+    let error = RwSignal::new(String::new());
+    // The acceptance control stays locked until the terms have been scrolled to
+    // the bottom, so "I have read" sits under text the reader was at least shown
+    // all of rather than under text they never moved past.
+    let read_to_end = RwSignal::new(false);
+    let terms_ref = NodeRef::<leptos::html::Div>::new();
+
+    // Whether the terms pane is scrolled to (or within a pixel of) its end. Also
+    // true when the content is short enough not to scroll at all: a pane with no
+    // scrollbar can never fire a scroll event, and would otherwise lock the user
+    // out of a form they have already read in full.
+    let check_scrolled = move || {
+        if let Some(pane) = terms_ref.get_untracked() {
+            let scrolled = pane.scroll_top() as f64 + pane.client_height() as f64;
+            // A pixel of slack absorbs the fractional scroll positions that zoom
+            // and high-DPI displays produce, which otherwise stop just short.
+            if scrolled >= pane.scroll_height() as f64 - 1.0 {
+                read_to_end.set(true);
+            }
+        }
+    };
+
+    // Runs once after mount to catch the no-scrollbar case described above.
+    Effect::new(move |_| check_scrolled());
+
+    let submit = move || {
+        if !accepted.get_untracked() {
+            error.set("Please tick the box to confirm you accept the terms.".to_string());
+            return;
+        }
+        remember_acceptance();
+        navigate("/case-signup/details", Default::default());
+    };
+
+    view! {
+        <main class="min-h-screen bg-slate-950 px-4 py-8 text-slate-100 sm:py-12">
+            <div class="mx-auto w-full max-w-4xl">
+                <SignupHeader title="Terms and Conditions" />
+
+                <form
+                    class="overflow-hidden rounded-lg border border-slate-800 bg-slate-900 shadow-lg shadow-black/5"
+                    on:submit=move |event| {
+                        event.prevent_default();
+                        submit();
+                    }
+                >
+                    <section class="p-5 sm:p-7">
+                        <div class="mb-6 flex items-start gap-3">
+                            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary-500 text-sm font-bold text-white">"1"</span>
+                            <div>
+                                <h2 class="text-lg font-semibold text-slate-100">"Read and accept the terms"</h2>
+                                <p class="mt-1 text-sm text-slate-400">"Please read all the way to the end. You must accept these terms before you can tell us about your case."</p>
+                            </div>
+                        </div>
+
+                        <div
+                            node_ref=terms_ref
+                            on:scroll=move |_| check_scrolled()
+                            class="max-h-[28rem] space-y-6 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-5 text-sm leading-relaxed text-slate-300"
+                        >
+                            {TERMS_SECTIONS
+                                .iter()
+                                .map(|section| {
+                                    view! {
+                                        <div class="space-y-3">
+                                            <Show when=move || !section.heading.is_empty()>
+                                                <h3 class="text-base font-semibold text-slate-100">{section.heading}</h3>
+                                            </Show>
+                                            {section
+                                                .paragraphs
+                                                .iter()
+                                                .map(|paragraph| view! { <p>{*paragraph}</p> })
+                                                .collect_view()}
+                                        </div>
+                                    }
+                                })
+                                .collect_view()}
+                            <p class="pt-2 text-xs font-medium text-slate-500">"— End of Terms and Conditions —"</p>
+                        </div>
+
+                        <Show when=move || !read_to_end.get()>
+                            <p class="mt-3 text-xs text-red-400/90">
+                                "Scroll to the end of the terms to continue."
+                            </p>
+                        </Show>
+                    </section>
+
+                    <section class="border-t border-slate-800 p-5 sm:p-7">
+                        <p class="text-sm text-slate-400">{TERMS_ATTESTATION}</p>
+
+                        <label
+                            class="mt-5 flex items-start gap-3 text-sm"
+                            class=("text-slate-200", move || read_to_end.get())
+                            class=("text-slate-500", move || !read_to_end.get())
+                        >
+                            <input
+                                class="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-950 text-primary-500 focus:ring-2 focus:ring-primary-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+                                type="checkbox"
+                                disabled=move || !read_to_end.get()
+                                prop:checked=move || accepted.get()
+                                on:change=move |event| {
+                                    accepted.set(event_target_checked(&event));
+                                    error.set(String::new());
+                                }
+                            />
+                            <span>"I have read and accept the Terms and Conditions."</span>
+                        </label>
+                        <p class="mt-3 text-xs text-slate-500">{TERMS_MINOR_NOTICE}</p>
+
+                        <Show when=move || !error.get().is_empty()>
+                            <p class="mt-5 rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-300 ring-1 ring-rose-500/30">
+                                {move || error.get()}
+                            </p>
+                        </Show>
+
+                        <div class="mt-7 flex flex-wrap items-center justify-end gap-3">
+                            <A
+                                href="/login"
+                                attr:class="min-h-10 rounded-lg border border-slate-700 px-5 py-2.5 text-sm font-semibold text-slate-300 hover:bg-slate-800"
+                            >
+                                "Decline"
+                            </A>
+                            <button
+                                type="submit"
+                                disabled=move || !accepted.get() || !read_to_end.get()
+                                class="min-w-36 rounded-lg bg-primary-500 px-6 py-3 text-sm font-bold text-white hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                "ACCEPT AND CONTINUE"
+                            </button>
+                        </div>
+                    </section>
+                </form>
+            </div>
+        </main>
+    }
+}
 
 struct AccountFields {
     first_name: String,
@@ -16,57 +219,27 @@ struct AccountFields {
     password_confirmation: String,
 }
 
-async fn start_case_signup(
-    agreement_ref: NodeRef<leptos::html::Input>,
-    account: AccountFields,
-    intake: CaseIntake,
-) -> Result<(), String> {
+async fn start_case_signup(account: AccountFields, intake: CaseIntake) -> Result<(), String> {
     #[cfg(feature = "hydrate")]
     {
-        use leptos::server_fn::codec::MultipartData;
-
-        let input = agreement_ref
-            .get_untracked()
-            .ok_or_else(|| "Please upload the signed agreement.".to_string())?;
-        let file = input
-            .files()
-            .and_then(|files| files.get(0))
-            .ok_or_else(|| "Please upload the signed agreement.".to_string())?;
-        if file.size() > crate::server_fns::evidence::MAX_SIZE_BYTES as f64 {
-            return Err("The signed agreement is too large; the limit is 25 MB.".to_string());
-        }
-        if !file.name().to_ascii_lowercase().ends_with(".docx") {
-            return Err("The signed agreement must be uploaded as a .docx file.".to_string());
-        }
-
-        let form = web_sys::FormData::new()
-            .map_err(|_| "Could not prepare the signup form.".to_string())?;
-        form.append_with_blob_and_filename("agreement", file.as_ref(), &file.name())
-            .map_err(|_| "Could not attach the signed agreement.".to_string())?;
-        for (key, value) in [
-            ("first_name", account.first_name),
-            ("last_name", account.last_name),
-            ("email", account.email),
-            ("password", account.password),
-            ("password_confirmation", account.password_confirmation),
-            (
-                "intake_json",
-                serde_json::to_string(&intake)
-                    .map_err(|_| "Could not prepare the case information.".to_string())?,
-            ),
-        ] {
-            form.append_with_str(key, &value)
-                .map_err(|_| "Could not prepare the signup form.".to_string())?;
-        }
-        return auth::register_case_signup(MultipartData::from(form))
-            .await
-            .map_err(err_text);
+        let intake_json = serde_json::to_string(&intake)
+            .map_err(|_| "Could not prepare the case information.".to_string())?;
+        return auth::register_case_signup(
+            account.first_name,
+            account.last_name,
+            account.email,
+            account.password,
+            account.password_confirmation,
+            intake_json,
+            TERMS_VERSION.to_string(),
+        )
+        .await
+        .map_err(err_text);
     }
 
     #[cfg(not(feature = "hydrate"))]
     {
         let _ = (
-            agreement_ref,
             account.first_name,
             account.last_name,
             account.email,
@@ -78,8 +251,11 @@ async fn start_case_signup(
     }
 }
 
+/// Step two of a prospective client signup: the case details and the account to
+/// sign in with. Reached only after the terms have been accepted; arriving here
+/// directly bounces back to them.
 #[component]
-pub fn CaseSignupPage() -> impl IntoView {
+pub fn CaseSignupDetailsPage() -> impl IntoView {
     let navigate = use_navigate();
     let first_name = RwSignal::new(String::new());
     let last_name = RwSignal::new(String::new());
@@ -87,9 +263,18 @@ pub fn CaseSignupPage() -> impl IntoView {
     let password = RwSignal::new(String::new());
     let password_confirmation = RwSignal::new(String::new());
     let intake = CaseIntakeState::new();
-    let agreement_ref = NodeRef::<leptos::html::Input>::new();
     let error = RwSignal::new(String::new());
     let pending = RwSignal::new(false);
+
+    // Send anybody who skipped the terms back to read them.
+    Effect::new({
+        let navigate = navigate.clone();
+        move |_| {
+            if !has_accepted() {
+                navigate("/case-signup", Default::default());
+            }
+        }
+    });
 
     let input_class = "mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/30";
     let label_class = "block text-sm font-medium text-slate-300";
@@ -120,7 +305,7 @@ pub fn CaseSignupPage() -> impl IntoView {
             pending.set(true);
             error.set(String::new());
             spawn_local(async move {
-                match start_case_signup(agreement_ref, account, intake).await {
+                match start_case_signup(account, intake).await {
                     Ok(()) => navigate("/case-signup/verify", Default::default()),
                     Err(message) => {
                         error.set(message);
@@ -134,20 +319,11 @@ pub fn CaseSignupPage() -> impl IntoView {
     view! {
         <main class="min-h-screen bg-slate-950 px-4 py-8 text-slate-100 sm:py-12">
             <div class="mx-auto w-full max-w-4xl">
-                <header class="mb-7 flex items-center justify-between gap-4">
-                    <div class="flex items-center gap-3">
-                        <span class="grid h-10 w-10 place-items-center rounded-lg bg-primary-500/15 text-2xl text-primary-500">
-                            "\u{2665}"
-                        </span>
-                        <div>
-                            <p class="text-sm font-medium text-slate-400">"Mommy's Heart"</p>
-                            <h1 class="text-2xl font-semibold text-slate-100">"Prospective client case signup"</h1>
-                        </div>
-                    </div>
-                    <A href="/login" attr:class="text-sm font-medium text-primary-500 hover:text-primary-600">
-                        "Sign in"
-                    </A>
-                </header>
+                <SignupHeader title="Prospective client case signup" />
+
+                <p class="mb-5 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300 ring-1 ring-emerald-500/30">
+                    "Terms and Conditions accepted. Now tell us about your case."
+                </p>
 
                 <form
                     class="overflow-hidden rounded-lg border border-slate-800 bg-slate-900 shadow-lg shadow-black/5"
@@ -158,7 +334,7 @@ pub fn CaseSignupPage() -> impl IntoView {
                 >
                     <section class="p-5 sm:p-7">
                         <div class="mb-6 flex items-start gap-3">
-                            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary-500 text-sm font-bold text-white">"1"</span>
+                            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary-500 text-sm font-bold text-white">"2"</span>
                             <div>
                                 <h2 class="text-lg font-semibold text-slate-100">"Provide case info"</h2>
                                 <p class="mt-1 text-sm text-slate-400">"Fields marked with * are required."</p>
@@ -166,38 +342,6 @@ pub fn CaseSignupPage() -> impl IntoView {
                         </div>
 
                         <CaseIntakeFields state=intake />
-                    </section>
-
-                    <section class="border-t border-slate-800 p-5 sm:p-7">
-                        <div class="mb-6 flex items-start gap-3">
-                            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary-500 text-sm font-bold text-white">"2"</span>
-                            <div>
-                                <h2 class="text-lg font-semibold text-slate-100">"Upload signed agreement"</h2>
-                                <p class="mt-1 text-sm text-slate-400">"Download, sign, and upload the service agreement as a .docx file."</p>
-                            </div>
-                        </div>
-                        <div class="space-y-4">
-                            <a
-                                href="/service-agreement-template.docx"
-                                download
-                                class="inline-flex min-h-10 items-center justify-center rounded-lg border border-primary-500/40 bg-primary-500/10 px-4 py-2 text-sm font-semibold text-primary-600 hover:bg-primary-500/15"
-                            >
-                                "Download agreement template"
-                            </a>
-                            <div>
-                                <label class=label_class>
-                                    "Signed service agreement "
-                                    <span class="text-rose-400" aria-hidden="true">"*"</span>
-                                </label>
-                                <input
-                                    node_ref=agreement_ref
-                                    class=input_class
-                                    type="file"
-                                    accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                                    required
-                                />
-                            </div>
-                        </div>
                     </section>
 
                     <section class="border-t border-slate-800 p-5 sm:p-7">

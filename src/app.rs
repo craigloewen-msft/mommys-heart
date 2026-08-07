@@ -5,7 +5,7 @@ use leptos_router::path;
 
 use crate::pages::{
     admin::AdminDashboardPage,
-    case_signup::CaseSignupPage,
+    case_signup::{CaseSignupDetailsPage, CaseSignupTermsPage},
     cases::{CaseHomePage, NewCasePage},
     forgot_password::ForgotPasswordPage,
     inbox::InboxPage,
@@ -115,7 +115,8 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/reset-password") view=ResetPasswordPage />
                 <Route path=path!("/register") view=RegisterPage />
                 <Route path=path!("/verify-email") view=VerifyEmailPage />
-                <Route path=path!("/case-signup") view=CaseSignupPage />
+                <Route path=path!("/case-signup") view=CaseSignupTermsPage />
+                <Route path=path!("/case-signup/details") view=CaseSignupDetailsPage />
                 <Route path=path!("/case-signup/verify") view=CaseSignupVerifyPage />
                 <Route path=path!("/cases") view=CaseHomePage />
                 <Route path=path!("/cases/new") view=NewCasePage />

@@ -20,12 +20,6 @@ pub struct NewCaseFolder {
     pub children: &'static [&'static str],
 }
 
-/// Where the service agreement signed during public signup is filed.
-pub const SERVICE_AGREEMENT_PATH: [&str; 2] = ["Intake", "Service Agreement"];
-
-/// The name the signed agreement is filed under.
-pub const SIGNED_SERVICE_AGREEMENT_LABEL: &str = "Signed service agreement";
-
 /// The folders every new case is created with, in display order.
 pub const NEW_CASE_FOLDERS: &[NewCaseFolder] = &[
     NewCaseFolder {
