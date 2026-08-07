@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::admin_cases::AdminCaseDirectory;
+use crate::components::admin_cases::CaseRequests;
 use crate::components::admin_requests::AdminRequestCenter;
 use crate::components::change_log::ChangeLog;
 use crate::components::email_failures::EmailFailureLog;
@@ -24,8 +24,8 @@ const PAGE_SIZE: i64 = 4;
 /// "case access" the moment a fourth arrives.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AdminTab {
+    CaseRequests,
     CaseAccess,
-    Cases,
     Requests,
 }
 
@@ -68,7 +68,9 @@ pub fn AdminDashboardPage() -> impl IntoView {
     let load_error = RwSignal::new(None::<String>);
     // Bumped after a mutation to force the current window to reload.
     let reload = RwSignal::new(0u32);
-    let tab = RwSignal::new(AdminTab::CaseAccess);
+    // Case requests lead: an unanswered intake is somebody waiting for help,
+    // which outranks the housekeeping on the other tabs.
+    let tab = RwSignal::new(AdminTab::CaseRequests);
     // Whether the collapsible "Email delivery failures" panel is open. Mounting
     // the viewer only on open defers its fetch until the admin asks for it.
     let failures_open = RwSignal::new(false);
@@ -176,15 +178,15 @@ pub fn AdminDashboardPage() -> impl IntoView {
         <Layout title="Admin".to_string()>
             <div class="mb-6 border-b border-slate-800" role="tablist" aria-label="Admin sections">
                 <div class="flex gap-6">
-                    <TabButton tab=tab this_tab=AdminTab::CaseAccess label="Case access" />
                     <TabButton
                         tab=tab
-                        this_tab=AdminTab::Cases
-                        label="Cases"
-                        // Cases awaiting a decision. Any admin can review, so
-                        // unlike Requests this is not site-admin only.
+                        this_tab=AdminTab::CaseRequests
+                        label="Case Requests"
+                        // Any admin can review a case, so unlike Requests this
+                        // is not gated on site-admin.
                         badge=Signal::derive(move || state.cases_pending_review.get())
                     />
+                    <TabButton tab=tab this_tab=AdminTab::CaseAccess label="Case access" />
                     <TabButton
                         tab=tab
                         this_tab=AdminTab::Requests
@@ -194,6 +196,13 @@ pub fn AdminDashboardPage() -> impl IntoView {
                         })
                     />
                 </div>
+            </div>
+
+            <div role="tabpanel" class:hidden=move || tab.get() != AdminTab::CaseRequests>
+                <p class="mb-4 text-sm text-slate-400">
+                    "Cases people have submitted that are waiting on a decision. Accepting one lets you assign a volunteer from the Case access tab; declining tells the client why."
+                </p>
+                <CaseRequests reload=reload />
             </div>
 
             <div role="tabpanel" class:hidden=move || tab.get() != AdminTab::CaseAccess>
@@ -237,13 +246,6 @@ pub fn AdminDashboardPage() -> impl IntoView {
                         <EmailFailureLog />
                     </Show>
                 </div>
-            </div>
-
-            <div role="tabpanel" class:hidden=move || tab.get() != AdminTab::Cases>
-                <p class="mb-4 text-sm text-slate-400">
-                    "Every case in the system. Accept or decline the ones waiting on a decision, and see at a glance which accepted cases still have nobody working them."
-                </p>
-                <AdminCaseDirectory reload=reload />
             </div>
 
             <div role="tabpanel" class:hidden=move || tab.get() != AdminTab::Requests>

@@ -6,9 +6,7 @@ use crate::server::db::{
 };
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
-use crate::server_fns::cases::{
-    Case, CaseListFilter, CaseNote, CaseReviewState, CaseStatus, CaseSummary,
-};
+use crate::server_fns::cases::{Case, CaseNote, CaseReviewState, CaseStatus, CaseSummary};
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::pagination::Page;
 use crate::server_fns::users::AccountRole;
@@ -301,126 +299,32 @@ pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, s
         .collect())
 }
 
-/// One page of **every** case in the system, for the admin Cases tab.
-///
-/// Deliberately unscoped by assignment, unlike [`get_summaries_for_user`]: an
-/// admin managing the caseload has to be able to see the cases nobody has been
-/// assigned to, which is the whole reason the screen exists. Callers are
+/// The cases awaiting an accept/decline decision, oldest id first. Callers are
 /// responsible for the operations-admin gate.
 ///
-/// `search` matches case id, case name, or the owner's name, so an admin can
-/// find a case by the person it belongs to — which is usually how they remember
-/// it. `filter` narrows to one slice of the directory.
-pub async fn list_page(
-    offset: i64,
-    limit: i64,
-    search: &str,
-    filter: CaseListFilter,
-) -> Result<Page<CaseSummary>, sqlx::Error> {
-    let limit = limit.clamp(1, 100);
-    let offset = offset.max(0);
-
-    let term = search.trim();
-    let pattern = if term.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "%{}%",
-            term.replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        ))
-    };
-
-    const SEARCH: &str = "($1::text IS NULL
-         OR c.id ILIKE $1
-         OR c.name ILIKE $1
-         OR (u.first_name || ' ' || u.last_name) ILIKE $1)";
-
-    // Every filter is a plain predicate over the same directory query, built
-    // from internal constants only. `Unstaffed` and `Inactive` mirror exactly
-    // the conditions the derived work state and the inactivity badge use, so a
-    // filter can never disagree with the chip rendered on the row it returns.
-    let staffed = format!(
-        "EXISTS (SELECT 1 FROM case_assignments a
-                   JOIN users au ON au.id = a.user_id
-                  WHERE a.case_id = c.id
-                    AND a.capability = '{edit}'
-                    AND au.role <> '{client}')",
-        edit = CaseCapability::EditCase.slug(),
-        client = AccountRole::Client.slug(),
-    );
-    let last_activity = "(SELECT MAX(m.sent_at) FROM messages m
-            JOIN case_channels ch ON ch.id = m.channel_id
-           WHERE m.case_id = c.id)";
+/// Unscoped by assignment on purpose: a case waiting for review has nobody
+/// assigned to it yet, so scoping by assignment would hide every row this list
+/// exists to show.
+pub async fn pending_review_cases() -> Result<Vec<CaseSummary>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, SummaryRow>(&format!(
+        "{} WHERE c.review_state = $1 ORDER BY c.id",
+        // Admin-only listing, so count every message including the
+        // volunteer-only channel, matching the other admin lookups.
+        summary_select("true")
+    ))
+    .bind(CaseReviewState::PendingReview.slug())
+    .fetch_all(pool())
+    .await?;
     let threshold = inactivity_threshold();
-    let filter_sql = match filter {
-        CaseListFilter::All => "true".to_string(),
-        CaseListFilter::PendingReview => {
-            format!(
-                "c.review_state = '{}'",
-                CaseReviewState::PendingReview.slug()
-            )
-        }
-        CaseListFilter::Accepted => {
-            format!("c.review_state = '{}'", CaseReviewState::Accepted.slug())
-        }
-        CaseListFilter::Declined => {
-            format!("c.review_state = '{}'", CaseReviewState::Declined.slug())
-        }
-        CaseListFilter::Unstaffed => format!(
-            "c.review_state = '{}' AND c.status <> '{}' AND NOT {staffed}",
-            CaseReviewState::Accepted.slug(),
-            CaseStatus::Closed.slug(),
-        ),
-        // `$THRESHOLD` is substituted with the right bind position per query
-        // below, since the two statements bind different numbers of parameters.
-        CaseListFilter::Inactive => format!("{last_activity} < $THRESHOLD"),
-    };
-
-    // The owner join has to be present in the COUNT too, because the search
-    // matches on owner name.
-    let count_sql = format!(
-        "SELECT count(*) FROM cases c
-         LEFT JOIN users u ON u.id = c.owner_id
-         WHERE {SEARCH} AND {}",
-        filter_sql.replace("$THRESHOLD", "$2")
-    );
-    let page_sql = format!(
-        "{}
-         WHERE {SEARCH} AND {}
-         ORDER BY c.id LIMIT $2 OFFSET $3",
-        // Admin-only listing: count every message, including the volunteer-only
-        // channel, the same way the other admin lookups do.
-        summary_select("true"),
-        filter_sql.replace("$THRESHOLD", "$4")
-    );
-
-    let count_fut = sqlx::query_scalar::<_, i64>(&count_sql)
-        .bind(&pattern)
-        .bind(&threshold)
-        .fetch_one(pool());
-    let rows_fut = sqlx::query_as::<_, SummaryRow>(&page_sql)
-        .bind(&pattern)
-        .bind(limit)
-        .bind(offset)
-        .bind(&threshold)
-        .fetch_all(pool());
-    let (total, rows) = tokio::try_join!(count_fut, rows_fut)?;
-
     let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
     let mut assigned = assigned_by_case(&ids).await?;
-    let items = rows
+    Ok(rows
         .into_iter()
         .map(|r| {
             let names = assigned.remove(&r.id).unwrap_or_default();
-            // Capabilities are left empty: this listing is about managing the
-            // caseload, not opening cases, and an admin's own per-case rights
-            // are irrelevant to (and must not be implied by) seeing a row here.
             r.into_summary(Vec::new(), names, &threshold)
         })
-        .collect::<Vec<_>>();
-    Ok(Page { items, total })
+        .collect())
 }
 
 /// How many cases are waiting for an admin decision.

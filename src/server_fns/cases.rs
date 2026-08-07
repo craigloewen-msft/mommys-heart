@@ -100,18 +100,6 @@ impl CaseReviewState {
     pub fn from_slug(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|r| r.slug() == s)
     }
-
-    pub fn badge_classes(self) -> &'static str {
-        match self {
-            CaseReviewState::PendingReview => {
-                "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"
-            }
-            CaseReviewState::Accepted => {
-                "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
-            }
-            CaseReviewState::Declined => "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",
-        }
-    }
 }
 
 /// What is actually happening on a case right now, in one value.
@@ -138,24 +126,9 @@ pub enum CaseWorkState {
 }
 
 impl CaseWorkState {
-    /// A short chip label for staff-facing lists.
-    pub fn label(&self) -> String {
-        match self {
-            CaseWorkState::AwaitingReview => "Pending review".to_string(),
-            CaseWorkState::AwaitingVolunteer => "Unstaffed".to_string(),
-            CaseWorkState::InProgress(names) => match names.as_slice() {
-                [] => "In progress".to_string(),
-                [one] => format!("Worked by {one}"),
-                [first, rest @ ..] => format!("Worked by {first} +{}", rest.len()),
-            },
-            CaseWorkState::Declined(_) => "Declined".to_string(),
-            CaseWorkState::Closed => "Closed".to_string(),
-        }
-    }
-
-    /// The same state said plainly, for the client who owns the case. Clients
-    /// should never have to decode staff vocabulary to find out whether anyone
-    /// is helping them.
+    /// The state said plainly, for the client who owns the case. Clients should
+    /// never have to decode staff vocabulary to find out whether anyone is
+    /// helping them.
     pub fn client_message(&self) -> String {
         match self {
             CaseWorkState::AwaitingReview => {
@@ -318,22 +291,12 @@ impl CaseSummary {
             name
         }
     }
-
-    /// What is happening on this case, derived from the review decision, the
-    /// lifecycle status, and who is assigned. Render this rather than
-    /// interpreting the individual fields, so every screen tells the same story.
-    pub fn work_state(&self) -> CaseWorkState {
-        work_state_of(
-            self.review_state,
-            &self.review_reason,
-            self.status,
-            &self.assigned_volunteers,
-        )
-    }
 }
 
 impl Case {
-    /// See [`CaseSummary::work_state`].
+    /// What is happening on this case, derived from the review decision, the
+    /// lifecycle status, and who is assigned. Render this rather than
+    /// interpreting the individual fields, so every screen tells the same story.
     pub fn work_state(&self) -> CaseWorkState {
         work_state_of(
             self.review_state,
@@ -449,85 +412,20 @@ pub async fn create_case(
     .map_err(ServerFnError::new)
 }
 
-/// Which slice of the case directory the admin Cases tab is showing.
+/// The cases waiting for an admin to accept or decline them.
 ///
-/// A filter is a *view* over every case, not a separate queue — the tab's job is
-/// managing all cases, and "needs a decision" is one lens on that rather than a
-/// screen of its own.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CaseListFilter {
-    #[default]
-    All,
-    PendingReview,
-    Accepted,
-    Declined,
-    /// Accepted but with nobody assigned to work it — the gap that would
-    /// otherwise go unnoticed between saying yes and actually helping.
-    Unstaffed,
-    /// No case-chat activity in 30+ days.
-    Inactive,
-}
-
-impl CaseListFilter {
-    pub const ALL: [CaseListFilter; 6] = [
-        CaseListFilter::All,
-        CaseListFilter::PendingReview,
-        CaseListFilter::Accepted,
-        CaseListFilter::Declined,
-        CaseListFilter::Unstaffed,
-        CaseListFilter::Inactive,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            CaseListFilter::All => "All",
-            CaseListFilter::PendingReview => "Pending review",
-            CaseListFilter::Accepted => "Accepted",
-            CaseListFilter::Declined => "Declined",
-            CaseListFilter::Unstaffed => "Unstaffed",
-            CaseListFilter::Inactive => "Inactive",
-        }
-    }
-
-    pub fn slug(self) -> &'static str {
-        match self {
-            CaseListFilter::All => "all",
-            CaseListFilter::PendingReview => "pending_review",
-            CaseListFilter::Accepted => "accepted",
-            CaseListFilter::Declined => "declined",
-            CaseListFilter::Unstaffed => "unstaffed",
-            CaseListFilter::Inactive => "inactive",
-        }
-    }
-
-    pub fn from_slug(s: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|f| f.slug() == s)
-    }
-}
-
-/// One page of *every* case in the system, for the admin Cases tab: searchable
-/// over case id/name and owner name, filterable, and paginated the same way the
-/// user directory is.
-///
-/// Requires operations-admin permissions. Unlike
-/// [`load_case_summaries_for_user`], this is deliberately unscoped by assignment
-/// — an admin managing the organization's caseload must be able to see a case
-/// nobody has been assigned to yet, which is exactly the situation this screen
-/// exists to surface. It returns header fields only, never case contents.
+/// Requires operations-admin permissions. Deliberately unscoped by assignment,
+/// unlike [`load_case_summaries_for_user`]: a case awaiting review has nobody
+/// assigned to it yet by definition, so an assignment-scoped query would return
+/// exactly nothing. Header fields only, never case contents.
 #[server(prefix = "/api")]
-pub async fn admin_list_cases_page(
-    offset: i64,
-    limit: i64,
-    search: String,
-    filter: CaseListFilter,
-) -> Result<Page<CaseSummary>, ServerFnError> {
+pub async fn list_pending_case_requests() -> Result<Vec<CaseSummary>, ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
     require_operations_admin(&user)?;
-    cases::list_page(offset, limit, &search, filter)
+    cases::pending_review_cases()
         .await
         .map_err(ServerFnError::new)
 }

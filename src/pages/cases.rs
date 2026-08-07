@@ -323,10 +323,6 @@ pub fn CaseHomePage() -> impl IntoView {
                         })
                         .unwrap_or_else(|| ().into_any());
                     let status = c.status;
-                    // One derived chip beside the status badge: the same value
-                    // the admin directory and the client banner render, so all
-                    // three tell the same story about the case.
-                    let work = c.work_state();
                     let name = c.name.clone();
                     let owner = c.owner_full_name();
                     let select = {
@@ -353,7 +349,6 @@ pub fn CaseHomePage() -> impl IntoView {
                             <span class=badge(status.badge_classes())>{status.label()}</span>
                         </div>
                         <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                            <span class=badge(work.badge_classes())>{work.label()}</span>
                             <span>"Owner: " {owner}</span>
                             {access_badge}
                             {inactive_badge}
@@ -1552,19 +1547,13 @@ fn CaseDetail(
             let status = c.status;
             let terms_accepted = c.terms_accepted.clone();
             let work = c.work_state();
-            // Clients get the plain-language version; staff get the same state
-            // as a compact chip. Same source, two registers — a client should
-            // never have to work out what "Unstaffed" means for them.
-            let is_client = !state.is_volunteer_or_admin();
-            // Staff read the compact chip; the client reads the same state as a
-            // sentence. Bound here rather than inline so the markup below stays
-            // about layout.
-            let work_chip = if is_client {
+            // The one thing a client cannot find out anywhere else: whether the
+            // org took their case, and who (if anyone) is working it. Staff
+            // already have this context on the admin side, so only the client
+            // gets a line here.
+            let client_banner = if state.is_volunteer_or_admin() {
                 ().into_any()
             } else {
-                view! { <span class=badge(work.badge_classes())>{work.label()}</span> }.into_any()
-            };
-            let client_banner = if is_client {
                 view! {
                     <p class=format!(
                         "mt-3 rounded-lg px-3 py-2 text-sm {}",
@@ -1572,8 +1561,6 @@ fn CaseDetail(
                     )>{work.client_message()}</p>
                 }
                 .into_any()
-            } else {
-                ().into_any()
             };
             let edit_controls = if editing.get() {
                 view! {
@@ -1623,7 +1610,6 @@ fn CaseDetail(
                         </div>
                         <div class="flex shrink-0 items-center gap-2">
                             <span class=badge(status.badge_classes())>{status.label()}</span>
-                            {work_chip}
                             {edit_controls}
                         </div>
                     </div>
