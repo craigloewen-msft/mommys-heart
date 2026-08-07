@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::server_fns::cases::{
-    list_pending_case_requests, set_case_review_state, CaseReviewState, CaseSummary,
+    list_pending_case_requests, set_case_review_decision, CaseStatus, CaseSummary,
 };
 use crate::server_fns::err_text;
 use crate::state::AppState;
@@ -83,11 +83,11 @@ fn CaseRequestCard(case: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
     let declining = RwSignal::new(false);
     let reason = RwSignal::new(String::new());
 
-    let decide = move |next: CaseReviewState, reason_text: String| {
+    let decide = move |accept: bool, reason_text: String| {
         saving.set(true);
         error.set(None);
         spawn_local(async move {
-            match set_case_review_state(case_id.get_value(), next, reason_text).await {
+            match set_case_review_decision(case_id.get_value(), accept, reason_text).await {
                 Ok(()) => {
                     // Reloading re-reads the list, which resets the badge with
                     // it, so the count and the rows cannot disagree.
@@ -102,7 +102,7 @@ fn CaseRequestCard(case: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         });
     };
 
-    let accept = move |_| decide(CaseReviewState::Accepted, String::new());
+    let accept = move |_| decide(true, String::new());
     let confirm_decline = move |_| {
         let text = reason.get_untracked().trim().to_string();
         if text.is_empty() {
@@ -111,16 +111,17 @@ fn CaseRequestCard(case: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
             ));
             return;
         }
-        decide(CaseReviewState::Declined, text);
+        decide(false, text);
     };
 
     view! {
         <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <div class="flex flex-wrap items-center justify-between gap-2">
                 <span class="min-w-0 truncate font-medium text-slate-100">{case.name.clone()}</span>
-                <span class="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/30">
-                    "Pending review"
-                </span>
+                <span class=format!(
+                    "rounded-full px-2 py-0.5 text-xs font-medium {}",
+                    CaseStatus::PendingReview.badge_classes(),
+                )>{CaseStatus::PendingReview.label()}</span>
             </div>
             <p class="mt-2 text-xs text-slate-400">"Client: " {case.owner_full_name()}</p>
 

@@ -14,7 +14,7 @@
 use crate::helpers::visibility::Visibility;
 use crate::server_fns::capabilities::{CaseAssignment, CasePreset};
 use crate::server_fns::case_properties::CaseProperty;
-use crate::server_fns::cases::{Case, CaseNote, CaseReviewState, CaseStatus};
+use crate::server_fns::cases::{Case, CaseNote, CaseStatus};
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::evidence::Evidence;
 use crate::server_fns::message::Message;
@@ -195,11 +195,7 @@ type SeedEvidence = (&'static str, &'static str, &'static str, &'static str);
 struct SeedCase {
     name: &'static str,
     status: CaseStatus,
-    /// Whether the org has accepted this case. The fixtures deliberately cover
-    /// all three, so the admin Cases tab has something in every filter and the
-    /// client-facing banners can be seen without hand-crafting data first.
-    review: CaseReviewState,
-    /// Why the case was declined. Empty unless `review` is `Declined`.
+    /// Why the case was declined. Empty unless `status` is `Declined`.
     review_reason: &'static str,
     /// 1-based owner user number (`5` means `u-5`).
     owner: u32,
@@ -208,8 +204,7 @@ struct SeedCase {
     evidence: &'static [SeedEvidence],
 }
 
-use CaseReviewState::{Accepted, Declined, PendingReview};
-use CaseStatus::{Closed, Monitor, Open};
+use CaseStatus::{Closed, Declined, Monitor, Open, PendingReview};
 
 /// The eight targeted cases. Each is owned by one user and (via the assignments
 /// on [`USERS`]) worked by several others, so the case directory, assignment
@@ -218,7 +213,6 @@ const CASES: [SeedCase; 8] = [
     SeedCase {
         name: "Nguyen custody matter",
         status: Open,
-        review: Accepted,
         review_reason: "",
         owner: 5,
         docket: "FC-2026-0001",
@@ -237,7 +231,6 @@ const CASES: [SeedCase; 8] = [
     SeedCase {
         name: "Rivera housing assistance",
         status: Monitor,
-        review: Accepted,
         review_reason: "",
         owner: 2,
         docket: "FC-2026-0002-A",
@@ -247,7 +240,6 @@ const CASES: [SeedCase; 8] = [
     SeedCase {
         name: "Silva benefits appeal",
         status: Closed,
-        review: Accepted,
         review_reason: "",
         owner: 6,
         docket: "FC-2026-0003",
@@ -266,7 +258,6 @@ const CASES: [SeedCase; 8] = [
     SeedCase {
         name: "Kim guardianship petition",
         status: Open,
-        review: Accepted,
         review_reason: "",
         owner: 7,
         docket: "FC-2026-0004",
@@ -280,8 +271,7 @@ const CASES: [SeedCase; 8] = [
     },
     SeedCase {
         name: "Johnson support modification",
-        status: Monitor,
-        review: PendingReview,
+        status: PendingReview,
         review_reason: "",
         owner: 8,
         docket: "FC-2026-0005",
@@ -291,7 +281,6 @@ const CASES: [SeedCase; 8] = [
     SeedCase {
         name: "Rivera protective order",
         status: Open,
-        review: Accepted,
         review_reason: "",
         owner: 5,
         docket: "FC-2026-0006",
@@ -304,8 +293,7 @@ const CASES: [SeedCase; 8] = [
     },
     SeedCase {
         name: "Silva housing assistance",
-        status: Open,
-        review: PendingReview,
+        status: PendingReview,
         review_reason: "",
         owner: 6,
         docket: "FC-2026-0007",
@@ -314,8 +302,7 @@ const CASES: [SeedCase; 8] = [
     },
     SeedCase {
         name: "Kim custody matter",
-        status: Monitor,
-        review: Declined,
+        status: Declined,
         review_reason: "Outside our service area; referred to Lakeside Legal Aid.",
         owner: 7,
         docket: "FC-2026-0008",
@@ -562,7 +549,6 @@ pub fn cases() -> Vec<Case> {
                 id: case_id(n),
                 name: sc.name.into(),
                 status: sc.status,
-                review_state: sc.review,
                 review_reason: sc.review_reason.into(),
                 // Left empty: who is assigned is derived from the
                 // `case_assignments` rows the seeder writes from `USERS`, not

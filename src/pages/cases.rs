@@ -528,7 +528,7 @@ pub fn NewCasePage() -> impl IntoView {
                             class=format!("mt-1 {input_class}")
                             on:change=move |ev| status.set(event_target_value(&ev))
                         >
-                            {CaseStatus::ALL
+                            {CaseStatus::STAFF_SELECTABLE
                                 .into_iter()
                                 .map(|s| {
                                     view! {
@@ -1546,7 +1546,6 @@ fn CaseDetail(
             let owner_name = owner_name.get_value();
             let status = c.status;
             let terms_accepted = c.terms_accepted.clone();
-            let work = c.work_state();
             // The one thing a client cannot find out anywhere else: whether the
             // org took their case, and who (if anyone) is working it. Staff
             // already have this context on the admin side, so only the client
@@ -1557,8 +1556,8 @@ fn CaseDetail(
                 view! {
                     <p class=format!(
                         "mt-3 rounded-lg px-3 py-2 text-sm {}",
-                        work.badge_classes(),
-                    )>{work.client_message()}</p>
+                        c.status.badge_classes(),
+                    )>{c.client_message()}</p>
                 }
                 .into_any()
             };
@@ -1714,7 +1713,7 @@ fn CaseDetail(
                                 class=input_class
                                 on:change=move |ev| edit_status.set(event_target_value(&ev))
                             >
-                                {CaseStatus::ALL
+                                {CaseStatus::STAFF_SELECTABLE
                                     .into_iter()
                                     .map(|s| {
                                         view! {

@@ -6,7 +6,7 @@ use crate::server::db::{
 };
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
-use crate::server_fns::cases::{Case, CaseNote, CaseReviewState, CaseStatus, CaseSummary};
+use crate::server_fns::cases::{Case, CaseNote, CaseStatus, CaseSummary};
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::pagination::Page;
 use crate::server_fns::users::AccountRole;
@@ -16,7 +16,6 @@ struct CaseRow {
     id: String,
     name: String,
     status: String,
-    review_state: String,
     review_reason: String,
     owner_id: String,
 }
@@ -36,7 +35,6 @@ struct SummaryRow {
     id: String,
     name: String,
     status: String,
-    review_state: String,
     review_reason: String,
     owner_id: String,
     owner_first_name: String,
@@ -60,8 +58,6 @@ impl SummaryRow {
             id: self.id,
             name: self.name,
             status: CaseStatus::from_slug(&self.status).unwrap_or(CaseStatus::Open),
-            review_state: CaseReviewState::from_slug(&self.review_state)
-                .unwrap_or(CaseReviewState::Accepted),
             review_reason: self.review_reason,
             assigned_volunteers,
             owner_id: self.owner_id,
@@ -94,7 +90,7 @@ fn inactivity_threshold() -> String {
 /// internal constant or a bind-parameter reference, never user input.
 fn summary_select(message_count_scope: &str) -> String {
     format!(
-        "SELECT c.id, c.name, c.status, c.review_state, c.review_reason, c.owner_id,
+        "SELECT c.id, c.name, c.status, c.review_reason, c.owner_id,
         u.first_name AS owner_first_name,
         u.last_name AS owner_last_name,
         (SELECT COUNT(*) FROM messages m
@@ -307,12 +303,12 @@ pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, s
 /// exists to show.
 pub async fn pending_review_cases() -> Result<Vec<CaseSummary>, sqlx::Error> {
     let rows = sqlx::query_as::<_, SummaryRow>(&format!(
-        "{} WHERE c.review_state = $1 ORDER BY c.id",
+        "{} WHERE c.status = $1 ORDER BY c.id",
         // Admin-only listing, so count every message including the
         // volunteer-only channel, matching the other admin lookups.
         summary_select("true")
     ))
-    .bind(CaseReviewState::PendingReview.slug())
+    .bind(CaseStatus::PendingReview.slug())
     .fetch_all(pool())
     .await?;
     let threshold = inactivity_threshold();
@@ -329,8 +325,8 @@ pub async fn pending_review_cases() -> Result<Vec<CaseSummary>, sqlx::Error> {
 
 /// How many cases are waiting for an admin decision.
 pub async fn pending_review_count() -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT count(*) FROM cases WHERE review_state = $1")
-        .bind(CaseReviewState::PendingReview.slug())
+    sqlx::query_scalar("SELECT count(*) FROM cases WHERE status = $1")
+        .bind(CaseStatus::PendingReview.slug())
         .fetch_one(pool())
         .await
 }
@@ -369,7 +365,7 @@ pub async fn get(
     has_volunteer_access: bool,
 ) -> Result<Option<Case>, sqlx::Error> {
     let Some(row) = sqlx::query_as::<_, CaseRow>(
-        "SELECT id, name, status, review_state, review_reason, owner_id FROM cases WHERE id = $1",
+        "SELECT id, name, status, review_reason, owner_id FROM cases WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool())
@@ -421,8 +417,6 @@ pub async fn get(
         id: row.id,
         name: row.name,
         status: CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open),
-        review_state: CaseReviewState::from_slug(&row.review_state)
-            .unwrap_or(CaseReviewState::Accepted),
         review_reason: row.review_reason,
         assigned_volunteers,
         owner_id: row.owner_id,
@@ -444,23 +438,19 @@ pub async fn create(
     owner_name: &str,
     name: &str,
     status: CaseStatus,
-    review_state: CaseReviewState,
     initial_properties: Vec<CaseProperty>,
     first_note: Option<String>,
 ) -> Result<String, sqlx::Error> {
     let id = ids::next(pool(), "c").await?;
 
     let mut tx = pool().begin().await?;
-    sqlx::query(
-        "INSERT INTO cases (id, name, status, review_state, owner_id) VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(&id)
-    .bind(name)
-    .bind(status.slug())
-    .bind(review_state.slug())
-    .bind(owner_id)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("INSERT INTO cases (id, name, status, owner_id) VALUES ($1, $2, $3, $4)")
+        .bind(&id)
+        .bind(name)
+        .bind(status.slug())
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
 
     // Every case starts with its permanent volunteer-only back-channel and a
     // "General" channel, created in the same transaction so a case can never
@@ -512,16 +502,13 @@ pub async fn create_from_signup_in(
     // A case that arrives through public signup has had no staff involvement at
     // all, so it starts life awaiting a decision rather than quietly counting as
     // accepted work.
-    sqlx::query(
-        "INSERT INTO cases (id, name, status, review_state, owner_id) VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(case_id)
-    .bind(name)
-    .bind(CaseStatus::Open.slug())
-    .bind(CaseReviewState::PendingReview.slug())
-    .bind(owner_id)
-    .execute(&mut **tx)
-    .await?;
+    sqlx::query("INSERT INTO cases (id, name, status, owner_id) VALUES ($1, $2, $3, $4)")
+        .bind(case_id)
+        .bind(name)
+        .bind(CaseStatus::PendingReview.slug())
+        .bind(owner_id)
+        .execute(&mut **tx)
+        .await?;
     channels::create_defaults(&mut **tx, case_id).await?;
     case_folders::create_for_new_case(tx, case_id).await?;
     case_properties::add_for_new_case(tx, case_id, case_properties::clean(initial_properties))
@@ -594,31 +581,34 @@ pub async fn set_status(case_id: &str, status: CaseStatus, actor: &str) -> Resul
     .await
 }
 
-/// Record an accept/decline decision on a case, auditing the change. Returns
-/// whether anything actually changed, so callers can skip notifying people about
-/// a decision that was already in place.
+/// The current status of a case, or `None` if it does not exist. Cheap lookup
+/// for the transition guards that decide whether a state change is legal.
+pub async fn status(case_id: &str) -> Result<Option<CaseStatus>, sqlx::Error> {
+    Ok(current_field(case_id, "status")
+        .await?
+        .and_then(|s| CaseStatus::from_slug(&s)))
+}
+
+/// Record an accept/decline decision: the new status plus the reason, decider,
+/// and timestamp, all in one statement.
 ///
-/// The reason, decider, and timestamp are written in the same statement as the
-/// state: a decline without its reason on record is the failure mode this whole
-/// feature exists to prevent.
-pub async fn set_review_state(
+/// A decline without its reason on record is the failure mode this whole feature
+/// exists to prevent, so the two are never written separately.
+pub async fn set_status_with_reason(
     case_id: &str,
-    state: CaseReviewState,
+    status: CaseStatus,
     reason: &str,
     actor: &str,
-) -> Result<bool, sqlx::Error> {
-    let Some(current) = current_field(case_id, "review_state").await? else {
-        return Ok(false);
+) -> Result<(), sqlx::Error> {
+    let Some(current) = current_field(case_id, "status").await? else {
+        return Ok(());
     };
-    if current == state.slug() {
-        return Ok(false);
-    }
     sqlx::query(
         "UPDATE cases
-            SET review_state = $1, review_reason = $2, reviewed_by = $3, reviewed_at = $4
+            SET status = $1, review_reason = $2, reviewed_by = $3, reviewed_at = $4
           WHERE id = $5",
     )
-    .bind(state.slug())
+    .bind(status.slug())
     .bind(reason)
     .bind(actor)
     .bind(now_stamp())
@@ -630,12 +620,11 @@ pub async fn set_review_state(
         audit::Entity::Case,
         case_id,
         actor,
-        "review state",
+        "status",
         &current,
-        state.slug(),
+        status.slug(),
     )
-    .await?;
-    Ok(true)
+    .await
 }
 
 /// Rename a case, auditing the change.

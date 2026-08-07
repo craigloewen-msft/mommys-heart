@@ -66,13 +66,12 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //    case audit log.
     for c in crate::mockdata::cases() {
         sqlx::query(
-            "INSERT INTO cases (id, name, status, review_state, review_reason, owner_id)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO cases (id, name, status, review_reason, owner_id)
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(&c.id)
         .bind(&c.name)
         .bind(c.status.slug())
-        .bind(c.review_state.slug())
         .bind(&c.review_reason)
         .bind(&c.owner_id)
         .execute(pool)
