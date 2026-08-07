@@ -18,6 +18,7 @@
 pub mod admin_requests;
 pub mod audit;
 pub mod auth;
+pub mod badges;
 pub mod capabilities;
 pub mod case_folders;
 pub mod case_properties;

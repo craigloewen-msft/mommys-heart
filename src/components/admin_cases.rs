@@ -1,9 +1,4 @@
-//! **Case requests**: the cases waiting for an admin to accept or decline them.
-//!
-//! A case created through public signup has had no staff involvement at all, so
-//! until somebody decides, nobody is working it and the client has been told
-//! nothing. This is the list of those decisions, and it empties itself as they
-//! are made.
+//! The cases waiting for an admin to accept or decline them.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -30,7 +25,7 @@ pub fn CaseRequests(reload: RwSignal<u32>) -> impl IntoView {
         spawn_local(async move {
             match list_pending_case_requests().await {
                 Ok(list) => {
-                    // Keep the badge honest against what is actually on screen.
+                    // Keep the badge honest against what is on screen.
                     state.cases_pending_review.set(list.len() as i64);
                     items.set(list);
                     load_error.set(None);
@@ -73,13 +68,10 @@ pub fn CaseRequests(reload: RwSignal<u32>) -> impl IntoView {
 /// One case awaiting a decision, with the context needed to make it.
 #[component]
 fn CaseRequestCard(case: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
-    let state = expect_context::<AppState>();
     let case_id = StoredValue::new(case.id.clone());
     let saving = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
-    // Declining opens an inline reason field rather than a modal: the reason is
-    // part of the decision, and the admin should still be able to see the case
-    // they are declining while writing it.
+    // Declining reveals an inline reason field; the reason is part of the decision.
     let declining = RwSignal::new(false);
     let reason = RwSignal::new(String::new());
 
@@ -89,10 +81,8 @@ fn CaseRequestCard(case: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
         spawn_local(async move {
             match set_case_review_decision(case_id.get_value(), accept, reason_text).await {
                 Ok(()) => {
-                    // Reloading re-reads the list, which resets the badge with
-                    // it, so the count and the rows cannot disagree.
+                    // Reloading re-reads the list, which resets the badge with it.
                     reload.update(|r| *r += 1);
-                    state.refresh_cases_pending_review();
                 }
                 Err(e) => {
                     error.set(Some(err_text(e)));

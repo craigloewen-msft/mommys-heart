@@ -90,9 +90,6 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
 
     // Reactive unread total driving the "Case Chat" badge.
     let unread_total = Signal::derive(move || state.total_unread());
-    // The Admin badge covers everything waiting on an admin inside that page:
-    // approval requests plus case requests. One number on the nav, because the
-    // question it answers is "do I need to go there?", not "which tab?".
     let pending_requests = Signal::derive(move || {
         state.admin_request_pending.get() + state.cases_pending_review.get()
     });

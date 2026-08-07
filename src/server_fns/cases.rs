@@ -15,23 +15,10 @@ use crate::server_fns::evidence::Evidence;
 use crate::server_fns::message::Message;
 use crate::server_fns::pagination::Page;
 
-/// The single state of a case: where it is in its life, including whether the
-/// organization has accepted it at all.
-///
-/// One enum on purpose. An earlier draft kept the accept/decline decision in a
-/// separate `review_state` column, which made states like "Open + Declined"
-/// representable -- of the nine combinations, only three meant anything. The
-/// decision and the lifecycle are the same dimension, so they are one value.
-///
-/// Who may make a given transition still differs: only an operations or site
-/// admin may accept or decline (see `set_case_review_decision`), while staff
-/// move a case between the working states (see `set_case_status`). That is a
-/// rule about transitions, not a reason for a second field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaseStatus {
-    /// Submitted (usually via public signup) and waiting for an admin decision.
-    /// Nobody is working it yet, by definition.
+    /// Submitted and waiting for an admin decision.
     PendingReview,
     /// Accepted and being worked.
     Open,
@@ -39,14 +26,11 @@ pub enum CaseStatus {
     Monitor,
     /// Finished.
     Closed,
-    /// The organization is not taking this case on. Terminal, and carries a
-    /// reason the client is shown.
+    /// Not taken on. Terminal, and carries a reason the client is shown.
     Declined,
 }
 
 impl CaseStatus {
-    /// Every status, for slug round-tripping. Not what the staff dropdown
-    /// offers -- see [`CaseStatus::STAFF_SELECTABLE`].
     pub const ALL: [CaseStatus; 5] = [
         CaseStatus::PendingReview,
         CaseStatus::Open,
@@ -55,9 +39,6 @@ impl CaseStatus {
         CaseStatus::Declined,
     ];
 
-    /// The statuses staff may move a case between directly. Entering or leaving
-    /// review is an admin decision that needs a reason, so those two are not
-    /// items on a dropdown.
     pub const STAFF_SELECTABLE: [CaseStatus; 3] =
         [CaseStatus::Open, CaseStatus::Monitor, CaseStatus::Closed];
 
@@ -85,8 +66,6 @@ impl CaseStatus {
         Self::ALL.into_iter().find(|s2| s2.slug() == s)
     }
 
-    /// Whether the organization has taken this case on, i.e. whether work on it
-    /// is legitimate. False while it awaits a decision and after a decline.
     pub fn is_accepted(self) -> bool {
         matches!(
             self,
@@ -104,13 +83,7 @@ impl CaseStatus {
         }
     }
 
-    /// What this status means for the client who owns the case, in plain words.
-    ///
-    /// `assigned` is the staff working it, which turns a bare "Open" into the
-    /// thing the client actually wants to know: whether a person is on it. It is
-    /// derived from the live assignments rather than stored, so assigning a
-    /// volunteer updates this with no second step to forget.
-    pub fn client_message(self, assigned: &[String], reason: &str) -> String {
+    pub fn client_message(self, reason: &str) -> String {
         match self {
             CaseStatus::PendingReview => {
                 "Submitted \u{2014} a coordinator is reviewing your case.".to_string()
@@ -120,13 +93,9 @@ impl CaseStatus {
             }
             CaseStatus::Declined => format!("This case was not accepted: {reason}"),
             CaseStatus::Closed => "This case is closed.".to_string(),
-            CaseStatus::Open | CaseStatus::Monitor => match assigned {
-                [] => "Accepted \u{2014} we're arranging support for you.".to_string(),
-                [one] => format!("Being worked on by {one}."),
-                [first, rest @ ..] => {
-                    format!("Being worked on by {first} and {} others.", rest.len())
-                }
-            },
+            CaseStatus::Open | CaseStatus::Monitor => {
+                "Accepted \u{2014} your case team is working on it.".to_string()
+            }
         }
     }
 }
@@ -149,11 +118,6 @@ pub struct Case {
     /// Why the case was declined, if it was. Empty otherwise.
     #[serde(default)]
     pub review_reason: String,
-    /// Display names of the volunteers/admins assigned to work this case (i.e.
-    /// holders of `EditCase` who are not the client owner). Derived from the
-    /// live assignments; never a stored "is staffed" flag.
-    #[serde(default)]
-    pub assigned_volunteers: Vec<String>,
     /// The user who owns this case. Owners hold no implicit rights; they are
     /// granted a full capability assignment explicitly when the case is created.
     pub owner_id: String,
@@ -198,8 +162,6 @@ pub struct CaseSummary {
     pub status: CaseStatus,
     #[serde(default)]
     pub review_reason: String,
-    #[serde(default)]
-    pub assigned_volunteers: Vec<String>,
     pub owner_id: String,
     pub owner_first_name: String,
     pub owner_last_name: String,
@@ -227,11 +189,8 @@ impl CaseSummary {
 
 impl Case {
     /// What this case's state means for the client who owns it, in plain words.
-    /// Reads the live assignments, so "Open" becomes "Being worked on by X"
-    /// without anything extra being stored.
     pub fn client_message(&self) -> String {
-        self.status
-            .client_message(&self.assigned_volunteers, &self.review_reason)
+        self.status.client_message(&self.review_reason)
     }
 }
 
@@ -318,11 +277,7 @@ pub async fn create_case(
     for property in &properties {
         require_visibility(&user, property.visibility)?;
     }
-    // A staff member creating a case *is* the acceptance — the decision has
-    // already been made by the person doing it, so sending it to a review queue
-    // would only ask an admin to rubber-stamp their own colleague. A case a
-    // client creates for themselves still needs a decision, and the status they
-    // asked for is ignored until it has one.
+    // Staff creating a case *is* the acceptance; a client's still needs a decision.
     let status = if has_volunteer_access(&user) {
         status
     } else {
@@ -340,12 +295,7 @@ pub async fn create_case(
     .map_err(ServerFnError::new)
 }
 
-/// The cases waiting for an admin to accept or decline them.
-///
-/// Requires operations-admin permissions. Deliberately unscoped by assignment,
-/// unlike [`load_case_summaries_for_user`]: a case awaiting review has nobody
-/// assigned to it yet by definition, so an assignment-scoped query would return
-/// exactly nothing. Header fields only, never case contents.
+/// The cases waiting for an admin decision. Header fields only, never contents.
 #[server(prefix = "/api")]
 pub async fn list_pending_case_requests() -> Result<Vec<CaseSummary>, ServerFnError> {
     use crate::server::db::cases;
@@ -358,8 +308,7 @@ pub async fn list_pending_case_requests() -> Result<Vec<CaseSummary>, ServerFnEr
         .map_err(ServerFnError::new)
 }
 
-/// How many cases are waiting for an admin decision. Drives the count badge on
-/// the Cases tab, so "something needs you" is visible without opening it.
+/// How many cases are waiting for an admin decision; drives the count badge.
 #[server(prefix = "/api")]
 pub async fn pending_case_review_count() -> Result<i64, ServerFnError> {
     use crate::server::db::cases;
@@ -372,17 +321,10 @@ pub async fn pending_case_review_count() -> Result<i64, ServerFnError> {
         .map_err(ServerFnError::new)
 }
 
-/// Accept or decline a case awaiting review (operations-admin or site-admin
-/// only).
+/// Accept or decline a case awaiting review (admin only).
 ///
-/// Gated on the **account role**, not a [`CaseCapability`], and that distinction
-/// is the point: deciding whether the organization takes a case is an
-/// organizational act, so it must not be reachable through a per-case grant. The
-/// client who owns the case holds the full capability set on it (the signup flow
-/// grants it), and must never be able to approve their own case.
-///
-/// Only the two decision transitions live here. Moving an accepted case between
-/// its working states is [`set_case_status`], which staff do.
+/// Gated on account role, not a case capability: the signup flow grants the
+/// client owner every capability, and they must not approve their own case.
 #[server(prefix = "/api")]
 pub async fn set_case_review_decision(
     case_id: String,
@@ -396,18 +338,15 @@ pub async fn set_case_review_decision(
     require_operations_admin(&user)?;
 
     let reason = reason.trim().to_string();
-    // A decline the client cannot understand is worse than no answer: it leaves
-    // them with nowhere to go and nothing to act on.
+    // A decline the client cannot understand is worse than no answer.
     if !accept && reason.is_empty() {
         return Err(ServerFnError::new(
             "A reason is required when declining a case.",
         ));
     }
-    // The reason belongs to the decline. Carrying it over to an acceptance would
-    // leave a stale "we said no because…" attached to a case we took on.
+    // The reason belongs to the decline, never to a later acceptance.
     let reason = if accept { String::new() } else { reason };
-    // Accepting starts the case at the front of the working lifecycle; declining
-    // ends it. Both are one status write, because a case has one state.
+    // Accepting starts the working lifecycle; declining ends it.
     let next = if accept {
         CaseStatus::Open
     } else {
@@ -418,9 +357,7 @@ pub async fn set_case_review_decision(
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("Case not found."))?;
-    // Only a case actually awaiting review can be decided. Without this, a
-    // decision could silently reopen or discard a case already being worked --
-    // and "decline" on a live case would strand its client mid-support.
+    // Only a case awaiting review can be decided, so a decision cannot hit live work.
     if current != CaseStatus::PendingReview {
         return Err(ServerFnError::new(format!(
             "This case is already {} and is not awaiting review.",
@@ -443,8 +380,7 @@ pub async fn set_case_review_decision(
         user.full_name(),
         crate::server_fns::settings::NotificationKind::CaseData,
         detail,
-        // The decision is the one thing the client is most owed an answer on, so
-        // it reaches everyone on the case rather than staff alone.
+        // The client is owed this answer, so it reaches everyone on the case.
         crate::server::notifications::Audience::Everyone,
     );
     Ok(())
@@ -459,24 +395,17 @@ pub async fn set_case_status(case_id: String, status: CaseStatus) -> Result<(), 
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
-    // The capability alone is not enough here. The signup flow grants the client
-    // owner every capability on their own case, so without this an intake could
-    // mark itself Closed. Status is a staff judgement about the work; the client
-    // is told about it (see `client_message`) rather than making it.
+    // Capability alone is not enough: signup grants the client owner all of them.
     if !has_volunteer_access(&user) {
         return Err(ServerFnError::new("Only staff can change a case's status."));
     }
-    // Accepting and declining are admin decisions that carry a reason and a
-    // decider, so they are not reachable from the staff status control. Both
-    // ends of the lifecycle belong to `set_case_review_decision`.
+    // Deciding carries a reason and a decider, so it is not a status change.
     if !status.is_accepted() {
         return Err(ServerFnError::new(
             "Accepting or declining a case is an admin decision, not a status change.",
         ));
     }
-    // A case that has not been accepted has no working status to set, and a
-    // declined one is finished. Letting staff move either would route around the
-    // decision entirely.
+    // An undecided case has no working status to set; a declined one is finished.
     let current = cases::status(&case_id)
         .await
         .map_err(ServerFnError::new)?

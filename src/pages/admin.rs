@@ -19,9 +19,7 @@ use crate::state::AppState;
 /// the visible window by this much).
 const PAGE_SIZE: i64 = 4;
 
-/// Which section of the admin dashboard is showing. An enum rather than a
-/// boolean because there are now three, and "not requests" would stop meaning
-/// "case access" the moment a fourth arrives.
+/// Which section of the admin dashboard is showing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AdminTab {
     CaseRequests,
@@ -68,8 +66,7 @@ pub fn AdminDashboardPage() -> impl IntoView {
     let load_error = RwSignal::new(None::<String>);
     // Bumped after a mutation to force the current window to reload.
     let reload = RwSignal::new(0u32);
-    // Case requests lead: an unanswered intake is somebody waiting for help,
-    // which outranks the housekeeping on the other tabs.
+    // Case requests lead: an unanswered intake is somebody waiting for help.
     let tab = RwSignal::new(AdminTab::CaseRequests);
     // Whether the collapsible "Email delivery failures" panel is open. Mounting
     // the viewer only on open defers its fetch until the admin asks for it.
@@ -182,8 +179,7 @@ pub fn AdminDashboardPage() -> impl IntoView {
                         tab=tab
                         this_tab=AdminTab::CaseRequests
                         label="Case Requests"
-                        // Any admin can review a case, so unlike Requests this
-                        // is not gated on site-admin.
+                        // Any admin can review a case, so not site-admin gated.
                         badge=Signal::derive(move || state.cases_pending_review.get())
                     />
                     <TabButton tab=tab this_tab=AdminTab::CaseAccess label="Case access" />
@@ -265,7 +261,6 @@ pub fn AdminDashboardPage() -> impl IntoView {
 }
 
 /// One tab in the dashboard's tab bar, with an optional "needs attention" count.
-/// Shared so the three tabs cannot drift apart in styling or behaviour.
 #[component]
 fn TabButton(
     tab: RwSignal<AdminTab>,

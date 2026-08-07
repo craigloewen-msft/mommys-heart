@@ -9,9 +9,8 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::server_fns::admin_requests;
 use crate::server_fns::auth::LoginOutcome;
-use crate::server_fns::cases;
+use crate::server_fns::badges;
 use crate::server_fns::channel_notifications::{self, ChannelUnread};
 use crate::server_fns::users::{AccountRole, UserSummary};
 use crate::server_fns::{auth, err_text};
@@ -51,8 +50,7 @@ pub struct AppState {
     pub auth_resolved: RwSignal<bool>,
     pub unread: RwSignal<Vec<ChannelUnread>>,
     pub admin_request_pending: RwSignal<i64>,
-    /// Cases waiting for an admin accept/decline. Drives the count badge on the
-    /// admin Cases tab so unanswered intakes are visible without going looking.
+    /// Cases waiting for an admin accept/decline; drives the count badges.
     pub cases_pending_review: RwSignal<i64>,
 }
 
@@ -92,9 +90,7 @@ impl AppState {
         spawn_local(async move {
             if let Ok(Some(user)) = auth::current_user().await {
                 self.current_user_summary.set(Some(user));
-                self.refresh_unread();
-                self.refresh_admin_request_pending();
-                self.refresh_cases_pending_review();
+                self.refresh_badges();
             }
             self.auth_resolved.set(true);
         });
@@ -114,36 +110,20 @@ impl AppState {
         });
     }
 
-    pub fn refresh_admin_request_pending(self) {
-        let is_site_admin = self
-            .current_user_summary
-            .with_untracked(|user| user.as_ref().is_some_and(|user| user.role.is_site_admin()));
-        if !cfg!(feature = "hydrate") || !is_site_admin {
-            self.admin_request_pending.set(0);
+    /// Refresh every badge count in one request.
+    pub fn refresh_badges(self) {
+        if !cfg!(feature = "hydrate") {
+            return;
+        }
+        if self.current_user_summary.with_untracked(|u| u.is_none()) {
             return;
         }
         spawn_local(async move {
-            if let Ok(count) = admin_requests::pending_admin_request_count().await {
-                self.admin_request_pending.set(count);
-            }
-        });
-    }
-
-    /// Refresh the count of cases awaiting a decision. Unlike admin *requests*,
-    /// which only a site admin can act on, operations admins review cases too —
-    /// so the gate here is the broader one.
-    pub fn refresh_cases_pending_review(self) {
-        let is_admin = self.current_user_summary.with_untracked(|user| {
-            user.as_ref()
-                .is_some_and(|user| user.role.has_operations_admin_permissions())
-        });
-        if !cfg!(feature = "hydrate") || !is_admin {
-            self.cases_pending_review.set(0);
-            return;
-        }
-        spawn_local(async move {
-            if let Ok(count) = cases::pending_case_review_count().await {
-                self.cases_pending_review.set(count);
+            if let Ok(badges) = badges::load_app_badges().await {
+                self.unread.set(badges.unread);
+                self.admin_request_pending
+                    .set(badges.admin_requests_pending);
+                self.cases_pending_review.set(badges.cases_pending_review);
             }
         });
     }
@@ -191,9 +171,7 @@ impl AppState {
             .map_err(err_text)?;
         if let LoginOutcome::Authenticated(user) = &outcome {
             self.current_user_summary.set(Some(user.clone().into()));
-            self.refresh_unread();
-            self.refresh_admin_request_pending();
-            self.refresh_cases_pending_review();
+            self.refresh_badges();
         }
         Ok(outcome)
     }
@@ -206,9 +184,7 @@ impl AppState {
             .await
             .map_err(err_text)?;
         self.current_user_summary.set(Some(user.into()));
-        self.refresh_unread();
-        self.refresh_admin_request_pending();
-        self.refresh_cases_pending_review();
+        self.refresh_badges();
         Ok(())
     }
 
@@ -241,9 +217,7 @@ impl AppState {
             .await
             .map_err(err_text)?;
         self.current_user_summary.set(Some(user.into()));
-        self.refresh_unread();
-        self.refresh_admin_request_pending();
-        self.refresh_cases_pending_review();
+        self.refresh_badges();
         Ok(())
     }
 

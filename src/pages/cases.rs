@@ -756,10 +756,6 @@ fn CaseDetail(
                     edit_error.set(err_text(e));
                     return;
                 }
-                // Only staff may set status (the server enforces this too), so
-                // a client saving the form must not send a status write at all
-                // — otherwise every client edit would fail on a field they were
-                // never shown.
                 if can_see_restricted {
                     if let Some(s) = CaseStatus::from_slug(&status_slug) {
                         if let Err(e) = cases::set_case_status(case_id.clone(), s).await {
@@ -1546,10 +1542,6 @@ fn CaseDetail(
             let owner_name = owner_name.get_value();
             let status = c.status;
             let terms_accepted = c.terms_accepted.clone();
-            // The one thing a client cannot find out anywhere else: whether the
-            // org took their case, and who (if anyone) is working it. Staff
-            // already have this context on the admin side, so only the client
-            // gets a line here.
             let client_banner = if state.is_volunteer_or_admin() {
                 ().into_any()
             } else {
@@ -1702,10 +1694,6 @@ fn CaseDetail(
                         />
                     </div>
                     <div class="grid gap-4 sm:grid-cols-2">
-                        // Status is a staff judgement about the work, and the
-                        // server rejects a client changing it. Hiding it here
-                        // keeps the form honest rather than offering a control
-                        // that can only fail on save.
                         <Show when=move || state.is_volunteer_or_admin()>
                         <div>
                             <label class="text-xs font-medium text-slate-400">"Status"</label>

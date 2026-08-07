@@ -44,12 +44,7 @@ struct SummaryRow {
 }
 
 impl SummaryRow {
-    fn into_summary(
-        self,
-        capabilities: Vec<CaseCapability>,
-        assigned_volunteers: Vec<String>,
-        threshold: &str,
-    ) -> CaseSummary {
+    fn into_summary(self, capabilities: Vec<CaseCapability>, threshold: &str) -> CaseSummary {
         let inactive = self
             .last_activity
             .as_deref()
@@ -59,7 +54,6 @@ impl SummaryRow {
             name: self.name,
             status: CaseStatus::from_slug(&self.status).unwrap_or(CaseStatus::Open),
             review_reason: self.review_reason,
-            assigned_volunteers,
             owner_id: self.owner_id,
             owner_first_name: self.owner_first_name,
             owner_last_name: self.owner_last_name,
@@ -105,47 +99,6 @@ fn summary_select(message_count_scope: &str) -> String {
  LEFT JOIN users u ON u.id = c.owner_id",
         restricted = ChannelKind::VolunteerOnly.slug()
     )
-}
-
-/// Display names of the staff assigned to work each of `case_ids`, keyed by case
-/// id. "Assigned to work it" means holding [`CaseCapability::EditCase`] while
-/// *not* being a client account: the signup flow gives the client owner every
-/// capability on their own case, so a plain capability check would report every
-/// unstaffed intake as staffed by the person asking for help.
-///
-/// One batched query for a whole page. Cases with nobody assigned are simply
-/// absent from the map, which is what makes them "unstaffed".
-async fn assigned_by_case(
-    case_ids: &[String],
-) -> Result<std::collections::HashMap<String, Vec<String>>, sqlx::Error> {
-    use std::collections::HashMap;
-
-    if case_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let rows: Vec<(String, String, String)> = sqlx::query_as(&format!(
-        "SELECT a.case_id, u.first_name, u.last_name
-           FROM case_assignments a
-           JOIN users u ON u.id = a.user_id
-          WHERE a.case_id = ANY($1)
-            AND a.capability = '{edit}'
-            AND u.role <> '{client}'
-          ORDER BY a.case_id, u.first_name, u.last_name",
-        edit = CaseCapability::EditCase.slug(),
-        client = AccountRole::Client.slug(),
-    ))
-    .bind(case_ids)
-    .fetch_all(pool())
-    .await?;
-
-    let mut map: HashMap<String, Vec<String>> = HashMap::new();
-    for (case_id, first, last) in rows {
-        let name = format!("{first} {last}").trim().to_string();
-        if !name.is_empty() {
-            map.entry(case_id).or_default().push(name);
-        }
-    }
-    Ok(map)
 }
 
 /// The owner id of a case, if it exists (cheap authorization lookup).
@@ -244,13 +197,11 @@ pub async fn get_summaries_for_user(
         capabilities::get_multi_case(user_id, &ids).await?
     };
     let threshold = inactivity_threshold();
-    let mut assigned = assigned_by_case(&ids).await?;
     let items = rows
         .into_iter()
         .map(|r| {
             let caps = capabilities_by_case.remove(&r.id).unwrap_or_default();
-            let names = assigned.remove(&r.id).unwrap_or_default();
-            r.into_summary(caps, names, &threshold)
+            r.into_summary(caps, &threshold)
         })
         .collect::<Vec<_>>();
     Ok(Page { items, total })
@@ -284,42 +235,26 @@ pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, s
     .fetch_all(pool())
     .await?;
     let threshold = inactivity_threshold();
-    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-    let mut assigned = assigned_by_case(&ids).await?;
     Ok(rows
         .into_iter()
-        .map(|r| {
-            let names = assigned.remove(&r.id).unwrap_or_default();
-            r.into_summary(Vec::new(), names, &threshold)
-        })
+        .map(|r| r.into_summary(Vec::new(), &threshold))
         .collect())
 }
 
-/// The cases awaiting an accept/decline decision, oldest id first. Callers are
-/// responsible for the operations-admin gate.
-///
-/// Unscoped by assignment on purpose: a case waiting for review has nobody
-/// assigned to it yet, so scoping by assignment would hide every row this list
-/// exists to show.
+/// The cases awaiting an accept/decline decision. Callers gate on admin.
 pub async fn pending_review_cases() -> Result<Vec<CaseSummary>, sqlx::Error> {
     let rows = sqlx::query_as::<_, SummaryRow>(&format!(
         "{} WHERE c.status = $1 ORDER BY c.id",
-        // Admin-only listing, so count every message including the
-        // volunteer-only channel, matching the other admin lookups.
+        // Admin-only listing, so count every message like the other admin lookups.
         summary_select("true")
     ))
     .bind(CaseStatus::PendingReview.slug())
     .fetch_all(pool())
     .await?;
     let threshold = inactivity_threshold();
-    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-    let mut assigned = assigned_by_case(&ids).await?;
     Ok(rows
         .into_iter()
-        .map(|r| {
-            let names = assigned.remove(&r.id).unwrap_or_default();
-            r.into_summary(Vec::new(), names, &threshold)
-        })
+        .map(|r| r.into_summary(Vec::new(), &threshold))
         .collect())
 }
 
@@ -346,13 +281,9 @@ pub async fn get_summaries_by_ids(ids: &[String]) -> Result<Vec<CaseSummary>, sq
     .fetch_all(pool())
     .await?;
     let threshold = inactivity_threshold();
-    let mut assigned = assigned_by_case(ids).await?;
     Ok(rows
         .into_iter()
-        .map(|r| {
-            let names = assigned.remove(&r.id).unwrap_or_default();
-            r.into_summary(Vec::new(), names, &threshold)
-        })
+        .map(|r| r.into_summary(Vec::new(), &threshold))
         .collect())
 }
 
@@ -408,17 +339,12 @@ pub async fn get(
             acceptance.terms_version
         )
     });
-    let assigned_volunteers = assigned_by_case(&[id.to_string()])
-        .await?
-        .remove(id)
-        .unwrap_or_default();
 
     Ok(Some(Case {
         id: row.id,
         name: row.name,
         status: CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open),
         review_reason: row.review_reason,
-        assigned_volunteers,
         owner_id: row.owner_id,
         notes,
         evidence,
@@ -499,9 +425,7 @@ pub async fn create_from_signup_in(
     initial_properties: Vec<CaseProperty>,
     terms_version: &str,
 ) -> Result<(), sqlx::Error> {
-    // A case that arrives through public signup has had no staff involvement at
-    // all, so it starts life awaiting a decision rather than quietly counting as
-    // accepted work.
+    // Signup cases have had no staff involvement, so they start awaiting a decision.
     sqlx::query("INSERT INTO cases (id, name, status, owner_id) VALUES ($1, $2, $3, $4)")
         .bind(case_id)
         .bind(name)
@@ -581,19 +505,14 @@ pub async fn set_status(case_id: &str, status: CaseStatus, actor: &str) -> Resul
     .await
 }
 
-/// The current status of a case, or `None` if it does not exist. Cheap lookup
-/// for the transition guards that decide whether a state change is legal.
+/// The current status of a case, or `None` if it does not exist.
 pub async fn status(case_id: &str) -> Result<Option<CaseStatus>, sqlx::Error> {
     Ok(current_field(case_id, "status")
         .await?
         .and_then(|s| CaseStatus::from_slug(&s)))
 }
 
-/// Record an accept/decline decision: the new status plus the reason, decider,
-/// and timestamp, all in one statement.
-///
-/// A decline without its reason on record is the failure mode this whole feature
-/// exists to prevent, so the two are never written separately.
+/// Record a decision: status, reason, decider, and timestamp in one statement.
 pub async fn set_status_with_reason(
     case_id: &str,
     status: CaseStatus,

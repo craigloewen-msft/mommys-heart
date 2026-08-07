@@ -550,11 +550,6 @@ pub fn cases() -> Vec<Case> {
                 name: sc.name.into(),
                 status: sc.status,
                 review_reason: sc.review_reason.into(),
-                // Left empty: who is assigned is derived from the
-                // `case_assignments` rows the seeder writes from `USERS`, not
-                // restated here. Duplicating it in the fixtures would be a
-                // second source of truth that could contradict the first.
-                assigned_volunteers: Vec::new(),
                 owner_id: user_id((sc.owner - 1) as usize),
                 notes,
                 evidence,
