@@ -1,119 +1,379 @@
 #!/usr/bin/env bash
-# Stand up (or tear down) the local development backing services using wslc.exe —
-# the WSL container CLI (a Docker-equivalent). This manages BOTH containers the
-# SSR backend needs:
-#   * PostgreSQL      — the CRM database (via DATABASE_URL in .env)
-#   * Azurite         — the Azure Storage emulator for case evidence files
-#                       (via AZURE_STORAGE_CONNECTION_STRING in .env)
+# Manage this checkout's local development containers using wslc.exe — the WSL
+# container CLI (a Docker equivalent).
+#
+# Every checkout gets its OWN containers, so any number of agents can work at
+# the same time without coordinating:
+#   * mh-db-<instance>       — PostgreSQL, comes up already seeded
+#   * mh-storage-<instance>  — Azurite, the Azure Storage emulator for evidence
+#
+# Names and ports derive from an *instance slug* (the checkout's directory name
+# plus a path hash by default), and `up` writes them to a git-ignored .env.local
+# that the app and etc/dev-run.sh both read.
+#
+# ── Fast seeding ────────────────────────────────────────────────────────────
+# Running the Rust seeder is slow (it compiles the SSR binary and argon2-hashes
+# every demo password). So we do it once, dump the result, and bake the dump
+# into a database *image* tagged with a fingerprint of the migrations + seed
+# sources. A container from that image is fully seeded in ~3s, no cargo needed.
+#
+# Editing a migration or the fixtures changes the fingerprint, so a new image is
+# built while other agents keep using theirs. Images are immutable and the
+# runtime refuses to delete one that is in use, so this needs no locking or
+# bookkeeping on our side.
 #
 # Usage:
-#   etc/dev-db.sh up            # create + start both containers (idempotent)
-#   etc/dev-db.sh down          # stop + remove both containers (keeps data volumes)
-#   etc/dev-db.sh reset         # remove both containers AND their data volumes
-#   etc/dev-db.sh seed          # (re)populate the database with demo/test data
-#   etc/dev-db.sh logs [db|storage]   # tail a container's logs (default: db)
-#   etc/dev-db.sh psql          # open a psql shell inside the database container
+#   etc/dev-db.sh up            # create/start this checkout's containers
+#   etc/dev-db.sh reset         # wipe the database back to fresh seed data
+#   etc/dev-db.sh rebuild-seed  # force-rebuild the seed image (runs cargo)
+#   etc/dev-db.sh down          # stop this checkout's containers (keeps data)
+#   etc/dev-db.sh drop          # remove its containers, volumes and .env.local
+#   etc/dev-db.sh info          # print names, ports and URLs
+#   etc/dev-db.sh list          # every instance's containers on this machine
+#   etc/dev-db.sh psql | logs [db|storage]
 set -euo pipefail
 
-WSLC="${WSLC:-wslc.exe}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WSLC="${WSLC:-wslc.exe}"
+ENV_LOCAL="$REPO_ROOT/.env.local"
+CACHE_DIR="${MH_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/mommys-heart-devdb}"
+PORT_DIR="$CACHE_DIR/ports"
 
-# ── PostgreSQL ──────────────────────────────────────────────────────────────
-DB_NAME="mommys-heart-db"
-DB_VOLUME="mommys-heart-pgdata"
-DB_IMAGE="postgres:16"
 POSTGRES_USER="${POSTGRES_USER:-mommysheart}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-localdev}"
 POSTGRES_DB="${POSTGRES_DB:-mommysheart}"
-HOST_PORT="${HOST_PORT:-5432}"
+DB_BASE_IMAGE="${MH_DB_IMAGE:-postgres:16}"
+STORAGE_IMAGE="${MH_STORAGE_IMAGE:-mcr.microsoft.com/azure-storage/azurite}"
 
-# ── Azurite (Azure Storage emulator) ────────────────────────────────────────
-STORAGE_NAME="mommys-heart-storage"
-STORAGE_VOLUME="mommys-heart-blobdata"
-STORAGE_IMAGE="mcr.microsoft.com/azure-storage/azurite"
-BLOB_PORT="${BLOB_PORT:-10000}"
+# ── instance identity ───────────────────────────────────────────────────────
+# The readable prefix identifies the checkout; the hash prevents equal,
+# sanitized or truncated directory names in different paths from colliding.
+# MH_INSTANCE participates in both so it can select another instance in one
+# checkout without losing worktree isolation.
+INSTANCE_NAME="${MH_INSTANCE:-$(basename "$REPO_ROOT")}"
+INSTANCE_HASH="$(printf '%s\0%s' "$REPO_ROOT" "${MH_INSTANCE:-}" | sha256sum | cut -c1-8)"
+SLUG_PREFIX="$(printf '%s' "$INSTANCE_NAME" \
+  | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' \
+  | sed -e 's/-\+/-/g' -e 's/^-//' -e 's/-$//')"
+SLUG_PREFIX="${SLUG_PREFIX:0:31}"; [ -n "$SLUG_PREFIX" ] || SLUG_PREFIX="default"
+SLUG="$SLUG_PREFIX-$INSTANCE_HASH"
+
+DB_CONTAINER="mh-db-$SLUG"
+STORAGE_CONTAINER="mh-storage-$SLUG"
+DB_VOLUME="mh-pgdata-$SLUG"
+STORAGE_VOLUME="mh-blobdata-$SLUG"
+
+# ── ports ───────────────────────────────────────────────────────────────────
+# One contiguous block of four: web, live-reload, postgres, blob. Assignments
+# are persisted in the shared cache so stopped containers retain their ports.
+# Allocation is locked so simultaneous worktree starts cannot claim one block.
+port_free() {
+  ! ss -ltn "sport = :$1" 2>/dev/null | grep -q LISTEN
+}
+
+pinned_env() {
+  [ -f "$ENV_LOCAL" ] || return 1
+  local v; v="$(grep -m1 "^$1=" "$ENV_LOCAL" 2>/dev/null)" || return 1
+  v="${v#*=}"; v="${v%\"}"; printf '%s' "${v#\"}"
+}
+
+owns_env_local() { [ "$(pinned_env MH_INSTANCE 2>/dev/null || true)" = "$SLUG" ]; }
+
+PORT_FILE="$PORT_DIR/$INSTANCE_HASH"
+PORT_LOCK="$PORT_DIR/.lock"
+
+reservation_base() {
+  [ -f "$1" ] || return 1
+  local base _root
+  IFS=$'\t' read -r base _root <"$1" || return 1
+  [[ "$base" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$base"
+}
+
+block_reserved_by_other() {
+  local candidate="$1" file reserved
+  for file in "$PORT_DIR"/*; do
+    [ -f "$file" ] || continue
+    [ "$file" = "$PORT_FILE" ] && continue
+    reserved="$(reservation_base "$file" 2>/dev/null || true)"
+    [ "$reserved" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+find_free_port() {
+  local p
+  for ((p = 3900; p < 4000; p++)); do port_free "$p" && { printf '%s' "$p"; return 0; }; done
+  echo "dev-db: no free port in 3900-3999" >&2; return 1
+}
+
+find_base_port() {
+  local start i j base ok
+  start=$(( 16#$(printf '%s' "$SLUG" | sha256sum | cut -c1-8) % 200 ))
+  for ((i = 0; i < 200; i++)); do
+    base=$(( 3100 + (((start + i) % 200) * 4) ))
+    block_reserved_by_other "$base" && continue
+    ok=1
+    for ((j = 0; j < 4; j++)); do port_free $((base + j)) || { ok=0; break; }; done
+    [ "$ok" = 1 ] && { printf '%s' "$base"; return 0; }
+  done
+  echo "dev-db: no free block of 4 ports in 3100-3899" >&2; return 1
+}
+
+allocate_base_port() {
+  mkdir -p "$PORT_DIR"
+  local base pinned file reserved_root
+  exec {port_lock_fd}>"$PORT_LOCK"
+  flock "$port_lock_fd"
+
+  # Worktrees removed without `drop` cannot release their reservation. Reclaim
+  # those entries while preserving stopped instances whose checkout still exists.
+  for file in "$PORT_DIR"/*; do
+    [ -f "$file" ] || continue
+    IFS=$'\t' read -r base reserved_root <"$file" || true
+    [ -n "${reserved_root:-}" ] && [ ! -d "$reserved_root" ] && rm -f "$file"
+  done
+
+  base="$(reservation_base "$PORT_FILE" 2>/dev/null || true)"
+  if [ -z "$base" ] && owns_env_local; then
+    pinned="$(pinned_env LEPTOS_SITE_ADDR 2>/dev/null || true)"
+    pinned="${pinned##*:}"
+    if [[ "$pinned" =~ ^[0-9]+$ ]] && ! block_reserved_by_other "$pinned"; then
+      base="$pinned"
+    fi
+  fi
+  if [ -z "$base" ] && [ -n "${MH_BASE_PORT:-}" ]; then
+    [[ "$MH_BASE_PORT" =~ ^[0-9]+$ ]] || { echo "dev-db: MH_BASE_PORT must be numeric" >&2; return 1; }
+    ! block_reserved_by_other "$MH_BASE_PORT" || { echo "dev-db: port block $MH_BASE_PORT is reserved" >&2; return 1; }
+    for ((p = MH_BASE_PORT; p < MH_BASE_PORT + 4; p++)); do
+      port_free "$p" || { echo "dev-db: port $p is already in use" >&2; return 1; }
+    done
+    base="$MH_BASE_PORT"
+  fi
+  [ -n "$base" ] || base="$(find_base_port)"
+  printf '%s\t%s\n' "$base" "$REPO_ROOT" >"$PORT_FILE.tmp.$$"
+  mv "$PORT_FILE.tmp.$$" "$PORT_FILE"
+  printf '%s' "$base"
+}
+
+release_port_reservation() {
+  mkdir -p "$PORT_DIR"
+  exec {port_lock_fd}>"$PORT_LOCK"
+  flock "$port_lock_fd"
+  rm -f "$PORT_FILE"
+}
+
+BASE_PORT="$(allocate_base_port)"
+SITE_PORT=$BASE_PORT
+RELOAD_PORT=$((BASE_PORT + 1))
+DB_PORT=$((BASE_PORT + 2))
+BLOB_PORT=$((BASE_PORT + 3))
+
+DATABASE_URL_VALUE="postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@127.0.0.1:$DB_PORT/$POSTGRES_DB"
+# Azurite's public, well-known development credentials (not a secret).
+STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:$BLOB_PORT/devstoreaccount1;"
+
+# ── seed image ──────────────────────────────────────────────────────────────
+FINGERPRINT="$(cat "$REPO_ROOT"/migrations/*.sql "$REPO_ROOT/src/mockdata.rs" \
+  "$REPO_ROOT/src/server/db/seed.rs" 2>/dev/null | sha256sum | cut -c1-12)"
+SEED_IMAGE="mommys-heart-devdb:$FINGERPRINT"
+CACHE_FILE="$CACHE_DIR/seed-$FINGERPRINT.sql"
+
+# `wslc list` truncates the NAME column and emits CRLF line endings, so exact
+# matching needs --no-trunc and \r stripped.
+wslc_names() {
+  if [ -n "${1:-}" ]; then
+    "$WSLC" list "$1" --no-trunc 2>/dev/null
+  else
+    "$WSLC" list --no-trunc 2>/dev/null
+  fi | tr -d '\r' | awk 'NR>1{print $2}'
+}
+
+container_running() { wslc_names | grep -qx "$1"; }
+container_exists() { wslc_names --all | grep -qx "$1"; }
+
+remove_container() {
+  container_exists "$1" || return 0
+  "$WSLC" stop "$1" >/dev/null 2>&1 || true
+  "$WSLC" remove "$1" >/dev/null 2>&1 || true
+}
+
+# Seed once into a scratch container and cache the dump. The cache is keyed by
+# fingerprint and shared by every checkout, so this normally runs once per
+# machine per schema change. Concurrent builders are harmless: they do the same
+# work and the final `mv` is atomic.
+build_seed_dump() {
+  [ -s "$CACHE_FILE" ] && { touch "$CACHE_FILE"; return; }
+  mkdir -p "$CACHE_DIR"
+
+  local scratch="mh-seedbuild-$FINGERPRINT" seed_port
+  # Its own free port: the instance's DB_PORT may still be held by a running
+  # container (during `reset`), and another agent may be seeding concurrently.
+  seed_port="$(find_free_port)"
+  echo "Seeding once to build '$SEED_IMAGE' (first time for these migrations/fixtures)."
+  echo "This runs the Rust seeder; the result is cached and reused by every instance."
+
+  remove_container "$scratch"
+  "$WSLC" run -d --name "$scratch" -e "POSTGRES_USER=$POSTGRES_USER" \
+    -e "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" -e "POSTGRES_DB=$POSTGRES_DB" \
+    -p "$seed_port:5432" "$DB_BASE_IMAGE" >/dev/null
+
+  local tries=60
+  until "$WSLC" exec "$scratch" pg_isready -U "$POSTGRES_USER" -q >/dev/null 2>&1; do
+    ((tries-- > 0)) || { remove_container "$scratch"; echo "dev-db: scratch container never became ready" >&2; return 1; }
+    sleep 1
+  done
+
+  ( cd "$REPO_ROOT" && DATABASE_URL="postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@127.0.0.1:$seed_port/$POSTGRES_DB" \
+      RUST_LOG="${MH_SEED_LOG:-info}" cargo run --quiet --no-default-features --features ssr -- seed \
+  ) || { remove_container "$scratch"; return 1; }
+
+  "$WSLC" exec "$scratch" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    --no-owner --no-privileges >"$CACHE_FILE.tmp"
+  mv "$CACHE_FILE.tmp" "$CACHE_FILE"
+  remove_container "$scratch"
+  # Dumps are ~60KB; keep anything used in the last 30 days.
+  find "$CACHE_DIR" -maxdepth 1 -name 'seed-*.sql' -mtime +30 -delete 2>/dev/null || true
+}
+
+# Bake the dump into an image. Postgres replays docker-entrypoint-initdb.d the
+# first time a container initializes its data directory, which is what makes a
+# fresh container come up already seeded.
+build_seed_image_unlocked() {
+  if [ "${1:-}" = force ]; then
+    rm -f "$CACHE_FILE"; "$WSLC" rmi -f "$SEED_IMAGE" >/dev/null 2>&1 || true
+  elif "$WSLC" images 2>/dev/null | tr -d '\r' | awk 'NR>1{print $1":"$2}' | grep -qx "$SEED_IMAGE"; then
+    return
+  fi
+
+  build_seed_dump
+  local ctx; ctx="$(mktemp -d)"
+  cp "$CACHE_FILE" "$ctx/seed.sql"
+  printf 'FROM %s\nENV POSTGRES_USER=%s\nENV POSTGRES_PASSWORD=%s\nENV POSTGRES_DB=%s\nCOPY seed.sql /docker-entrypoint-initdb.d/10-seed.sql\n' \
+    "$DB_BASE_IMAGE" "$POSTGRES_USER" "$POSTGRES_PASSWORD" "$POSTGRES_DB" >"$ctx/Containerfile"
+  echo "Baking seed image '$SEED_IMAGE'."
+  "$WSLC" build -t "$SEED_IMAGE" "$ctx" >/dev/null
+  rm -rf "$ctx"
+}
+
+build_seed_image() {
+  mkdir -p "$CACHE_DIR"
+  local seed_lock="$CACHE_DIR/seed-$FINGERPRINT.lock" status
+  exec {seed_lock_fd}>"$seed_lock"
+  flock "$seed_lock_fd"
+  if build_seed_image_unlocked "${1:-}"; then status=0; else status=$?; fi
+  flock -u "$seed_lock_fd"
+  exec {seed_lock_fd}>&-
+  return "$status"
+}
+
+# ── containers ──────────────────────────────────────────────────────────────
+
+# Wait until the database is not merely up but seeded: a fresh container replays
+# the baked dump before opening for business.
+wait_for_db() {
+  # Probe over TCP, not the unix socket: while the seed image's init scripts run,
+  # postgres listens on the socket only. A socket probe would report ready during
+  # that bootstrap phase, just before the server restarts.
+  local tries=90
+  until "$WSLC" exec -i "$DB_CONTAINER" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+      -tAc "SELECT 1 FROM users LIMIT 1" 2>/dev/null | grep -q 1; do
+    ((tries-- > 0)) || { echo "dev-db: timed out waiting for '$DB_CONTAINER' (see: $0 logs db)" >&2; return 1; }
+    sleep 1
+  done
+}
 
 db_up() {
-  if "$WSLC" list --all 2>/dev/null | grep -q "$DB_NAME"; then
-    echo "Container '$DB_NAME' already exists; starting it."
-    "$WSLC" start "$DB_NAME"
+  build_seed_image
+  if container_running "$DB_CONTAINER"; then :
+  elif container_exists "$DB_CONTAINER"; then "$WSLC" start "$DB_CONTAINER" >/dev/null
   else
-    echo "Creating and starting '$DB_NAME' ($DB_IMAGE)."
-    "$WSLC" run -d \
-      --name "$DB_NAME" \
-      -e "POSTGRES_USER=$POSTGRES_USER" \
-      -e "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" \
-      -e "POSTGRES_DB=$POSTGRES_DB" \
-      -p "$HOST_PORT:5432" \
-      -v "$DB_VOLUME:/var/lib/postgresql/data" \
-      "$DB_IMAGE"
+    echo "Creating '$DB_CONTAINER' from '$SEED_IMAGE' (already seeded)."
+    "$WSLC" run -d --name "$DB_CONTAINER" -p "$DB_PORT:5432" \
+      -v "$DB_VOLUME:/var/lib/postgresql/data" "$SEED_IMAGE" >/dev/null
   fi
-  echo "Postgres is listening on 127.0.0.1:$HOST_PORT"
-  echo "DATABASE_URL=******127.0.0.1:$HOST_PORT/$POSTGRES_DB"
+  wait_for_db
 }
 
 storage_up() {
-  if "$WSLC" list --all 2>/dev/null | grep -q "$STORAGE_NAME"; then
-    echo "Container '$STORAGE_NAME' already exists; starting it."
-    "$WSLC" start "$STORAGE_NAME"
+  container_running "$STORAGE_CONTAINER" && return 0
+  if container_exists "$STORAGE_CONTAINER"; then
+    "$WSLC" start "$STORAGE_CONTAINER" >/dev/null
   else
-    echo "Creating and starting '$STORAGE_NAME' ($STORAGE_IMAGE)."
+    echo "Creating '$STORAGE_CONTAINER' ($STORAGE_IMAGE)."
     # --skipApiVersionCheck lets the newer Azure SDK's x-ms-version header work
     # against the emulator without pinning it to an exact Azurite release.
-    "$WSLC" run -d \
-      --name "$STORAGE_NAME" \
-      -p "$BLOB_PORT:10000" \
-      -v "$STORAGE_VOLUME:/data" \
-      "$STORAGE_IMAGE" \
-      azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+    "$WSLC" run -d --name "$STORAGE_CONTAINER" -p "$BLOB_PORT:10000" \
+      -v "$STORAGE_VOLUME:/data" "$STORAGE_IMAGE" \
+      azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck >/dev/null
   fi
-  echo "Azurite blob service is listening on 127.0.0.1:$BLOB_PORT"
-  echo "AZURE_STORAGE_CONNECTION_STRING (dev, well-known key) — see .env.example"
 }
 
-up() {
-  db_up
-  storage_up
+write_env_local() {
+  # Values are quoted so the file works both for dotenvy (the app) and `source`
+  # (etc/dev-run.sh) — the storage connection string contains ';'.
+  cat >"$ENV_LOCAL" <<EOF
+# GENERATED by etc/dev-db.sh — do not edit, do not commit.
+# Per-instance overrides for '$SLUG'; take precedence over .env, but not over
+# variables already exported in your shell. Regenerate with: etc/dev-db.sh up
+MH_INSTANCE="$SLUG"
+DATABASE_URL="$DATABASE_URL_VALUE"
+AZURE_STORAGE_CONNECTION_STRING="$STORAGE_CONNECTION_STRING"
+AZURE_STORAGE_CONTAINER="evidence"
+LEPTOS_SITE_ADDR="127.0.0.1:$SITE_PORT"
+LEPTOS_RELOAD_PORT="$RELOAD_PORT"
+EOF
 }
 
-down() {
-  for name in "$DB_NAME" "$STORAGE_NAME"; do
-    "$WSLC" stop "$name" 2>/dev/null || true
-    "$WSLC" remove "$name" 2>/dev/null || true
-  done
-  echo "Removed containers '$DB_NAME' and '$STORAGE_NAME' (data volumes kept)."
-}
+summary() {
+  cat <<EOF
 
-reset() {
-  down
-  "$WSLC" volume remove "$DB_VOLUME" 2>/dev/null || true
-  "$WSLC" volume remove "$STORAGE_VOLUME" 2>/dev/null || true
-  echo "Removed data volumes '$DB_VOLUME' and '$STORAGE_VOLUME'."
-}
+  instance      $SLUG
+  database      $DB_CONTAINER  (127.0.0.1:$DB_PORT)
+  blob storage  $STORAGE_CONTAINER  (127.0.0.1:$BLOB_PORT)
+  web server    http://127.0.0.1:$SITE_PORT   (live-reload $RELOAD_PORT)
+  seed image    $SEED_IMAGE
 
-# Load demo/test data into the database. Reuses the app's own seeder (so the demo
-# passwords are hashed correctly and the fixtures never drift), wiping any
-# existing CRM data first. Reads DATABASE_URL from the project's .env.
-seed() {
-  echo "Populating the database with demo/test data..."
-  ( cd "$REPO_ROOT" && cargo run --quiet --no-default-features --features ssr -- seed )
-  echo "Done. Demo logins are listed in the README."
-}
-
-logs() {
-  case "${1:-db}" in
-    db) "$WSLC" logs -f "$DB_NAME" ;;
-    storage) "$WSLC" logs -f "$STORAGE_NAME" ;;
-    *) echo "Usage: $0 logs [db|storage]" >&2; exit 1 ;;
-  esac
+  Start the app with:  etc/dev-run.sh
+EOF
 }
 
 case "${1:-up}" in
-  up) up ;;
-  down) down ;;
-  reset) reset ;;
-  seed) seed ;;
-  logs) logs "${2:-db}" ;;
-  psql) "$WSLC" exec -it "$DB_NAME" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" ;;
-  *) echo "Usage: $0 {up|down|reset|seed|logs|psql}" >&2; exit 1 ;;
+  up)
+    db_up; storage_up; write_env_local; summary ;;
+  reset|seed)
+    build_seed_image
+    remove_container "$DB_CONTAINER"
+    "$WSLC" volume remove "$DB_VOLUME" >/dev/null 2>&1 || true
+    db_up; storage_up; write_env_local
+    echo "Database reset to fresh seed data ($DB_CONTAINER, 127.0.0.1:$DB_PORT)." ;;
+  rebuild-seed)
+    build_seed_image force; exec "$0" reset ;;
+  down|stop)
+    "$WSLC" stop "$DB_CONTAINER" >/dev/null 2>&1 || true
+    "$WSLC" stop "$STORAGE_CONTAINER" >/dev/null 2>&1 || true
+    echo "Stopped this instance's containers (data kept)." ;;
+  drop)
+    remove_container "$DB_CONTAINER"; remove_container "$STORAGE_CONTAINER"
+    "$WSLC" volume remove "$DB_VOLUME" >/dev/null 2>&1 || true
+    "$WSLC" volume remove "$STORAGE_VOLUME" >/dev/null 2>&1 || true
+    if owns_env_local; then rm -f "$ENV_LOCAL"; fi
+    release_port_reservation
+    echo "Removed this instance's containers and volumes." ;;
+  info)
+    summary; echo "  DATABASE_URL  $DATABASE_URL_VALUE"; echo ;;
+  list)
+    "$WSLC" list --all --no-trunc 2>/dev/null | tr -d '\r' \
+      | awk 'NR==1 || $2 ~ /^mh-(db|storage)-/' \
+      | sed -E 's/^([0-9a-f]{12,}|CONTAINER ID) +//' ;;
+  psql)
+    db_up >/dev/null; "$WSLC" exec -it "$DB_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" ;;
+  logs)
+    case "${2:-db}" in
+      db) "$WSLC" logs -f "$DB_CONTAINER" ;;
+      storage) "$WSLC" logs -f "$STORAGE_CONTAINER" ;;
+      *) echo "Usage: $0 logs [db|storage]" >&2; exit 1 ;;
+    esac ;;
+  *)
+    echo "Usage: $0 {up|reset|rebuild-seed|down|drop|info|list|psql|logs}" >&2; exit 1 ;;
 esac

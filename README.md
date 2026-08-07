@@ -6,7 +6,12 @@ with server-side authentication (argon2 password hashing + session cookies).
 
 ## Run
 
-`cargo leptos watch`
+```bash
+etc/dev-db.sh up      # start this checkout's containers (already seeded)
+etc/dev-run.sh        # cargo leptos watch, on this checkout's own port
+```
+
+`etc/dev-db.sh up` prints the URL to open.
 
 ## View email templates
 
