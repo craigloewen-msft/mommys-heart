@@ -11,15 +11,13 @@ async fn main() {
     use mommys_heart_crm::server_fns;
     use tower_http::trace::TraceLayer;
 
-    // Load local .env in development (Azure OpenAI keys, ALLOWED_ORIGINS, etc.).
+    let _ = dotenvy::from_filename(".env.local");
     let _ = dotenvy::dotenv();
 
     // Start structured logging first so startup (incl. DB migrations/seeding) is
     // captured. Verbosity is controlled by `RUST_LOG`.
     telemetry::init();
 
-    // `mommys-heart-crm seed` — used by `etc/dev-db.sh seed` to (re)populate the
-    // dev database with demo data, then exit without starting the web server.
     if std::env::args().nth(1).as_deref() == Some("seed") {
         if let Err(e) = mommys_heart_crm::server::db::init().await {
             panic!("failed to initialize database: {e}");
