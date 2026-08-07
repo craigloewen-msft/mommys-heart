@@ -323,6 +323,10 @@ pub fn CaseHomePage() -> impl IntoView {
                         })
                         .unwrap_or_else(|| ().into_any());
                     let status = c.status;
+                    // One derived chip beside the status badge: the same value
+                    // the admin directory and the client banner render, so all
+                    // three tell the same story about the case.
+                    let work = c.work_state();
                     let name = c.name.clone();
                     let owner = c.owner_full_name();
                     let select = {
@@ -349,6 +353,7 @@ pub fn CaseHomePage() -> impl IntoView {
                             <span class=badge(status.badge_classes())>{status.label()}</span>
                         </div>
                         <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                            <span class=badge(work.badge_classes())>{work.label()}</span>
                             <span>"Owner: " {owner}</span>
                             {access_badge}
                             {inactive_badge}
@@ -756,10 +761,16 @@ fn CaseDetail(
                     edit_error.set(err_text(e));
                     return;
                 }
-                if let Some(s) = CaseStatus::from_slug(&status_slug) {
-                    if let Err(e) = cases::set_case_status(case_id.clone(), s).await {
-                        edit_error.set(err_text(e));
-                        return;
+                // Only staff may set status (the server enforces this too), so
+                // a client saving the form must not send a status write at all
+                // — otherwise every client edit would fail on a field they were
+                // never shown.
+                if can_see_restricted {
+                    if let Some(s) = CaseStatus::from_slug(&status_slug) {
+                        if let Err(e) = cases::set_case_status(case_id.clone(), s).await {
+                            edit_error.set(err_text(e));
+                            return;
+                        }
                     }
                 }
                 if is_site_admin {
@@ -1540,6 +1551,30 @@ fn CaseDetail(
             let owner_name = owner_name.get_value();
             let status = c.status;
             let terms_accepted = c.terms_accepted.clone();
+            let work = c.work_state();
+            // Clients get the plain-language version; staff get the same state
+            // as a compact chip. Same source, two registers — a client should
+            // never have to work out what "Unstaffed" means for them.
+            let is_client = !state.is_volunteer_or_admin();
+            // Staff read the compact chip; the client reads the same state as a
+            // sentence. Bound here rather than inline so the markup below stays
+            // about layout.
+            let work_chip = if is_client {
+                ().into_any()
+            } else {
+                view! { <span class=badge(work.badge_classes())>{work.label()}</span> }.into_any()
+            };
+            let client_banner = if is_client {
+                view! {
+                    <p class=format!(
+                        "mt-3 rounded-lg px-3 py-2 text-sm {}",
+                        work.badge_classes(),
+                    )>{work.client_message()}</p>
+                }
+                .into_any()
+            } else {
+                ().into_any()
+            };
             let edit_controls = if editing.get() {
                 view! {
                     <div class="flex shrink-0 items-center gap-2">
@@ -1588,9 +1623,11 @@ fn CaseDetail(
                         </div>
                         <div class="flex shrink-0 items-center gap-2">
                             <span class=badge(status.badge_classes())>{status.label()}</span>
+                            {work_chip}
                             {edit_controls}
                         </div>
                     </div>
+                    {client_banner}
                     <Show when=move || !can_edit && !can_note && !can_upload_evidence>
                         <p class="mt-2 text-xs text-slate-500">
                             "You have view-only access to this case."
@@ -1680,6 +1717,11 @@ fn CaseDetail(
                         />
                     </div>
                     <div class="grid gap-4 sm:grid-cols-2">
+                        // Status is a staff judgement about the work, and the
+                        // server rejects a client changing it. Hiding it here
+                        // keeps the form honest rather than offering a control
+                        // that can only fail on save.
+                        <Show when=move || state.is_volunteer_or_admin()>
                         <div>
                             <label class="text-xs font-medium text-slate-400">"Status"</label>
                             <select
@@ -1701,6 +1743,7 @@ fn CaseDetail(
                                     .collect_view()}
                             </select>
                         </div>
+                        </Show>
                         <div>
                             <label class="text-xs font-medium text-slate-400">
                                 "Owner (who filed it)"

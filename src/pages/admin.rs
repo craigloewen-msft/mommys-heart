@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::components::admin_cases::AdminCaseDirectory;
 use crate::components::admin_requests::AdminRequestCenter;
 use crate::components::change_log::ChangeLog;
 use crate::components::email_failures::EmailFailureLog;
@@ -17,6 +18,16 @@ use crate::state::AppState;
 /// How many users the admin list loads per "page" (each "Load more" click grows
 /// the visible window by this much).
 const PAGE_SIZE: i64 = 4;
+
+/// Which section of the admin dashboard is showing. An enum rather than a
+/// boolean because there are now three, and "not requests" would stop meaning
+/// "case access" the moment a fourth arrives.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AdminTab {
+    CaseAccess,
+    Cases,
+    Requests,
+}
 
 /// A single case assignment being edited in the admin capabilities "Edit" flow.
 /// Holds the working capability set and a "marked for removal" flag; nothing is
@@ -57,7 +68,7 @@ pub fn AdminDashboardPage() -> impl IntoView {
     let load_error = RwSignal::new(None::<String>);
     // Bumped after a mutation to force the current window to reload.
     let reload = RwSignal::new(0u32);
-    let requests_tab = RwSignal::new(false);
+    let tab = RwSignal::new(AdminTab::CaseAccess);
     // Whether the collapsible "Email delivery failures" panel is open. Mounting
     // the viewer only on open defers its fetch until the admin asks for it.
     let failures_open = RwSignal::new(false);
@@ -67,7 +78,7 @@ pub fn AdminDashboardPage() -> impl IntoView {
     // in the browser after hydration). We always fetch `[0, window)` so both
     // search changes and post-mutation refreshes are handled by one code path.
     Effect::new(move |_| {
-        if requests_tab.get() {
+        if tab.get() != AdminTab::CaseAccess {
             return;
         }
         let count = window.get();
@@ -165,50 +176,27 @@ pub fn AdminDashboardPage() -> impl IntoView {
         <Layout title="Admin".to_string()>
             <div class="mb-6 border-b border-slate-800" role="tablist" aria-label="Admin sections">
                 <div class="flex gap-6">
-                    <button
-                        type="button"
-                        role="tab"
-                        aria-selected=move || (!requests_tab.get()).to_string()
-                        on:click=move |_| requests_tab.set(false)
-                        class=move || if requests_tab.get() {
-                            "border-b-2 border-transparent px-1 pb-3 text-sm font-medium text-slate-400 hover:text-slate-200"
-                        } else {
-                            "border-b-2 border-primary-400 px-1 pb-3 text-sm font-medium text-primary-300"
-                        }
-                    >
-                        "Case access"
-                    </button>
-                    <button
-                        type="button"
-                        role="tab"
-                        aria-selected=move || requests_tab.get().to_string()
-                        on:click=move |_| requests_tab.set(true)
-                        class=move || if requests_tab.get() {
-                            "border-b-2 border-primary-400 px-1 pb-3 text-sm font-medium text-primary-300"
-                        } else {
-                            "border-b-2 border-transparent px-1 pb-3 text-sm font-medium text-slate-400 hover:text-slate-200"
-                        }
-                    >
-                        <span class="inline-flex items-center gap-2">
-                            "Requests"
-                            {move || {
-                                let count = if is_site_admin {
-                                    state.admin_request_pending.get()
-                                } else {
-                                    0
-                                };
-                                (count > 0).then(|| view! {
-                                    <span class="inline-flex min-w-5 items-center justify-center rounded-full bg-primary-500 px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-white">
-                                        {count}
-                                    </span>
-                                })
-                            }}
-                        </span>
-                    </button>
+                    <TabButton tab=tab this_tab=AdminTab::CaseAccess label="Case access" />
+                    <TabButton
+                        tab=tab
+                        this_tab=AdminTab::Cases
+                        label="Cases"
+                        // Cases awaiting a decision. Any admin can review, so
+                        // unlike Requests this is not site-admin only.
+                        badge=Signal::derive(move || state.cases_pending_review.get())
+                    />
+                    <TabButton
+                        tab=tab
+                        this_tab=AdminTab::Requests
+                        label="Requests"
+                        badge=Signal::derive(move || {
+                            if is_site_admin { state.admin_request_pending.get() } else { 0 }
+                        })
+                    />
                 </div>
             </div>
 
-            <div role="tabpanel" class:hidden=move || requests_tab.get()>
+            <div role="tabpanel" class:hidden=move || tab.get() != AdminTab::CaseAccess>
                 <p class="mb-6 text-sm text-slate-400">
                     {if is_site_admin {
                         "Manage global roles and case capabilities."
@@ -251,7 +239,14 @@ pub fn AdminDashboardPage() -> impl IntoView {
                 </div>
             </div>
 
-            <div role="tabpanel" class:hidden=move || !requests_tab.get()>
+            <div role="tabpanel" class:hidden=move || tab.get() != AdminTab::Cases>
+                <p class="mb-4 text-sm text-slate-400">
+                    "Every case in the system. Accept or decline the ones waiting on a decision, and see at a glance which accepted cases still have nobody working them."
+                </p>
+                <AdminCaseDirectory reload=reload />
+            </div>
+
+            <div role="tabpanel" class:hidden=move || tab.get() != AdminTab::Requests>
                 <p class="mb-6 text-sm text-slate-400">
                     {if is_site_admin {
                         "Review active operations-admin requests and browse past decisions."
@@ -265,6 +260,42 @@ pub fn AdminDashboardPage() -> impl IntoView {
     }
     .into_any()
     })
+}
+
+/// One tab in the dashboard's tab bar, with an optional "needs attention" count.
+/// Shared so the three tabs cannot drift apart in styling or behaviour.
+#[component]
+fn TabButton(
+    tab: RwSignal<AdminTab>,
+    this_tab: AdminTab,
+    label: &'static str,
+    #[prop(optional, into)] badge: Option<Signal<i64>>,
+) -> impl IntoView {
+    view! {
+        <button
+            type="button"
+            role="tab"
+            aria-selected=move || (tab.get() == this_tab).to_string()
+            on:click=move |_| tab.set(this_tab)
+            class=move || if tab.get() == this_tab {
+                "border-b-2 border-primary-400 px-1 pb-3 text-sm font-medium text-primary-300"
+            } else {
+                "border-b-2 border-transparent px-1 pb-3 text-sm font-medium text-slate-400 hover:text-slate-200"
+            }
+        >
+            <span class="inline-flex items-center gap-2">
+                {label}
+                {move || {
+                    let count = badge.map(|b| b.get()).unwrap_or(0);
+                    (count > 0).then(|| view! {
+                        <span class="inline-flex min-w-5 items-center justify-center rounded-full bg-primary-500 px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-white">
+                            {count}
+                        </span>
+                    })
+                }}
+            </span>
+        </button>
+    }
 }
 
 /// A management card for a single user. `reload` is bumped after any mutation so

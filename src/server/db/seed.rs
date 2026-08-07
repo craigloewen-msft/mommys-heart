@@ -65,13 +65,18 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 2. Cases + their default chat channels, notes, evidence, properties, and
     //    case audit log.
     for c in crate::mockdata::cases() {
-        sqlx::query("INSERT INTO cases (id, name, status, owner_id) VALUES ($1, $2, $3, $4)")
-            .bind(&c.id)
-            .bind(&c.name)
-            .bind(c.status.slug())
-            .bind(&c.owner_id)
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO cases (id, name, status, review_state, review_reason, owner_id)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(&c.id)
+        .bind(&c.name)
+        .bind(c.status.slug())
+        .bind(c.review_state.slug())
+        .bind(&c.review_reason)
+        .bind(&c.owner_id)
+        .execute(pool)
+        .await?;
 
         // Same two channels every runtime-created case gets: the permanent
         // volunteer-only back-channel plus "General".

@@ -7,6 +7,7 @@ pub mod server_fns;
 pub mod state;
 
 pub mod components {
+    pub mod admin_cases;
     pub mod admin_requests;
     pub mod case_intake;
     pub mod change_log;

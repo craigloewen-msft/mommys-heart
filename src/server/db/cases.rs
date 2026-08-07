@@ -6,7 +6,9 @@ use crate::server::db::{
 };
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
-use crate::server_fns::cases::{Case, CaseNote, CaseStatus, CaseSummary};
+use crate::server_fns::cases::{
+    Case, CaseListFilter, CaseNote, CaseReviewState, CaseStatus, CaseSummary,
+};
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::pagination::Page;
 use crate::server_fns::users::AccountRole;
@@ -16,6 +18,8 @@ struct CaseRow {
     id: String,
     name: String,
     status: String,
+    review_state: String,
+    review_reason: String,
     owner_id: String,
 }
 
@@ -34,6 +38,8 @@ struct SummaryRow {
     id: String,
     name: String,
     status: String,
+    review_state: String,
+    review_reason: String,
     owner_id: String,
     owner_first_name: String,
     owner_last_name: String,
@@ -42,7 +48,12 @@ struct SummaryRow {
 }
 
 impl SummaryRow {
-    fn into_summary(self, capabilities: Vec<CaseCapability>, threshold: &str) -> CaseSummary {
+    fn into_summary(
+        self,
+        capabilities: Vec<CaseCapability>,
+        assigned_volunteers: Vec<String>,
+        threshold: &str,
+    ) -> CaseSummary {
         let inactive = self
             .last_activity
             .as_deref()
@@ -51,6 +62,10 @@ impl SummaryRow {
             id: self.id,
             name: self.name,
             status: CaseStatus::from_slug(&self.status).unwrap_or(CaseStatus::Open),
+            review_state: CaseReviewState::from_slug(&self.review_state)
+                .unwrap_or(CaseReviewState::Accepted),
+            review_reason: self.review_reason,
+            assigned_volunteers,
             owner_id: self.owner_id,
             owner_first_name: self.owner_first_name,
             owner_last_name: self.owner_last_name,
@@ -81,7 +96,7 @@ fn inactivity_threshold() -> String {
 /// internal constant or a bind-parameter reference, never user input.
 fn summary_select(message_count_scope: &str) -> String {
     format!(
-        "SELECT c.id, c.name, c.status, c.owner_id,
+        "SELECT c.id, c.name, c.status, c.review_state, c.review_reason, c.owner_id,
         u.first_name AS owner_first_name,
         u.last_name AS owner_last_name,
         (SELECT COUNT(*) FROM messages m
@@ -96,6 +111,47 @@ fn summary_select(message_count_scope: &str) -> String {
  LEFT JOIN users u ON u.id = c.owner_id",
         restricted = ChannelKind::VolunteerOnly.slug()
     )
+}
+
+/// Display names of the staff assigned to work each of `case_ids`, keyed by case
+/// id. "Assigned to work it" means holding [`CaseCapability::EditCase`] while
+/// *not* being a client account: the signup flow gives the client owner every
+/// capability on their own case, so a plain capability check would report every
+/// unstaffed intake as staffed by the person asking for help.
+///
+/// One batched query for a whole page. Cases with nobody assigned are simply
+/// absent from the map, which is what makes them "unstaffed".
+async fn assigned_by_case(
+    case_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<String>>, sqlx::Error> {
+    use std::collections::HashMap;
+
+    if case_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(String, String, String)> = sqlx::query_as(&format!(
+        "SELECT a.case_id, u.first_name, u.last_name
+           FROM case_assignments a
+           JOIN users u ON u.id = a.user_id
+          WHERE a.case_id = ANY($1)
+            AND a.capability = '{edit}'
+            AND u.role <> '{client}'
+          ORDER BY a.case_id, u.first_name, u.last_name",
+        edit = CaseCapability::EditCase.slug(),
+        client = AccountRole::Client.slug(),
+    ))
+    .bind(case_ids)
+    .fetch_all(pool())
+    .await?;
+
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for (case_id, first, last) in rows {
+        let name = format!("{first} {last}").trim().to_string();
+        if !name.is_empty() {
+            map.entry(case_id).or_default().push(name);
+        }
+    }
+    Ok(map)
 }
 
 /// The owner id of a case, if it exists (cheap authorization lookup).
@@ -194,11 +250,13 @@ pub async fn get_summaries_for_user(
         capabilities::get_multi_case(user_id, &ids).await?
     };
     let threshold = inactivity_threshold();
+    let mut assigned = assigned_by_case(&ids).await?;
     let items = rows
         .into_iter()
         .map(|r| {
             let caps = capabilities_by_case.remove(&r.id).unwrap_or_default();
-            r.into_summary(caps, &threshold)
+            let names = assigned.remove(&r.id).unwrap_or_default();
+            r.into_summary(caps, names, &threshold)
         })
         .collect::<Vec<_>>();
     Ok(Page { items, total })
@@ -232,10 +290,145 @@ pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, s
     .fetch_all(pool())
     .await?;
     let threshold = inactivity_threshold();
+    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+    let mut assigned = assigned_by_case(&ids).await?;
     Ok(rows
         .into_iter()
-        .map(|r| r.into_summary(Vec::new(), &threshold))
+        .map(|r| {
+            let names = assigned.remove(&r.id).unwrap_or_default();
+            r.into_summary(Vec::new(), names, &threshold)
+        })
         .collect())
+}
+
+/// One page of **every** case in the system, for the admin Cases tab.
+///
+/// Deliberately unscoped by assignment, unlike [`get_summaries_for_user`]: an
+/// admin managing the caseload has to be able to see the cases nobody has been
+/// assigned to, which is the whole reason the screen exists. Callers are
+/// responsible for the operations-admin gate.
+///
+/// `search` matches case id, case name, or the owner's name, so an admin can
+/// find a case by the person it belongs to — which is usually how they remember
+/// it. `filter` narrows to one slice of the directory.
+pub async fn list_page(
+    offset: i64,
+    limit: i64,
+    search: &str,
+    filter: CaseListFilter,
+) -> Result<Page<CaseSummary>, sqlx::Error> {
+    let limit = limit.clamp(1, 100);
+    let offset = offset.max(0);
+
+    let term = search.trim();
+    let pattern = if term.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            term.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        ))
+    };
+
+    const SEARCH: &str = "($1::text IS NULL
+         OR c.id ILIKE $1
+         OR c.name ILIKE $1
+         OR (u.first_name || ' ' || u.last_name) ILIKE $1)";
+
+    // Every filter is a plain predicate over the same directory query, built
+    // from internal constants only. `Unstaffed` and `Inactive` mirror exactly
+    // the conditions the derived work state and the inactivity badge use, so a
+    // filter can never disagree with the chip rendered on the row it returns.
+    let staffed = format!(
+        "EXISTS (SELECT 1 FROM case_assignments a
+                   JOIN users au ON au.id = a.user_id
+                  WHERE a.case_id = c.id
+                    AND a.capability = '{edit}'
+                    AND au.role <> '{client}')",
+        edit = CaseCapability::EditCase.slug(),
+        client = AccountRole::Client.slug(),
+    );
+    let last_activity = "(SELECT MAX(m.sent_at) FROM messages m
+            JOIN case_channels ch ON ch.id = m.channel_id
+           WHERE m.case_id = c.id)";
+    let threshold = inactivity_threshold();
+    let filter_sql = match filter {
+        CaseListFilter::All => "true".to_string(),
+        CaseListFilter::PendingReview => {
+            format!(
+                "c.review_state = '{}'",
+                CaseReviewState::PendingReview.slug()
+            )
+        }
+        CaseListFilter::Accepted => {
+            format!("c.review_state = '{}'", CaseReviewState::Accepted.slug())
+        }
+        CaseListFilter::Declined => {
+            format!("c.review_state = '{}'", CaseReviewState::Declined.slug())
+        }
+        CaseListFilter::Unstaffed => format!(
+            "c.review_state = '{}' AND c.status <> '{}' AND NOT {staffed}",
+            CaseReviewState::Accepted.slug(),
+            CaseStatus::Closed.slug(),
+        ),
+        // `$THRESHOLD` is substituted with the right bind position per query
+        // below, since the two statements bind different numbers of parameters.
+        CaseListFilter::Inactive => format!("{last_activity} < $THRESHOLD"),
+    };
+
+    // The owner join has to be present in the COUNT too, because the search
+    // matches on owner name.
+    let count_sql = format!(
+        "SELECT count(*) FROM cases c
+         LEFT JOIN users u ON u.id = c.owner_id
+         WHERE {SEARCH} AND {}",
+        filter_sql.replace("$THRESHOLD", "$2")
+    );
+    let page_sql = format!(
+        "{}
+         WHERE {SEARCH} AND {}
+         ORDER BY c.id LIMIT $2 OFFSET $3",
+        // Admin-only listing: count every message, including the volunteer-only
+        // channel, the same way the other admin lookups do.
+        summary_select("true"),
+        filter_sql.replace("$THRESHOLD", "$4")
+    );
+
+    let count_fut = sqlx::query_scalar::<_, i64>(&count_sql)
+        .bind(&pattern)
+        .bind(&threshold)
+        .fetch_one(pool());
+    let rows_fut = sqlx::query_as::<_, SummaryRow>(&page_sql)
+        .bind(&pattern)
+        .bind(limit)
+        .bind(offset)
+        .bind(&threshold)
+        .fetch_all(pool());
+    let (total, rows) = tokio::try_join!(count_fut, rows_fut)?;
+
+    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+    let mut assigned = assigned_by_case(&ids).await?;
+    let items = rows
+        .into_iter()
+        .map(|r| {
+            let names = assigned.remove(&r.id).unwrap_or_default();
+            // Capabilities are left empty: this listing is about managing the
+            // caseload, not opening cases, and an admin's own per-case rights
+            // are irrelevant to (and must not be implied by) seeing a row here.
+            r.into_summary(Vec::new(), names, &threshold)
+        })
+        .collect::<Vec<_>>();
+    Ok(Page { items, total })
+}
+
+/// How many cases are waiting for an admin decision.
+pub async fn pending_review_count() -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT count(*) FROM cases WHERE review_state = $1")
+        .bind(CaseReviewState::PendingReview.slug())
+        .fetch_one(pool())
+        .await
 }
 
 /// Lightweight [`CaseSummary`]s for a specific set of ids, ordered by id. Used to
@@ -253,9 +446,13 @@ pub async fn get_summaries_by_ids(ids: &[String]) -> Result<Vec<CaseSummary>, sq
     .fetch_all(pool())
     .await?;
     let threshold = inactivity_threshold();
+    let mut assigned = assigned_by_case(ids).await?;
     Ok(rows
         .into_iter()
-        .map(|r| r.into_summary(Vec::new(), &threshold))
+        .map(|r| {
+            let names = assigned.remove(&r.id).unwrap_or_default();
+            r.into_summary(Vec::new(), names, &threshold)
+        })
         .collect())
 }
 
@@ -267,11 +464,12 @@ pub async fn get(
     user_id: &str,
     has_volunteer_access: bool,
 ) -> Result<Option<Case>, sqlx::Error> {
-    let Some(row) =
-        sqlx::query_as::<_, CaseRow>("SELECT id, name, status, owner_id FROM cases WHERE id = $1")
-            .bind(id)
-            .fetch_optional(pool())
-            .await?
+    let Some(row) = sqlx::query_as::<_, CaseRow>(
+        "SELECT id, name, status, review_state, review_reason, owner_id FROM cases WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool())
+    .await?
     else {
         return Ok(None);
     };
@@ -310,11 +508,19 @@ pub async fn get(
             acceptance.terms_version
         )
     });
+    let assigned_volunteers = assigned_by_case(&[id.to_string()])
+        .await?
+        .remove(id)
+        .unwrap_or_default();
 
     Ok(Some(Case {
         id: row.id,
         name: row.name,
         status: CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open),
+        review_state: CaseReviewState::from_slug(&row.review_state)
+            .unwrap_or(CaseReviewState::Accepted),
+        review_reason: row.review_reason,
+        assigned_volunteers,
         owner_id: row.owner_id,
         notes,
         evidence,
@@ -334,19 +540,23 @@ pub async fn create(
     owner_name: &str,
     name: &str,
     status: CaseStatus,
+    review_state: CaseReviewState,
     initial_properties: Vec<CaseProperty>,
     first_note: Option<String>,
 ) -> Result<String, sqlx::Error> {
     let id = ids::next(pool(), "c").await?;
 
     let mut tx = pool().begin().await?;
-    sqlx::query("INSERT INTO cases (id, name, status, owner_id) VALUES ($1, $2, $3, $4)")
-        .bind(&id)
-        .bind(name)
-        .bind(status.slug())
-        .bind(owner_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO cases (id, name, status, review_state, owner_id) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(&id)
+    .bind(name)
+    .bind(status.slug())
+    .bind(review_state.slug())
+    .bind(owner_id)
+    .execute(&mut *tx)
+    .await?;
 
     // Every case starts with its permanent volunteer-only back-channel and a
     // "General" channel, created in the same transaction so a case can never
@@ -395,13 +605,19 @@ pub async fn create_from_signup_in(
     initial_properties: Vec<CaseProperty>,
     terms_version: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO cases (id, name, status, owner_id) VALUES ($1, $2, $3, $4)")
-        .bind(case_id)
-        .bind(name)
-        .bind(CaseStatus::Open.slug())
-        .bind(owner_id)
-        .execute(&mut **tx)
-        .await?;
+    // A case that arrives through public signup has had no staff involvement at
+    // all, so it starts life awaiting a decision rather than quietly counting as
+    // accepted work.
+    sqlx::query(
+        "INSERT INTO cases (id, name, status, review_state, owner_id) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(case_id)
+    .bind(name)
+    .bind(CaseStatus::Open.slug())
+    .bind(CaseReviewState::PendingReview.slug())
+    .bind(owner_id)
+    .execute(&mut **tx)
+    .await?;
     channels::create_defaults(&mut **tx, case_id).await?;
     case_folders::create_for_new_case(tx, case_id).await?;
     case_properties::add_for_new_case(tx, case_id, case_properties::clean(initial_properties))
@@ -472,6 +688,50 @@ pub async fn set_status(case_id: &str, status: CaseStatus, actor: &str) -> Resul
         status.slug(),
     )
     .await
+}
+
+/// Record an accept/decline decision on a case, auditing the change. Returns
+/// whether anything actually changed, so callers can skip notifying people about
+/// a decision that was already in place.
+///
+/// The reason, decider, and timestamp are written in the same statement as the
+/// state: a decline without its reason on record is the failure mode this whole
+/// feature exists to prevent.
+pub async fn set_review_state(
+    case_id: &str,
+    state: CaseReviewState,
+    reason: &str,
+    actor: &str,
+) -> Result<bool, sqlx::Error> {
+    let Some(current) = current_field(case_id, "review_state").await? else {
+        return Ok(false);
+    };
+    if current == state.slug() {
+        return Ok(false);
+    }
+    sqlx::query(
+        "UPDATE cases
+            SET review_state = $1, review_reason = $2, reviewed_by = $3, reviewed_at = $4
+          WHERE id = $5",
+    )
+    .bind(state.slug())
+    .bind(reason)
+    .bind(actor)
+    .bind(now_stamp())
+    .bind(case_id)
+    .execute(pool())
+    .await?;
+    audit::record(
+        pool(),
+        audit::Entity::Case,
+        case_id,
+        actor,
+        "review state",
+        &current,
+        state.slug(),
+    )
+    .await?;
+    Ok(true)
 }
 
 /// Rename a case, auditing the change.

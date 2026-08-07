@@ -56,6 +56,170 @@ impl CaseStatus {
     }
 }
 
+/// Whether the organization has decided to take a case.
+///
+/// Deliberately separate from [`CaseStatus`]: status says where a case is in its
+/// life, this says whether we accepted it at all. Only an operations or site
+/// admin can change it (see `set_case_review_state`), which is what makes it the
+/// one trustworthy signal — unlike status, which the per-case `EditCase`
+/// capability puts within reach of the client who owns the case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaseReviewState {
+    /// Submitted (usually via public signup) and waiting for an admin decision.
+    PendingReview,
+    /// The organization has taken this case on.
+    Accepted,
+    /// The organization is not taking this case; `review_reason` says why.
+    Declined,
+}
+
+impl CaseReviewState {
+    pub const ALL: [CaseReviewState; 3] = [
+        CaseReviewState::PendingReview,
+        CaseReviewState::Accepted,
+        CaseReviewState::Declined,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CaseReviewState::PendingReview => "Pending review",
+            CaseReviewState::Accepted => "Accepted",
+            CaseReviewState::Declined => "Declined",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            CaseReviewState::PendingReview => "pending_review",
+            CaseReviewState::Accepted => "accepted",
+            CaseReviewState::Declined => "declined",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.slug() == s)
+    }
+
+    pub fn badge_classes(self) -> &'static str {
+        match self {
+            CaseReviewState::PendingReview => {
+                "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"
+            }
+            CaseReviewState::Accepted => {
+                "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+            }
+            CaseReviewState::Declined => "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",
+        }
+    }
+}
+
+/// What is actually happening on a case right now, in one value.
+///
+/// This is **derived**, never stored: see [`CaseSummary::work_state`]. Storing an
+/// "is being worked on" flag alongside the assignments that already answer the
+/// question would give two sources of truth and one of them would go stale the
+/// first time someone assigned a volunteer without remembering to flip it.
+///
+/// Every surface — the client's banner, the staff chip, the admin Cases tab —
+/// renders this same value, so they cannot disagree about a case.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaseWorkState {
+    /// Submitted, no admin decision yet.
+    AwaitingReview,
+    /// Accepted, but nobody is assigned to work it yet.
+    AwaitingVolunteer,
+    /// Accepted and staffed. Carries the assigned names for display.
+    InProgress(Vec<String>),
+    /// Not taken on. Carries the reason given, which may be empty.
+    Declined(String),
+    /// Finished. Outranks the rest: a closed case is not "awaiting" anything.
+    Closed,
+}
+
+impl CaseWorkState {
+    /// A short chip label for staff-facing lists.
+    pub fn label(&self) -> String {
+        match self {
+            CaseWorkState::AwaitingReview => "Pending review".to_string(),
+            CaseWorkState::AwaitingVolunteer => "Unstaffed".to_string(),
+            CaseWorkState::InProgress(names) => match names.as_slice() {
+                [] => "In progress".to_string(),
+                [one] => format!("Worked by {one}"),
+                [first, rest @ ..] => format!("Worked by {first} +{}", rest.len()),
+            },
+            CaseWorkState::Declined(_) => "Declined".to_string(),
+            CaseWorkState::Closed => "Closed".to_string(),
+        }
+    }
+
+    /// The same state said plainly, for the client who owns the case. Clients
+    /// should never have to decode staff vocabulary to find out whether anyone
+    /// is helping them.
+    pub fn client_message(&self) -> String {
+        match self {
+            CaseWorkState::AwaitingReview => {
+                "Submitted \u{2014} a coordinator is reviewing your case.".to_string()
+            }
+            CaseWorkState::AwaitingVolunteer => {
+                "Accepted \u{2014} we're arranging support for you.".to_string()
+            }
+            CaseWorkState::InProgress(names) => match names.as_slice() {
+                [] => "Accepted \u{2014} your case is being worked on.".to_string(),
+                [one] => format!("Being worked on by {one}."),
+                [first, rest @ ..] => {
+                    format!("Being worked on by {first} and {} others.", rest.len())
+                }
+            },
+            CaseWorkState::Declined(reason) if reason.trim().is_empty() => {
+                "This case was not accepted.".to_string()
+            }
+            CaseWorkState::Declined(reason) => format!("This case was not accepted: {reason}"),
+            CaseWorkState::Closed => "This case is closed.".to_string(),
+        }
+    }
+
+    pub fn badge_classes(&self) -> &'static str {
+        match self {
+            CaseWorkState::AwaitingReview => {
+                "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"
+            }
+            CaseWorkState::AwaitingVolunteer => "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
+            CaseWorkState::InProgress(_) => {
+                "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+            }
+            CaseWorkState::Declined(_) => "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",
+            CaseWorkState::Closed => "bg-slate-500/15 text-slate-400 ring-1 ring-slate-500/30",
+        }
+    }
+}
+
+/// Derive the work state from a case's review state, lifecycle status, and who
+/// is assigned. The single place the rule lives, so every caller agrees.
+fn work_state_of(
+    review_state: CaseReviewState,
+    review_reason: &str,
+    status: CaseStatus,
+    assigned: &[String],
+) -> CaseWorkState {
+    match review_state {
+        CaseReviewState::Declined => CaseWorkState::Declined(review_reason.to_string()),
+        CaseReviewState::PendingReview => CaseWorkState::AwaitingReview,
+        // Closed is checked only after the decision states: a declined case that
+        // someone also closed should still explain *why* it was declined.
+        CaseReviewState::Accepted if status == CaseStatus::Closed => CaseWorkState::Closed,
+        CaseReviewState::Accepted if assigned.is_empty() => CaseWorkState::AwaitingVolunteer,
+        CaseReviewState::Accepted => CaseWorkState::InProgress(assigned.to_vec()),
+    }
+}
+
+/// Serde default for `review_state` on payloads written before the field
+/// existed, matching the migration's column default: an old case is one we are
+/// already working, not one awaiting a decision.
+fn accepted() -> CaseReviewState {
+    CaseReviewState::Accepted
+}
+
 /// A free-text note recorded against a case.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CaseNote {
@@ -71,6 +235,18 @@ pub struct Case {
     pub id: String,
     pub name: String,
     pub status: CaseStatus,
+    /// Whether the org has accepted this case. Admin-owned; see
+    /// [`CaseReviewState`].
+    #[serde(default = "accepted")]
+    pub review_state: CaseReviewState,
+    /// Why the case was declined, if it was. Empty otherwise.
+    #[serde(default)]
+    pub review_reason: String,
+    /// Display names of the volunteers/admins assigned to work this case (i.e.
+    /// holders of `EditCase` who are not the client owner). Feeds the derived
+    /// work state; never a stored "is staffed" flag.
+    #[serde(default)]
+    pub assigned_volunteers: Vec<String>,
     /// The user who owns this case. Owners hold no implicit rights; they are
     /// granted a full capability assignment explicitly when the case is created.
     pub owner_id: String,
@@ -113,6 +289,12 @@ pub struct CaseSummary {
     pub id: String,
     pub name: String,
     pub status: CaseStatus,
+    #[serde(default = "accepted")]
+    pub review_state: CaseReviewState,
+    #[serde(default)]
+    pub review_reason: String,
+    #[serde(default)]
+    pub assigned_volunteers: Vec<String>,
     pub owner_id: String,
     pub owner_first_name: String,
     pub owner_last_name: String,
@@ -135,6 +317,30 @@ impl CaseSummary {
         } else {
             name
         }
+    }
+
+    /// What is happening on this case, derived from the review decision, the
+    /// lifecycle status, and who is assigned. Render this rather than
+    /// interpreting the individual fields, so every screen tells the same story.
+    pub fn work_state(&self) -> CaseWorkState {
+        work_state_of(
+            self.review_state,
+            &self.review_reason,
+            self.status,
+            &self.assigned_volunteers,
+        )
+    }
+}
+
+impl Case {
+    /// See [`CaseSummary::work_state`].
+    pub fn work_state(&self) -> CaseWorkState {
+        work_state_of(
+            self.review_state,
+            &self.review_reason,
+            self.status,
+            &self.assigned_volunteers,
+        )
     }
 }
 
@@ -209,7 +415,7 @@ pub async fn create_case(
     first_note: Option<String>,
 ) -> Result<String, ServerFnError> {
     use crate::server::db::cases;
-    use crate::server::permissions::{require_user, require_visibility};
+    use crate::server::permissions::{has_volunteer_access, require_user, require_visibility};
 
     let user = require_user().await?;
     let name = name.trim().to_string();
@@ -221,11 +427,21 @@ pub async fn create_case(
     for property in &properties {
         require_visibility(&user, property.visibility)?;
     }
+    // A staff member creating a case *is* the acceptance — the decision has
+    // already been made by the person doing it, so sending it to a review queue
+    // would only ask an admin to rubber-stamp their own colleague. A case a
+    // client creates for themselves still needs a decision.
+    let review_state = if has_volunteer_access(&user) {
+        CaseReviewState::Accepted
+    } else {
+        CaseReviewState::PendingReview
+    };
     cases::create(
         &user.id,
         &user.full_name(),
         &name,
         status,
+        review_state,
         properties,
         first_note,
     )
@@ -233,15 +449,179 @@ pub async fn create_case(
     .map_err(ServerFnError::new)
 }
 
+/// Which slice of the case directory the admin Cases tab is showing.
+///
+/// A filter is a *view* over every case, not a separate queue — the tab's job is
+/// managing all cases, and "needs a decision" is one lens on that rather than a
+/// screen of its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaseListFilter {
+    #[default]
+    All,
+    PendingReview,
+    Accepted,
+    Declined,
+    /// Accepted but with nobody assigned to work it — the gap that would
+    /// otherwise go unnoticed between saying yes and actually helping.
+    Unstaffed,
+    /// No case-chat activity in 30+ days.
+    Inactive,
+}
+
+impl CaseListFilter {
+    pub const ALL: [CaseListFilter; 6] = [
+        CaseListFilter::All,
+        CaseListFilter::PendingReview,
+        CaseListFilter::Accepted,
+        CaseListFilter::Declined,
+        CaseListFilter::Unstaffed,
+        CaseListFilter::Inactive,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CaseListFilter::All => "All",
+            CaseListFilter::PendingReview => "Pending review",
+            CaseListFilter::Accepted => "Accepted",
+            CaseListFilter::Declined => "Declined",
+            CaseListFilter::Unstaffed => "Unstaffed",
+            CaseListFilter::Inactive => "Inactive",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            CaseListFilter::All => "all",
+            CaseListFilter::PendingReview => "pending_review",
+            CaseListFilter::Accepted => "accepted",
+            CaseListFilter::Declined => "declined",
+            CaseListFilter::Unstaffed => "unstaffed",
+            CaseListFilter::Inactive => "inactive",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|f| f.slug() == s)
+    }
+}
+
+/// One page of *every* case in the system, for the admin Cases tab: searchable
+/// over case id/name and owner name, filterable, and paginated the same way the
+/// user directory is.
+///
+/// Requires operations-admin permissions. Unlike
+/// [`load_case_summaries_for_user`], this is deliberately unscoped by assignment
+/// — an admin managing the organization's caseload must be able to see a case
+/// nobody has been assigned to yet, which is exactly the situation this screen
+/// exists to surface. It returns header fields only, never case contents.
+#[server(prefix = "/api")]
+pub async fn admin_list_cases_page(
+    offset: i64,
+    limit: i64,
+    search: String,
+    filter: CaseListFilter,
+) -> Result<Page<CaseSummary>, ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+    cases::list_page(offset, limit, &search, filter)
+        .await
+        .map_err(ServerFnError::new)
+}
+
+/// How many cases are waiting for an admin decision. Drives the count badge on
+/// the Cases tab, so "something needs you" is visible without opening it.
+#[server(prefix = "/api")]
+pub async fn pending_case_review_count() -> Result<i64, ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+    cases::pending_review_count()
+        .await
+        .map_err(ServerFnError::new)
+}
+
+/// Accept or decline a case (operations-admin or site-admin only).
+///
+/// Gated on the **account role**, not a [`CaseCapability`], and that distinction
+/// is the point: deciding whether the organization takes a case is an
+/// organizational act, so it must not be reachable through a per-case grant. The
+/// client who owns the case holds the full capability set on it (the signup flow
+/// grants it), and must never be able to approve their own case.
+#[server(prefix = "/api")]
+pub async fn set_case_review_state(
+    case_id: String,
+    state: CaseReviewState,
+    reason: String,
+) -> Result<(), ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+
+    let reason = reason.trim().to_string();
+    // A decline the client cannot understand is worse than no answer: it leaves
+    // them with nowhere to go and nothing to act on.
+    if state == CaseReviewState::Declined && reason.is_empty() {
+        return Err(ServerFnError::new(
+            "A reason is required when declining a case.",
+        ));
+    }
+    // The reason belongs to the decline. Carrying it over to a later acceptance
+    // would leave a stale "we said no because…" attached to a case we took on.
+    let reason = if state == CaseReviewState::Declined {
+        reason
+    } else {
+        String::new()
+    };
+
+    let changed = cases::set_review_state(&case_id, state, &reason, &user.full_name())
+        .await
+        .map_err(ServerFnError::new)?;
+    if !changed {
+        return Ok(());
+    }
+
+    let detail = match state {
+        CaseReviewState::Accepted => "accepted this case".to_string(),
+        CaseReviewState::Declined => format!("declined this case: {reason}"),
+        CaseReviewState::PendingReview => "reopened this case for review".to_string(),
+    };
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::CaseData,
+        detail,
+        // The decision is the one thing the client is most owed an answer on, so
+        // it reaches everyone on the case rather than staff alone.
+        crate::server::notifications::Audience::Everyone,
+    );
+    Ok(())
+}
+
 /// Change a case's status (requires the `EditCase` capability).
 #[server(prefix = "/api")]
 pub async fn set_case_status(case_id: String, status: CaseStatus) -> Result<(), ServerFnError> {
     use crate::server::db::cases;
-    use crate::server::permissions::{require_cap, require_user};
+    use crate::server::permissions::{has_volunteer_access, require_cap, require_user};
     use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
+    // The capability alone is not enough here. The signup flow grants the client
+    // owner every capability on their own case, so without this an intake could
+    // mark itself Closed. Status is a staff judgement about the work; the client
+    // is told about it (see `work_state`) rather than making it.
+    if !has_volunteer_access(&user) {
+        return Err(ServerFnError::new("Only staff can change a case's status."));
+    }
     cases::set_status(&case_id, status, &user.full_name())
         .await
         .map_err(ServerFnError::new)?;

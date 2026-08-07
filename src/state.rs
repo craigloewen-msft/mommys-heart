@@ -11,6 +11,7 @@ use leptos::task::spawn_local;
 
 use crate::server_fns::admin_requests;
 use crate::server_fns::auth::LoginOutcome;
+use crate::server_fns::cases;
 use crate::server_fns::channel_notifications::{self, ChannelUnread};
 use crate::server_fns::users::{AccountRole, UserSummary};
 use crate::server_fns::{auth, err_text};
@@ -50,6 +51,9 @@ pub struct AppState {
     pub auth_resolved: RwSignal<bool>,
     pub unread: RwSignal<Vec<ChannelUnread>>,
     pub admin_request_pending: RwSignal<i64>,
+    /// Cases waiting for an admin accept/decline. Drives the count badge on the
+    /// admin Cases tab so unanswered intakes are visible without going looking.
+    pub cases_pending_review: RwSignal<i64>,
 }
 
 impl Default for AppState {
@@ -65,6 +69,7 @@ impl AppState {
             auth_resolved: RwSignal::new(false),
             unread: RwSignal::new(Vec::new()),
             admin_request_pending: RwSignal::new(0),
+            cases_pending_review: RwSignal::new(0),
         }
     }
 
@@ -89,6 +94,7 @@ impl AppState {
                 self.current_user_summary.set(Some(user));
                 self.refresh_unread();
                 self.refresh_admin_request_pending();
+                self.refresh_cases_pending_review();
             }
             self.auth_resolved.set(true);
         });
@@ -119,6 +125,25 @@ impl AppState {
         spawn_local(async move {
             if let Ok(count) = admin_requests::pending_admin_request_count().await {
                 self.admin_request_pending.set(count);
+            }
+        });
+    }
+
+    /// Refresh the count of cases awaiting a decision. Unlike admin *requests*,
+    /// which only a site admin can act on, operations admins review cases too —
+    /// so the gate here is the broader one.
+    pub fn refresh_cases_pending_review(self) {
+        let is_admin = self.current_user_summary.with_untracked(|user| {
+            user.as_ref()
+                .is_some_and(|user| user.role.has_operations_admin_permissions())
+        });
+        if !cfg!(feature = "hydrate") || !is_admin {
+            self.cases_pending_review.set(0);
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(count) = cases::pending_case_review_count().await {
+                self.cases_pending_review.set(count);
             }
         });
     }
@@ -168,6 +193,7 @@ impl AppState {
             self.current_user_summary.set(Some(user.clone().into()));
             self.refresh_unread();
             self.refresh_admin_request_pending();
+            self.refresh_cases_pending_review();
         }
         Ok(outcome)
     }
@@ -182,6 +208,7 @@ impl AppState {
         self.current_user_summary.set(Some(user.into()));
         self.refresh_unread();
         self.refresh_admin_request_pending();
+        self.refresh_cases_pending_review();
         Ok(())
     }
 
@@ -216,6 +243,7 @@ impl AppState {
         self.current_user_summary.set(Some(user.into()));
         self.refresh_unread();
         self.refresh_admin_request_pending();
+        self.refresh_cases_pending_review();
         Ok(())
     }
 
@@ -223,6 +251,7 @@ impl AppState {
         self.current_user_summary.set(None);
         self.unread.set(Vec::new());
         self.admin_request_pending.set(0);
+        self.cases_pending_review.set(0);
         spawn_local(async move {
             let _ = auth::logout().await;
         });
