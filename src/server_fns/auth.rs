@@ -236,6 +236,59 @@ pub async fn resend_mfa() -> Result<(), ServerFnError> {
     Ok(())
 }
 
+/// Minimum password length for new accounts.
+#[cfg(feature = "ssr")]
+pub const MIN_PASSWORD_LENGTH: usize = 8;
+
+/// Upper bound for free-text account fields (names).
+#[cfg(feature = "ssr")]
+const MAX_NAME_LENGTH: usize = 100;
+
+/// Upper bound for an email address, matching the practical SMTP limit.
+#[cfg(feature = "ssr")]
+const MAX_EMAIL_LENGTH: usize = 254;
+
+/// Upper bound for a password, so hashing cost stays bounded.
+#[cfg(feature = "ssr")]
+const MAX_PASSWORD_LENGTH: usize = 200;
+
+/// Reject a password that is too short or implausibly long.
+#[cfg(feature = "ssr")]
+fn validate_password(password: &str) -> Result<(), ServerFnError> {
+    let length = password.chars().count();
+    if length < MIN_PASSWORD_LENGTH {
+        return Err(ServerFnError::new(format!(
+            "Please choose a password of at least {MIN_PASSWORD_LENGTH} characters."
+        )));
+    }
+    if length > MAX_PASSWORD_LENGTH {
+        return Err(ServerFnError::new(format!(
+            "Passwords must be {MAX_PASSWORD_LENGTH} characters or fewer."
+        )));
+    }
+    Ok(())
+}
+
+/// Reject account fields that exceed their maximum length.
+#[cfg(feature = "ssr")]
+fn validate_account_lengths(
+    first_name: &str,
+    last_name: &str,
+    email: &str,
+) -> Result<(), ServerFnError> {
+    if first_name.chars().count() > MAX_NAME_LENGTH || last_name.chars().count() > MAX_NAME_LENGTH {
+        return Err(ServerFnError::new(format!(
+            "Names must be {MAX_NAME_LENGTH} characters or fewer."
+        )));
+    }
+    if email.chars().count() > MAX_EMAIL_LENGTH {
+        return Err(ServerFnError::new(format!(
+            "Email addresses must be {MAX_EMAIL_LENGTH} characters or fewer."
+        )));
+    }
+    Ok(())
+}
+
 /// Begin registering a new client account. Rather than creating the account
 /// immediately, this validates the input, emails a 6-digit verification code to
 /// the address, and stashes the pending signup behind a short-lived `register`
@@ -265,6 +318,8 @@ pub async fn register(
             "Please fill in first name, email, and password.",
         ));
     }
+    validate_account_lengths(&first_name, &last_name, &email)?;
+    validate_password(&password)?;
 
     // Rate-limit sign-up attempts per email so this endpoint cannot be used to
     // email-bomb a victim with verification codes.
@@ -278,7 +333,6 @@ pub async fn register(
             if minutes == 1 { "" } else { "s" }
         )));
     }
-    let _ = throttle::record_failure(throttle::Action::Register, &email).await;
 
     if users::email_exists(&email)
         .await
@@ -288,6 +342,10 @@ pub async fn register(
             "An account with that email already exists.",
         ));
     }
+
+    // Counted only once a code is actually sent, so rejected attempts (duplicate
+    // email, bad input) cannot lock a legitimate user out of their own sign-up.
+    let _ = throttle::record_failure(throttle::Action::Register, &email).await;
 
     let password_hash = hash_password(&password).map_err(ServerFnError::new)?;
     let challenge = generate_token();
@@ -352,6 +410,8 @@ pub async fn register_case_signup(
     if password != password_confirmation {
         return Err(ServerFnError::new("The passwords do not match."));
     }
+    validate_account_lengths(&first_name, &last_name, &email)?;
+    validate_password(&password)?;
 
     // Consent is checked here, not just in the browser: a form posted without
     // the current terms version never saw the wording it claims to accept.
@@ -377,7 +437,6 @@ pub async fn register_case_signup(
             if minutes == 1 { "" } else { "s" }
         )));
     }
-    let _ = throttle::record_failure(throttle::Action::Register, &email).await;
     if users::email_exists(&email)
         .await
         .map_err(ServerFnError::new)?
@@ -386,6 +445,8 @@ pub async fn register_case_signup(
             "An account with that email already exists.",
         ));
     }
+    // Counted only once a code is actually sent. See `register`.
+    let _ = throttle::record_failure(throttle::Action::Register, &email).await;
 
     let password_hash = hash_password(&password).map_err(ServerFnError::new)?;
     let account = PendingAccount {
@@ -527,6 +588,7 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
 
     // Verified sign-up succeeded: clear the abuse counter for this email.
     let _ = throttle::clear(throttle::Action::Register, &account.email).await;
+    let _ = throttle::clear(throttle::Action::ResendCode, &account.email).await;
 
     let raw = sessions::create(&id).await.map_err(ServerFnError::new)?;
     append_cookie(build_session_cookie(raw))?;
@@ -540,6 +602,7 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
 pub async fn resend_registration_code() -> Result<(), ServerFnError> {
     use crate::server::auth::{generate_code, REGISTER_COOKIE_NAME};
     use crate::server::db::pending_registrations;
+    use crate::server::db::throttle;
     use crate::server::email::auth_notifications as auth_email;
 
     let challenge = request_cookie(REGISTER_COOKIE_NAME).await.ok_or_else(|| {
@@ -557,6 +620,20 @@ pub async fn resend_registration_code() -> Result<(), ServerFnError> {
             ));
         }
     };
+
+    // Resending emails an attacker-chosen address, so it needs its own budget:
+    // without this it bypasses the `Register` throttle entirely.
+    if let Some(seconds) = throttle::seconds_locked(throttle::Action::ResendCode, &account.email)
+        .await
+        .map_err(ServerFnError::new)?
+    {
+        let minutes = throttle::minutes_remaining(seconds);
+        return Err(ServerFnError::new(format!(
+            "Too many code requests. Please try again in about {minutes} minute{}.",
+            if minutes == 1 { "" } else { "s" }
+        )));
+    }
+    let _ = throttle::record_failure(throttle::Action::ResendCode, &account.email).await;
 
     let code = generate_code();
     pending_registrations::create(&challenge, &account, &code)

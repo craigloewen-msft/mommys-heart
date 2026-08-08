@@ -73,6 +73,14 @@ impl CaseStatus {
         )
     }
 
+    /// Whether the case still accepts new work (messages, files, notes, edits).
+    ///
+    /// Only a declined case is frozen; it stays readable so the client can see
+    /// why. A pending case stays writable so documents can still be attached.
+    pub fn accepts_changes(self) -> bool {
+        !matches!(self, CaseStatus::Declined)
+    }
+
     pub fn badge_classes(self) -> &'static str {
         match self {
             CaseStatus::PendingReview => "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30",
@@ -369,19 +377,12 @@ pub async fn set_case_review_decision(
         .await
         .map_err(ServerFnError::new)?;
 
-    let detail = if accept {
-        "accepted this case".to_string()
-    } else {
-        format!("declined this case: {reason}")
-    };
-    crate::server::notifications::notify_case(
+    crate::server::notifications::notify_case_decision(
         case_id,
         user.id.clone(),
         user.full_name(),
-        crate::server_fns::settings::NotificationKind::CaseData,
-        detail,
-        // The client is owed this answer, so it reaches everyone on the case.
-        crate::server::notifications::Audience::Everyone,
+        accept,
+        reason,
     );
     Ok(())
 }

@@ -277,7 +277,9 @@ pub fn InboxPage() -> impl IntoView {
                 Some(id) => match cases.get().into_iter().find(|c| c.id == id) {
                     Some(c) => {
                         let title = title_for(&c);
-                        let can_send = c.capabilities.contains(&CaseCapability::SendMessages);
+                        // A declined case takes no new messages.
+                        let can_send = c.capabilities.contains(&CaseCapability::SendMessages)
+                            && c.status.accepts_changes();
                         view! {
                             <CaseChat
                                 case_name=title

@@ -115,6 +115,89 @@ pub fn case_event(
     }
 }
 
+/// Build the email telling a client their case was accepted or declined.
+pub fn case_decision(
+    brand: &Brand,
+    case_name: &str,
+    actor_name: &str,
+    accepted: bool,
+    reason: &str,
+) -> RenderedEmail {
+    let theme = theme(NotificationKind::CaseData);
+    let actor = actor_or_default(actor_name);
+    let outcome = if accepted { "accepted" } else { "not accepted" };
+    let subject = format!(
+        "[{}] Your case was {}: {}",
+        brand.name, outcome, case_name
+    );
+
+    let reason = reason.trim();
+    // The reason gets its own sentence rather than being spliced into one.
+    let detail_plain = if accepted {
+        format!(
+            "Your case \u{201C}{case_name}\u{201D} was accepted by {actor}. \
+             Your case team will be in touch."
+        )
+    } else if reason.is_empty() {
+        format!("Your case \u{201C}{case_name}\u{201D} was not accepted.")
+    } else {
+        format!("Your case \u{201C}{case_name}\u{201D} was not accepted. Reason: {reason}")
+    };
+
+    let callout = if accepted {
+        format!(
+            "Your case <strong>{case}</strong> was <strong>accepted</strong> by {actor}. \
+             Your case team will be in touch.",
+            case = escape(case_name),
+            actor = escape(actor),
+        )
+    } else if reason.is_empty() {
+        format!(
+            "Your case <strong>{case}</strong> was <strong>not accepted</strong>.",
+            case = escape(case_name),
+        )
+    } else {
+        format!(
+            "Your case <strong>{case}</strong> was <strong>not accepted</strong>.<br />Reason: {reason}",
+            case = escape(case_name),
+            reason = escape(reason),
+        )
+    };
+
+    let cta_href = cta_url(brand, "/cases");
+    let footer = notification_footer(brand);
+    let heading = if accepted {
+        "Your case was accepted"
+    } else {
+        "Your case was not accepted"
+    };
+    let body_note = if accepted {
+        format!("Sign in to the {} CRM to see the full details.", brand.name)
+    } else {
+        "If you have questions about this decision, reply to this email.".to_string()
+    };
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: &detail_plain,
+            eyebrow: "Case decision",
+            heading,
+            callout_html: &callout,
+            cta: cta_href.as_deref().map(|u| (u, "Open the case")),
+            body_note: &body_note,
+            footer_html: &footer,
+        },
+    );
+    let plain = plain(brand, &detail_plain, "/cases");
+
+    RenderedEmail {
+        subject,
+        html,
+        plain_text: plain,
+    }
+}
+
 /// Build the "you've been given access to a case" email, whose single recipient
 /// is the newly assigned user (a warmer, welcome-style message).
 pub fn assignment(brand: &Brand, case_name: &str, actor_name: &str) -> RenderedEmail {
@@ -695,6 +778,22 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
         key: NotificationKind::Assigned.slug().to_string(),
         label: NotificationKind::Assigned.label().to_string(),
         email: assignment(brand, case, actor),
+    });
+    samples.push(Sample {
+        key: "case_accepted".to_string(),
+        label: "Case decision \u{2014} accepted".to_string(),
+        email: case_decision(brand, case, actor, true, ""),
+    });
+    samples.push(Sample {
+        key: "case_declined".to_string(),
+        label: "Case decision \u{2014} declined".to_string(),
+        email: case_decision(
+            brand,
+            case,
+            actor,
+            false,
+            "Outside our service area; referred to Lakeside Legal Aid.",
+        ),
     });
     samples.push(Sample {
         key: "case_signup".to_string(),

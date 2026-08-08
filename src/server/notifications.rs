@@ -81,6 +81,37 @@ pub fn notify_case(
     });
 }
 
+/// Fire a best-effort "your case was accepted / not accepted" notification.
+pub fn notify_case_decision(
+    case_id: String,
+    actor_id: String,
+    actor_name: String,
+    accepted: bool,
+    reason: String,
+) {
+    let Some(cfg) = configured_email() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let mut recipients =
+            match settings::recipients_for_case(&case_id, &actor_id, false).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("notify_case_decision: recipient lookup failed for {case_id}: {e}");
+                    return;
+                }
+            };
+        recipients.retain(|recipient| recipient.settings.wants(NotificationKind::CaseData));
+        if recipients.is_empty() {
+            return;
+        }
+        let case = case_name(&case_id).await;
+        let email =
+            templates::case_decision(&Brand::from_env(), &case, &actor_name, accepted, &reason);
+        dispatch(&cfg, recipients, &email, "Case decision").await;
+    });
+}
+
 /// Fire a best-effort "you were assigned to a case" notification to the newly
 /// assigned user (the recipient is that user, not the case's other members).
 pub fn notify_assignment(user_id: String, actor_name: String, case_id: String) {

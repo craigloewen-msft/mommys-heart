@@ -183,6 +183,12 @@ pub fn CaseSignupTermsPage() -> impl IntoView {
                         </label>
                         <p class="mt-3 text-xs text-slate-500">{TERMS_MINOR_NOTICE}</p>
 
+                        <Show when=move || read_to_end.get() && !accepted.get()>
+                            <p class="mt-3 text-xs text-slate-400">
+                                "Tick the box above to continue."
+                            </p>
+                        </Show>
+
                         <Show when=move || !error.get().is_empty()>
                             <p class="mt-5 rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-300 ring-1 ring-rose-500/30">
                                 {move || error.get()}
@@ -379,14 +385,15 @@ pub fn CaseSignupDetailsPage() -> impl IntoView {
                                     "Password "
                                     <span class="text-rose-400" aria-hidden="true">"*"</span>
                                 </label>
-                                <input class=input_class type="password" autocomplete="new-password" required prop:value=move || password.get() on:input=move |event| password.set(event_target_value(&event)) />
+                                <input class=input_class type="password" autocomplete="new-password" required minlength="8" prop:value=move || password.get() on:input=move |event| password.set(event_target_value(&event)) />
+                                <p class="mt-1 text-xs text-slate-500">"At least 8 characters."</p>
                             </div>
                             <div>
                                 <label class=label_class>
                                     "Re-enter password "
                                     <span class="text-rose-400" aria-hidden="true">"*"</span>
                                 </label>
-                                <input class=input_class type="password" autocomplete="new-password" required prop:value=move || password_confirmation.get() on:input=move |event| password_confirmation.set(event_target_value(&event)) />
+                                <input class=input_class type="password" autocomplete="new-password" required minlength="8" prop:value=move || password_confirmation.get() on:input=move |event| password_confirmation.set(event_target_value(&event)) />
                             </div>
                         </div>
 

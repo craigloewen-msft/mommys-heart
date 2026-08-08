@@ -30,6 +30,8 @@ pub enum Action {
     PasswordReset,
     /// Submitting the sign-up form (which emails a verification code).
     Register,
+    /// Asking for a fresh copy of the sign-up verification code.
+    ResendCode,
 }
 
 impl Action {
@@ -39,6 +41,7 @@ impl Action {
             Action::Login => "login",
             Action::PasswordReset => "password_reset",
             Action::Register => "register",
+            Action::ResendCode => "resend_code",
         }
     }
 }

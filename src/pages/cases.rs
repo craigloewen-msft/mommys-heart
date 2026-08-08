@@ -522,24 +522,35 @@ pub fn NewCasePage() -> impl IntoView {
                             on:input=move |ev| name.set(event_target_value(&ev))
                         />
                     </div>
-                    <div>
-                        <label class=label_class>"Status"</label>
-                        <select
-                            class=format!("mt-1 {input_class}")
-                            on:change=move |ev| status.set(event_target_value(&ev))
-                        >
-                            {CaseStatus::STAFF_SELECTABLE
-                                .into_iter()
-                                .map(|s| {
-                                    view! {
-                                        <option value=s.slug() selected=s == CaseStatus::Open>
-                                            {s.label()}
-                                        </option>
-                                    }
-                                })
-                                .collect_view()}
-                        </select>
-                    </div>
+                    <Show when=move || {
+                        !matches!(state.role(), Some(AccountRole::Client))
+                    }>
+                        <div>
+                            <label class=label_class>"Status"</label>
+                            <select
+                                class=format!("mt-1 {input_class}")
+                                on:change=move |ev| status.set(event_target_value(&ev))
+                            >
+                                {CaseStatus::STAFF_SELECTABLE
+                                    .into_iter()
+                                    .map(|s| {
+                                        view! {
+                                            <option value=s.slug() selected=s == CaseStatus::Open>
+                                                {s.label()}
+                                            </option>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </select>
+                        </div>
+                    </Show>
+                    // A client's case goes to an admin for review, so offering
+                    // them a status choice would be a lie.
+                    <Show when=move || matches!(state.role(), Some(AccountRole::Client))>
+                        <p class="rounded-lg bg-slate-800/60 px-3 py-2 text-sm text-slate-400">
+                            "A coordinator will review this case before it is opened."
+                        </p>
+                    </Show>
                     <div class="border-t border-slate-800 pt-5">
                         <div class="mb-5">
                             <h2 class="text-sm font-semibold text-slate-200">"Case intake"</h2>
@@ -597,7 +608,10 @@ fn CaseDetail(
     // Capability gates for this case, resolved server-side and delivered with
     // the case summary. No implicit grants for owners or admins.
     let caps = summary.capabilities.clone();
-    let can_edit = caps.contains(&CaseCapability::EditCase);
+    // Mirrors `CaseStatus::accepts_changes`: a declined case refuses writes
+    // server-side, so the UI hides the write affordances too.
+    let accepts_changes = summary.status.accepts_changes();
+    let can_edit = caps.contains(&CaseCapability::EditCase) && accepts_changes;
     let role = state
         .current_user_summary
         .with_untracked(|user| user.as_ref().map(|user| user.role));
@@ -605,10 +619,10 @@ fn CaseDetail(
         role.is_some_and(|role| role.has_operations_admin_permissions());
     let is_site_admin = role.is_some_and(|role| role.is_site_admin());
     let is_client = matches!(role, Some(AccountRole::Client));
-    let can_note = caps.contains(&CaseCapability::AddNotes);
+    let can_note = caps.contains(&CaseCapability::AddNotes) && accepts_changes;
     let can_view_evidence = caps.contains(&CaseCapability::ViewEvidence);
-    let can_upload_evidence = caps.contains(&CaseCapability::UploadEvidence);
-    let can_delete_evidence = caps.contains(&CaseCapability::DeleteEvidence);
+    let can_upload_evidence = caps.contains(&CaseCapability::UploadEvidence) && accepts_changes;
+    let can_delete_evidence = caps.contains(&CaseCapability::DeleteEvidence) && accepts_changes;
     let can_manage_case_information = can_edit || can_upload_evidence || can_delete_evidence;
 
     // The full case behind the summary — the heavy sub-resources are pulled on
@@ -1545,11 +1559,32 @@ fn CaseDetail(
             let client_banner = if state.is_volunteer_or_admin() {
                 ().into_any()
             } else {
+                // A decline is a dead end without a next step.
+                let next_step = if status == CaseStatus::Declined {
+                    view! {
+                        <p class="mt-2 text-sm text-slate-400">
+                            "If your circumstances have changed, you can "
+                            <A
+                                href="/cases/new"
+                                attr:class="font-medium text-primary-400 hover:text-primary-300"
+                            >
+                                "submit a new case"
+                            </A>
+                            "."
+                        </p>
+                    }
+                    .into_any()
+                } else {
+                    ().into_any()
+                };
                 view! {
-                    <p class=format!(
-                        "mt-3 rounded-lg px-3 py-2 text-sm {}",
-                        c.status.badge_classes(),
-                    )>{c.client_message()}</p>
+                    <div>
+                        <p class=format!(
+                            "mt-3 rounded-lg px-3 py-2 text-sm {}",
+                            c.status.badge_classes(),
+                        )>{c.client_message()}</p>
+                        {next_step}
+                    </div>
                 }
                 .into_any()
             };

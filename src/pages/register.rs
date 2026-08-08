@@ -28,6 +28,8 @@ pub fn RegisterPage() -> impl IntoView {
             let email = email.get_untracked();
             let password = password.get_untracked();
             let confirm_password = confirm_password.get_untracked();
+            // Clear the previous complaint so a stale message cannot outlive it.
+            error.set(String::new());
             if password != confirm_password {
                 error.set("Passwords do not match.".to_string());
                 return;
@@ -78,6 +80,7 @@ pub fn RegisterPage() -> impl IntoView {
                                 <input
                                     class=input_class
                                     placeholder="Jamie"
+                                    required
                                     prop:value=move || first_name.get()
                                     on:input=move |ev| first_name.set(event_target_value(&ev))
                                 />
@@ -87,6 +90,7 @@ pub fn RegisterPage() -> impl IntoView {
                                 <input
                                     class=input_class
                                     placeholder="Nguyen"
+                                    required
                                     prop:value=move || last_name.get()
                                     on:input=move |ev| last_name.set(event_target_value(&ev))
                                 />
@@ -98,6 +102,7 @@ pub fn RegisterPage() -> impl IntoView {
                                 class=input_class
                                 r#type="email"
                                 placeholder="you@example.com"
+                                required
                                 prop:value=move || email.get()
                                 on:input=move |ev| email.set(event_target_value(&ev))
                             />
@@ -108,9 +113,14 @@ pub fn RegisterPage() -> impl IntoView {
                                 class=input_class
                                 r#type="password"
                                 placeholder="Choose a password"
+                                required
+                                minlength="8"
                                 prop:value=move || password.get()
                                 on:input=move |ev| password.set(event_target_value(&ev))
                             />
+                            <p class="mt-1 text-xs text-slate-500">
+                                "At least 8 characters."
+                            </p>
                         </div>
                         <div>
                             <label class="mb-1 block text-sm text-slate-300">"Re-enter password"</label>
@@ -118,6 +128,8 @@ pub fn RegisterPage() -> impl IntoView {
                                 class=input_class
                                 r#type="password"
                                 placeholder="Re-enter your password"
+                                required
+                                minlength="8"
                                 prop:value=move || confirm_password.get()
                                 on:input=move |ev| confirm_password.set(event_target_value(&ev))
                             />

@@ -76,6 +76,17 @@ impl CaseCapability {
         Self::ALL.into_iter().find(|c| c.slug() == s)
     }
 
+    /// Whether exercising this capability changes the case, rather than only
+    /// reading it. Used to hold a declined case read-only.
+    pub fn is_write(self) -> bool {
+        use CaseCapability::*;
+        match self {
+            ViewCase | ViewEvidence => false,
+            EditCase | AddNotes | UploadEvidence | DeleteEvidence | SendMessages
+            | ManageChannels => true,
+        }
+    }
+
     /// The other capabilities that must also be held for this one to make sense.
     /// Access is layered: you cannot act on a case (or its evidence) you cannot
     /// even see, so every capability implies at least [`ViewCase`], and the

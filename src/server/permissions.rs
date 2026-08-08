@@ -108,19 +108,33 @@ pub async fn capabilities_on(
 }
 
 /// Require a specific capability on a case, else a `Forbidden`-style error.
+///
+/// Also enforces the case lifecycle: a declined case is held read-only for
+/// everyone, since signup grants the client owner every capability up front.
 pub async fn require_cap(
     user: &User,
     case_id: &str,
     cap: CaseCapability,
 ) -> Result<(), ServerFnError> {
-    if capabilities_on(user, case_id).await?.contains(&cap) {
-        Ok(())
-    } else {
-        Err(ServerFnError::new(format!(
+    if !capabilities_on(user, case_id).await?.contains(&cap) {
+        return Err(ServerFnError::new(format!(
             "You do not have permission to {} on this case.",
             cap.label().to_lowercase()
-        )))
+        )));
     }
+    if cap.is_write() {
+        let status = cases::status(case_id)
+            .await
+            .map_err(ServerFnError::new)?
+            .ok_or_else(|| ServerFnError::new("Case not found."))?;
+        if !status.accepts_changes() {
+            return Err(ServerFnError::new(format!(
+                "This case is {} and can no longer be changed.",
+                status.label().to_lowercase()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The single gate for acting inside a case's chat channel.
