@@ -695,9 +695,10 @@ fn CaseDetail(
     let current_folder = open_folder;
     let new_folder_name = RwSignal::new(String::new());
     let folder_error = RwSignal::new(String::new());
-    // Deleting is destructive and irreversible, so it stays out of the way until
-    // somebody says that is what they came to do.
-    let removing = RwSignal::new(false);
+    // Deleting is destructive and irreversible, so each row asks to be confirmed
+    // before anything is sent. Folder and file ids share this signal.
+    let pending_delete: RwSignal<Option<String>> = RwSignal::new(None);
+    let delete_busy = RwSignal::new(false);
     let file_form = owner.with_value(|o| {
         o.with(|| FileForm {
             name: RwSignal::new(String::new()),
@@ -905,11 +906,14 @@ fn CaseDetail(
 
     let delete_folder = move |folder: CaseFolder| {
         folder_error.set(String::new());
+        delete_busy.set(true);
         spawn_local(async move {
             match case_folders::delete_case_folder(folder.id).await {
                 Ok(()) => reload.update(|n| *n += 1),
                 Err(e) => folder_error.set(err_text(e)),
             }
+            delete_busy.set(false);
+            pending_delete.set(None);
         });
     };
 
@@ -941,13 +945,15 @@ fn CaseDetail(
 
     let delete_file = move |evidence_id: String| {
         let case_id = case_sv.get_value();
+        folder_error.set(String::new());
+        delete_busy.set(true);
         spawn_local(async move {
-            if evidence::delete_case_evidence(case_id, evidence_id)
-                .await
-                .is_ok()
-            {
-                reload.update(|n| *n += 1);
+            match evidence::delete_case_evidence(case_id, evidence_id).await {
+                Ok(_) => reload.update(|n| *n += 1),
+                Err(e) => folder_error.set(err_text(e)),
             }
+            delete_busy.set(false);
+            pending_delete.set(None);
         });
     };
 
@@ -956,15 +962,59 @@ fn CaseDetail(
     // still waiting on.
     let file_row = move |e: Evidence, folders: Vec<CaseFolder>| {
         let evidence_id = e.id.clone();
-        let delete_btn = if can_delete_evidence && removing.get() {
+        let delete_btn = if can_delete_evidence {
             let id = evidence_id.clone();
+            let name = e.name.clone();
             view! {
-                <button
-                    on:click=move |_| delete_file(id.clone())
-                    class="shrink-0 rounded-lg border border-rose-500/40 px-2 py-1 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
-                >
-                    "Remove"
-                </button>
+                {move || {
+                    let id = id.clone();
+                    let name = name.clone();
+                    if pending_delete.get().as_deref() == Some(id.as_str()) {
+                        view! {
+                            <div class="flex shrink-0 items-center gap-2">
+                                <span class="text-xs text-slate-400">
+                                    {format!("Delete \"{name}\"? This cannot be undone.")}
+                                </span>
+                                <button
+                                    type="button"
+                                    on:click=move |_| pending_delete.set(None)
+                                    class="rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                                >
+                                    "Cancel"
+                                </button>
+                                <button
+                                    type="button"
+                                    prop:disabled=move || delete_busy.get()
+                                    on:click=move |_| {
+                                        if !delete_busy.get_untracked() {
+                                            delete_file(id.clone());
+                                        }
+                                    }
+                                    class="rounded-md bg-rose-500/15 px-2 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 disabled:opacity-60"
+                                >
+                                    "Delete"
+                                </button>
+                            </div>
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            <button
+                                type="button"
+                                title="Delete"
+                                aria-label="Delete"
+                                on:click=move |_| {
+                                    folder_error.set(String::new());
+                                    pending_delete.set(Some(id.clone()));
+                                }
+                                class="shrink-0 rounded-md px-1.5 py-1 text-sm text-slate-600 hover:bg-rose-500/10 hover:text-rose-300"
+                            >
+                                "\u{1f5d1}"
+                            </button>
+                        }
+                            .into_any()
+                    }
+                }}
             }
             .into_any()
         } else {
@@ -1086,15 +1136,77 @@ fn CaseDetail(
                 if folders == 1 { "" } else { "s" }
             ),
         };
-        let delete_btn = if can_delete_evidence && removing.get() && !folder.is_root() {
+        let delete_btn = if can_delete_evidence && !folder.is_root() {
             let f = folder.clone();
+            let id = folder.id.clone();
+            let name = folder.name.clone();
+            let has_contents = file_count > 0 || child_count > 0;
             view! {
-                <button
-                    on:click=move |_| delete_folder(f.clone())
-                    class="shrink-0 rounded-lg border border-rose-500/40 px-2 py-1 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
-                >
-                    "Delete"
-                </button>
+                {move || {
+                    let f = f.clone();
+                    let id = id.clone();
+                    let name = name.clone();
+                    if pending_delete.get().as_deref() == Some(id.as_str()) {
+                        view! {
+                            <div class="flex shrink-0 items-center gap-2">
+                                <span class="text-xs text-slate-400">
+                                    {format!("Delete \"{name}\"? This cannot be undone.")}
+                                </span>
+                                <button
+                                    type="button"
+                                    on:click=move |_| pending_delete.set(None)
+                                    class="rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                                >
+                                    "Cancel"
+                                </button>
+                                <button
+                                    type="button"
+                                    prop:disabled=move || delete_busy.get()
+                                    on:click=move |_| {
+                                        if !delete_busy.get_untracked() {
+                                            delete_folder(f.clone());
+                                        }
+                                    }
+                                    class="rounded-md bg-rose-500/15 px-2 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 disabled:opacity-60"
+                                >
+                                    "Delete"
+                                </button>
+                            </div>
+                        }
+                            .into_any()
+                    } else if has_contents {
+                        // A folder with anything in it cannot be deleted; the
+                        // control stays visible so the rule is discoverable.
+                        view! {
+                            <button
+                                type="button"
+                                disabled=true
+                                title="Empty this folder before deleting it"
+                                aria-label="Empty this folder before deleting it"
+                                class="shrink-0 cursor-not-allowed rounded-md px-1.5 py-1 text-sm text-slate-700 opacity-50"
+                            >
+                                "\u{1f5d1}"
+                            </button>
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            <button
+                                type="button"
+                                title="Delete"
+                                aria-label="Delete"
+                                on:click=move |_| {
+                                    folder_error.set(String::new());
+                                    pending_delete.set(Some(id.clone()));
+                                }
+                                class="shrink-0 rounded-md px-1.5 py-1 text-sm text-slate-600 hover:bg-rose-500/10 hover:text-rose-300"
+                            >
+                                "\u{1f5d1}"
+                            </button>
+                        }
+                            .into_any()
+                    }
+                }}
             }
             .into_any()
         } else {
@@ -1499,30 +1611,11 @@ fn CaseDetail(
         } else {
             "Everything filed on this case. A file's folder decides who can see it."
         };
-        let edit_toggle = if can_delete_evidence {
-            view! {
-                <button
-                    on:click=move |_| {
-                        folder_error.set(String::new());
-                        removing.update(|on| *on = !*on);
-                    }
-                    class="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
-                >
-                    {move || if removing.get() { "Done" } else { "Edit" }}
-                </button>
-            }
-            .into_any()
-        } else {
-            ().into_any()
-        };
         view! {
             <div>
-                <div class="mb-3 flex items-start justify-between gap-3">
-                    <div>
-                        <h2 class="text-lg font-semibold text-slate-100">"Evidence"</h2>
-                        <p class="mt-1 text-sm text-slate-500">{blurb}</p>
-                    </div>
-                    {edit_toggle}
+                <div class="mb-3">
+                    <h2 class="text-lg font-semibold text-slate-100">"Evidence"</h2>
+                    <p class="mt-1 text-sm text-slate-500">{blurb}</p>
                 </div>
                 <div class=panel>
                     <div class="flex flex-wrap items-center gap-2 text-sm">{crumbs}</div>
