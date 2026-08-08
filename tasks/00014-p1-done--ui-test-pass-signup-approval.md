@@ -190,3 +190,168 @@ screenshots for anything visually wrong. Explicitly separate:
 
 No source changes are expected beyond (optionally) a temporary debug log for
 email bodies, which must be removed before review.
+
+---
+
+# RESULTS (executed 2026-08-08)
+
+Executed in full against a live instance on `http://127.0.0.1:3180` with
+`EMAIL_DRY_RUN=true`. Two real client case signups were driven end to end
+(`testclient+001` accepted, `testclient+002` declined). All email assertions were
+verified against the dry-run log; bodies were confirmed with a temporary
+`plain_text` debug log that has since been **removed** (working tree is clean).
+
+## Verdict
+
+The happy path is solid. Signup, verification, admin accept/deny, status
+transitions, permission gating and email recipients all behave correctly. The
+problems found are one real bug (unthrottled resend), one design question
+(declined cases stay fully writable), and several UX/polish issues.
+
+## 1. Bugs
+
+### B1 — Verification "Resend" is completely unthrottled (highest severity)
+Six rapid clicks of **Resend** produced six verification emails in ~2 seconds.
+`register` / `register_case_signup` are throttled via `throttle::Action::Register`
+(5 / 15 min), but `resend_registration_code` (`auth.rs:537-575`) has **no throttle
+at all**. Since the recipient address is attacker-chosen at signup time, this is
+a usable email-bombing amplifier and directly defeats the stated purpose of the
+register throttle ("so this endpoint cannot be used to email-bomb a victim with
+verification codes", `auth.rs:268-269`). Recommend applying the same throttle
+scope, or a short per-challenge cooldown.
+
+### B2 — Failed duplicate-email attempts burn the throttle budget
+`record_failure` runs *before* the `email_exists` check (`auth.rs:281-290`).
+Observed: 4 duplicate-email attempts, then the 5th returned
+`"Too many sign-up attempts. Please try again in about 15 minutes."` A user who
+simply forgot they had an account gets locked out of the signup form for 15
+minutes. Recommend recording the failure only after the duplicate check.
+
+### B3 — No password strength rule anywhere
+A **one-character password (`a`)** was accepted without complaint on `/register`
+and the account proceeded to verification. There is no length or composition
+check in either registration path. Flagged in the plan as "confirm whether
+intended" — confirmed present, and worth a deliberate decision.
+
+### B4 — No length validation on any field
+A 5,000-character first name was accepted and stored without error. No 500, but
+no bound either; worth a sane cap before it reaches email subjects and the UI.
+
+## 2. UX / sense-making concerns
+
+### U1 — A declined case remains fully writable by the client (the key question)
+After decline, the client retains **all 8 case capabilities** granted at signup
+(verified in `case_assignments`). On the declined case I was still able to:
+
+- upload a file ("Doc on declined case") into Case Notes — succeeded;
+- post a chat message ("Hello, is anyone reading this declined case?") — succeeded;
+- open the case-properties **Edit** form.
+
+Critically, `case_assignments` for that case contains **exactly one row set — the
+client themself**. No volunteer or admin is assigned, so those uploads and
+messages are guaranteed to reach nobody. This is the "plausible bug" the plan
+anticipated, and it is real: the product is silently accepting work product into
+a dead case. Recommend either revoking write capabilities on decline, or making
+the declined case visibly read-only.
+
+### U2 — Decision emails use a generic subject that hides the decision
+Both accept and decline send the *same* subject:
+`"[Mommy's Heart] <case>: Case data changed"`. The decision is only visible in
+the body. Compare the signup notification, which is properly specific:
+`"[Mommy's Heart] New case signup: <case>"`. A client being told their case was
+declined deserves a subject line that says so.
+
+### U3 — Awkward grammar in the decision email body
+Verified body text:
+
+> `Maria Nguyen declined this case: Outside our service area; referred to Lakeside Legal Aid. on the case "Denny Denied case".`
+
+The reason sentence is interpolated mid-sentence, so the trailing `on the case
+"..."` lands after a full stop. The accept variant reads only slightly better:
+`Maria Nguyen accepted this case on the case "Testy McTest case".` — "this case
+... on the case" is redundant.
+
+### U4 — Declined case offers no path forward
+The decline reason is shown clearly (`This case was not accepted: <reason>`), but
+nothing suggests what to do next. The client can use **+ New case** to file
+again, but nothing points there from the declined case.
+
+### U5 — Client "+ New case" shows an irrelevant Status dropdown
+The client-facing new-case form offers **Open / Monitor / Closed**. The server
+correctly ignores this and forces `PendingReview` (`cases.rs:281-284`), so this is
+cosmetic, not a security hole — but it promises the client a choice they don't
+have. Verified: a client-created case landed as "Pending review".
+
+### U6 — Stale error text persists after a blocked submit
+On `/register`, an old error ("Passwords do not match.") remains on screen when a
+subsequent submit is blocked by native email validation, so the visible message
+contradicts the actual problem.
+
+### U7 — `/register` marks no field as required
+No field carries `required`, so empty submits round-trip to the server. The
+server message is clean ("Please fill in first name, email, and password."), but
+the case-signup form does this better with native `required` on every field.
+Note `/register` also never requires last name, while case signup does.
+
+### U8 — The "tick the box" error on `/case-signup` is unreachable
+Both the checkbox and the submit button are disabled until the terms are scrolled
+to the end, so `"Please tick the box to confirm you accept the terms."` cannot
+fire. Harmless, but it is dead code and the disabled-button state gives the user
+no explanation for why they are stuck.
+
+## 3. Email findings
+
+All emails verified via the `EMAIL_DRY_RUN=true` log.
+
+| Action | Subject | Recipients | Correct? |
+|---|---|---|---|
+| Case signup submitted | `New case signup: <case>` | `operations@`, `admin@` | Yes |
+| Verification code | `[auth email dev] <email>: email verification code NNNNNN` | client | Yes |
+| Case **accepted** | `<case>: Case data changed` | `testclient+001@example.com` | Recipient right, subject wrong (U2) |
+| Case **declined** | `<case>: Case data changed` | `testclient+002@example.com` | Recipient right, subject wrong (U2) |
+
+The key recipient check from the plan passed: **the new client does receive the
+decision email**, exactly one recipient, with `CaseData` enabled by default.
+Decline body correctly contains the admin-entered reason verbatim.
+
+### Is the dry-run log sufficient to audit emails?
+**No.** `dispatch` logs only subject + recipients (`notifications.rs:190-204`);
+the body is never logged. Since both decisions share one generic subject, the log
+alone **cannot distinguish an approval from a denial** — I had to patch in a
+temporary body log to verify. `cargo run -- preview-emails` renders bodies but
+only with placeholder data, so it cannot confirm real interpolation.
+Recommend a permanent dev-only body log behind the existing dry-run branch.
+
+### Config note (not a bug)
+Email links point at `http://127.0.0.1:3000` while the app serves on `3180`. This
+is just the `APP_URL` default (`config.rs:101`), configurable per environment.
+
+## 4. Verified working
+
+- Terms scroll-gate correctly enables the checkbox only at the end.
+- All three required intake fields enforced natively.
+- Password mismatch caught on both forms with the correct copy.
+- Duplicate email rejected on `/register`.
+- Wrong verification code → `"That code is incorrect. Please try again."`
+- Successful verification creates user (`role=client`) + case (`pending_review`)
+  transactionally; unverified registrations create **no** user row.
+- Accept: `pending_review → open`, `reviewed_by = Maria Nguyen`, `reviewed_at` set.
+- Decline: `→ declined` with reason persisted.
+- Empty decline reason rejected **both** client-side and server-side (confirmed by
+  calling the server fn directly with a whitespace-only reason).
+- Double-decision guard: `"This case is already declined and is not awaiting review."`
+- Permissions: volunteer redirected away from `/admin` and rejected by the server
+  (`"Operations-admin permissions required."`); **client cannot approve their own
+  case** (same rejection).
+- Accepted case: status reads `"Accepted — your case team is working on it."`,
+  file upload into Case Notes works, default folders created correctly.
+- Pending case: reads `"Submitted — a coordinator is reviewing your case."`
+
+## 5. Suggested priority
+
+1. **B1** unthrottled resend — security, fix first.
+2. **U1** declined cases stay writable — decide the intended behavior.
+3. **U2/U3** decision email subject + grammar — client-facing clarity.
+4. **B2** throttle burn on duplicate email.
+5. **B3/B4** password strength and length caps.
+6. **U4–U8** polish.
