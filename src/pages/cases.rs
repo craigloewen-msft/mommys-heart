@@ -962,58 +962,34 @@ fn CaseDetail(
     // still waiting on.
     let file_row = move |e: Evidence, folders: Vec<CaseFolder>| {
         let evidence_id = e.id.clone();
+        let confirm_id = StoredValue::new(evidence_id.clone());
+        // The row header is tight (name + folder picker), so the confirm gets a
+        // full-width bar of its own underneath rather than squeezing in there.
+        let confirming =
+            move || confirm_id.with_value(|id| pending_delete.get().as_deref() == Some(id.as_str()));
         let delete_btn = if can_delete_evidence {
             let id = evidence_id.clone();
-            let name = e.name.clone();
             view! {
                 {move || {
-                    let id = id.clone();
-                    let name = name.clone();
-                    if pending_delete.get().as_deref() == Some(id.as_str()) {
-                        view! {
-                            <div class="flex shrink-0 items-center gap-2">
-                                <span class="text-xs text-slate-400">
-                                    {format!("Delete \"{name}\"? This cannot be undone.")}
-                                </span>
-                                <button
-                                    type="button"
-                                    on:click=move |_| pending_delete.set(None)
-                                    class="rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
-                                >
-                                    "Cancel"
-                                </button>
-                                <button
-                                    type="button"
-                                    prop:disabled=move || delete_busy.get()
-                                    on:click=move |_| {
-                                        if !delete_busy.get_untracked() {
-                                            delete_file(id.clone());
-                                        }
-                                    }
-                                    class="rounded-md bg-rose-500/15 px-2 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 disabled:opacity-60"
-                                >
-                                    "Delete"
-                                </button>
-                            </div>
-                        }
-                            .into_any()
-                    } else {
-                        view! {
-                            <button
-                                type="button"
-                                title="Delete"
-                                aria-label="Delete"
-                                on:click=move |_| {
-                                    folder_error.set(String::new());
-                                    pending_delete.set(Some(id.clone()));
-                                }
-                                class="shrink-0 rounded-md px-1.5 py-1 text-sm text-slate-600 hover:bg-rose-500/10 hover:text-rose-300"
-                            >
-                                "\u{1f5d1}"
-                            </button>
-                        }
-                            .into_any()
+                    if confirming() {
+                        return ().into_any();
                     }
+                    let id = id.clone();
+                    view! {
+                        <button
+                            type="button"
+                            title="Delete"
+                            aria-label="Delete"
+                            on:click=move |_| {
+                                folder_error.set(String::new());
+                                pending_delete.set(Some(id.clone()));
+                            }
+                            class="shrink-0 rounded-md px-1.5 py-1 text-sm text-slate-600 hover:bg-rose-500/10 hover:text-rose-300"
+                        >
+                            "\u{1f5d1}"
+                        </button>
+                    }
+                        .into_any()
                 }}
             }
             .into_any()
@@ -1099,10 +1075,55 @@ fn CaseDetail(
         };
 
         let description = e.description.clone();
+        let confirm_name = e.name.clone();
+        let confirm_delete_id = evidence_id.clone();
+        let confirm_bar = if can_delete_evidence {
+            view! {
+                {move || {
+                    if !confirming() {
+                        return ().into_any();
+                    }
+                    let id = confirm_delete_id.clone();
+                    let name = confirm_name.clone();
+                    view! {
+                        <div class="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2">
+                            <span class="min-w-0 text-xs text-rose-200">
+                                {format!("Delete \"{name}\"? This cannot be undone.")}
+                            </span>
+                            <div class="flex shrink-0 items-center gap-2">
+                                <button
+                                    type="button"
+                                    on:click=move |_| pending_delete.set(None)
+                                    class="rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                                >
+                                    "Cancel"
+                                </button>
+                                <button
+                                    type="button"
+                                    prop:disabled=move || delete_busy.get()
+                                    on:click=move |_| {
+                                        if !delete_busy.get_untracked() {
+                                            delete_file(id.clone());
+                                        }
+                                    }
+                                    class="rounded-md bg-rose-500/15 px-2 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 disabled:opacity-60"
+                                >
+                                    "Delete"
+                                </button>
+                            </div>
+                        </div>
+                    }
+                        .into_any()
+                }}
+            }
+            .into_any()
+        } else {
+            ().into_any()
+        };
         view! {
             <div class="group rounded-lg border border-slate-800 bg-slate-950 p-3 transition-colors hover:border-slate-700 hover:bg-slate-900/60">
                 <div class="flex items-start justify-between gap-2">
-                    <p class="min-w-0 text-sm font-medium text-slate-200 transition-colors group-hover:text-slate-100">
+                    <p class="min-w-0 truncate text-sm font-medium text-slate-200 transition-colors group-hover:text-slate-100">
                         "\u{1f4c4} " {e.name.clone()}
                     </p>
                     <div class="flex shrink-0 items-center gap-2">{move_control} {delete_btn}</div>
@@ -1113,7 +1134,7 @@ fn CaseDetail(
                 }>
                     <p class="text-sm text-slate-400">{description.clone()}</p>
                 </Show>
-                {body}
+                {body} {confirm_bar}
             </div>
         }
         .into_any()
@@ -1136,45 +1157,19 @@ fn CaseDetail(
                 if folders == 1 { "" } else { "s" }
             ),
         };
+        let confirm_id = StoredValue::new(folder.id.clone());
+        let confirming =
+            move || confirm_id.with_value(|id| pending_delete.get().as_deref() == Some(id.as_str()));
         let delete_btn = if can_delete_evidence && !folder.is_root() {
-            let f = folder.clone();
             let id = folder.id.clone();
-            let name = folder.name.clone();
             let has_contents = file_count > 0 || child_count > 0;
             view! {
                 {move || {
-                    let f = f.clone();
+                    if confirming() {
+                        return ().into_any();
+                    }
                     let id = id.clone();
-                    let name = name.clone();
-                    if pending_delete.get().as_deref() == Some(id.as_str()) {
-                        view! {
-                            <div class="flex shrink-0 items-center gap-2">
-                                <span class="text-xs text-slate-400">
-                                    {format!("Delete \"{name}\"? This cannot be undone.")}
-                                </span>
-                                <button
-                                    type="button"
-                                    on:click=move |_| pending_delete.set(None)
-                                    class="rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
-                                >
-                                    "Cancel"
-                                </button>
-                                <button
-                                    type="button"
-                                    prop:disabled=move || delete_busy.get()
-                                    on:click=move |_| {
-                                        if !delete_busy.get_untracked() {
-                                            delete_folder(f.clone());
-                                        }
-                                    }
-                                    class="rounded-md bg-rose-500/15 px-2 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 disabled:opacity-60"
-                                >
-                                    "Delete"
-                                </button>
-                            </div>
-                        }
-                            .into_any()
-                    } else if has_contents {
+                    if has_contents {
                         // A folder with anything in it cannot be deleted; the
                         // control stays visible so the rule is discoverable.
                         view! {
@@ -1212,24 +1207,74 @@ fn CaseDetail(
         } else {
             ().into_any()
         };
+        // The confirm sits on its own line under the row so it never crowds the
+        // folder name.
+        let confirm_bar = if can_delete_evidence && !folder.is_root() {
+            let f = folder.clone();
+            let name = folder.name.clone();
+            view! {
+                {move || {
+                    if !confirming() {
+                        return ().into_any();
+                    }
+                    let f = f.clone();
+                    let name = name.clone();
+                    view! {
+                        <div class="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2">
+                            <span class="min-w-0 text-xs text-rose-200">
+                                {format!("Delete \"{name}\"? This cannot be undone.")}
+                            </span>
+                            <div class="flex shrink-0 items-center gap-2">
+                                <button
+                                    type="button"
+                                    on:click=move |_| pending_delete.set(None)
+                                    class="rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                                >
+                                    "Cancel"
+                                </button>
+                                <button
+                                    type="button"
+                                    prop:disabled=move || delete_busy.get()
+                                    on:click=move |_| {
+                                        if !delete_busy.get_untracked() {
+                                            delete_folder(f.clone());
+                                        }
+                                    }
+                                    class="rounded-md bg-rose-500/15 px-2 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 disabled:opacity-60"
+                                >
+                                    "Delete"
+                                </button>
+                            </div>
+                        </div>
+                    }
+                        .into_any()
+                }}
+            }
+            .into_any()
+        } else {
+            ().into_any()
+        };
         let restricted = folder.visibility.is_restricted();
         view! {
-            <div class="group flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950 p-3 transition-colors hover:border-primary-500/40 hover:bg-slate-900">
-                <button
-                    on:click=open
-                    class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
-                >
-                    <span class="text-base transition-transform group-hover:scale-110">
-                        {if restricted { "\u{1f512}" } else { "\u{1f4c1}" }}
-                    </span>
-                    <span class="min-w-0">
-                        <span class="block truncate text-sm font-medium text-slate-200 transition-colors group-hover:text-primary-300">
-                            {folder.name.clone()}
+            <div class="group rounded-lg border border-slate-800 bg-slate-950 p-3 transition-colors hover:border-primary-500/40 hover:bg-slate-900">
+                <div class="flex items-center justify-between gap-2">
+                    <button
+                        on:click=open
+                        class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                    >
+                        <span class="text-base transition-transform group-hover:scale-110">
+                            {if restricted { "\u{1f512}" } else { "\u{1f4c1}" }}
                         </span>
-                        <span class="block text-xs text-slate-500">{contents}</span>
-                    </span>
-                </button>
-                {delete_btn}
+                        <span class="min-w-0">
+                            <span class="block truncate text-sm font-medium text-slate-200 transition-colors group-hover:text-primary-300">
+                                {folder.name.clone()}
+                            </span>
+                            <span class="block text-xs text-slate-500">{contents}</span>
+                        </span>
+                    </button>
+                    {delete_btn}
+                </div>
+                {confirm_bar}
             </div>
         }
         .into_any()
