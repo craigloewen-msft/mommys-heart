@@ -10,8 +10,6 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::server_fns::users::User;
-
 /// Where a volunteer application stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +17,10 @@ pub enum VolunteerStatus {
     Pending,
     Approved,
     Denied,
+    /// Was approved, then lost the volunteer role. The accepted agreement is
+    /// kept rather than deleted because it is a real historical fact; a revoked
+    /// person may accept again and re-apply, exactly like a declined one.
+    Revoked,
 }
 
 impl VolunteerStatus {
@@ -27,6 +29,7 @@ impl VolunteerStatus {
             VolunteerStatus::Pending => "pending",
             VolunteerStatus::Approved => "approved",
             VolunteerStatus::Denied => "denied",
+            VolunteerStatus::Revoked => "revoked",
         }
     }
 
@@ -35,6 +38,7 @@ impl VolunteerStatus {
             "pending" => Some(VolunteerStatus::Pending),
             "approved" => Some(VolunteerStatus::Approved),
             "denied" => Some(VolunteerStatus::Denied),
+            "revoked" => Some(VolunteerStatus::Revoked),
             _ => None,
         }
     }
@@ -44,6 +48,7 @@ impl VolunteerStatus {
             VolunteerStatus::Pending => "Pending review",
             VolunteerStatus::Approved => "Approved",
             VolunteerStatus::Denied => "Declined",
+            VolunteerStatus::Revoked => "Revoked",
         }
     }
 
@@ -53,7 +58,9 @@ impl VolunteerStatus {
             VolunteerStatus::Approved => {
                 "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
             }
-            VolunteerStatus::Denied => "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",
+            VolunteerStatus::Denied | VolunteerStatus::Revoked => {
+                "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30"
+            }
         }
     }
 }
@@ -82,36 +89,42 @@ impl VolunteerApplication {
     }
 }
 
-/// A volunteer: the base user plus the volunteer-specific record built on it.
+/// One row of the admin's pending-application queue: who applied and when.
+///
+/// Deliberately narrow rather than a whole [`User`] plus their record — the queue
+/// renders a name, an email and a date, and a pending applicant has no case
+/// assignments worth loading.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Volunteer {
-    pub user: User,
-    pub application: VolunteerApplication,
+    pub id: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    /// Pre-formatted for display; only ever shown, never compared.
+    pub agreed_at: String,
 }
 
 impl Volunteer {
-    /// Convenience passthrough to the base record.
     pub fn full_name(&self) -> String {
-        self.user.full_name()
+        format!("{} {}", self.first_name, self.last_name)
+            .trim()
+            .to_string()
     }
 }
 
-/// Accept the volunteer agreement and apply to become a volunteer.
+/// Accept the volunteer agreement.
 ///
-/// Rejects a caller who already has volunteer privileges, or who has an
-/// application awaiting a decision. A previously declined applicant may apply
-/// again, which returns their record to pending.
+/// For someone without volunteer access this files an application for an admin
+/// to review. For someone who already holds the role — an admin set it directly,
+/// or they predate the agreement — it simply records the signed agreement
+/// against their existing record, because there is nothing left to approve.
+/// Rejects only a caller whose application is already awaiting a decision.
 #[server(prefix = "/api")]
 pub async fn apply_to_volunteer(agreement_version: String) -> Result<(), ServerFnError> {
     use crate::server::db::volunteers;
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    if user.role.has_volunteer_privileges() {
-        return Err(ServerFnError::new(
-            "Your account already has volunteer access.",
-        ));
-    }
     // An old tab holding a stale version never saw the wording it claims to
     // accept, so make it re-read rather than record consent it cannot evidence.
     if !crate::helpers::volunteer_terms::is_current(agreement_version.trim()) {
@@ -119,16 +132,28 @@ pub async fn apply_to_volunteer(agreement_version: String) -> Result<(), ServerF
             "Please read and accept the current volunteer agreement.",
         ));
     }
-    if volunteers::get(&user.id)
+    let existing = volunteers::get(&user.id)
         .await
-        .map_err(ServerFnError::new)?
+        .map_err(ServerFnError::new)?;
+    if existing
+        .as_ref()
         .is_some_and(|application| application.status == VolunteerStatus::Pending)
     {
         return Err(ServerFnError::new(
             "Your volunteer application is already awaiting review.",
         ));
     }
-    volunteers::apply(&user.id, agreement_version.trim())
+    let already_a_volunteer = user.role.has_volunteer_privileges();
+    if already_a_volunteer
+        && existing
+            .as_ref()
+            .is_some_and(VolunteerApplication::has_agreement)
+    {
+        return Err(ServerFnError::new(
+            "You have already accepted the volunteer agreement.",
+        ));
+    }
+    volunteers::apply(&user.id, agreement_version.trim(), already_a_volunteer)
         .await
         .map_err(ServerFnError::new)
 }
@@ -143,19 +168,6 @@ pub async fn list_pending_volunteer_applications() -> Result<Vec<Volunteer>, Ser
     let actor = require_user().await?;
     require_operations_admin(&actor)?;
     volunteers::list_pending().await.map_err(ServerFnError::new)
-}
-
-/// How many volunteer applications are waiting on a decision.
-#[server(prefix = "/api")]
-pub async fn pending_volunteer_application_count() -> Result<i64, ServerFnError> {
-    use crate::server::db::volunteers;
-    use crate::server::permissions::{require_operations_admin, require_user};
-
-    let actor = require_user().await?;
-    require_operations_admin(&actor)?;
-    volunteers::pending_count()
-        .await
-        .map_err(ServerFnError::new)
 }
 
 /// Approve or decline a volunteer application.
@@ -187,7 +199,7 @@ pub async fn decide_volunteer_application(
     let note = note.trim().to_string();
     volunteers::decide(&user_id, approve, &actor.id, &actor.full_name(), &note)
         .await
-        .map_err(ServerFnError::new)?;
+        .map_err(|error| ServerFnError::new(error.to_string()))?;
     crate::server::notifications::notify_volunteer_decision(user_id, approve, note);
     Ok(())
 }

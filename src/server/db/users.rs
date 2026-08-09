@@ -1,6 +1,6 @@
 //! Users, their per-case capability assignments, and admin mutations.
 
-use crate::server::db::{audit, ids, pool};
+use crate::server::db::{audit, clients, ids, pool};
 use crate::server_fns::capabilities::{CaseAssignment, CaseCapability};
 use crate::server_fns::pagination::Page;
 use crate::server_fns::profile::ProfileEdit;
@@ -243,25 +243,91 @@ async fn lock_capability_target(
     Ok(())
 }
 
-/// Change a user's global role, recording an audit entry when it changes.
-pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(), sqlx::Error> {
-    let current: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(pool())
-        .await?;
+/// Change a user's global role, keeping the subtype tables in step.
+///
+/// **This is the only code that may change `users.role`.** A role is the
+/// discriminator for the `volunteers` and `clients` subtype records, so changing
+/// it and reconciling them has to be one atomic step — otherwise a user ends up
+/// with a role whose subtype record disagrees, which is unrepresentable in the
+/// model but was reachable before this existed. Call it from inside whatever
+/// transaction the caller already has so the role change, the subtype rows, and
+/// the audit entry all commit together.
+///
+/// Maintains:
+/// - `role = 'volunteer'` ⟺ a `volunteers` row with `status = 'approved'`
+/// - `role = 'client'` ⟹ a `clients` row
+///
+/// Losing the volunteer role *revokes* rather than deletes: the agreement they
+/// accepted is a historical fact worth keeping, and a revoked user can accept it
+/// again to re-apply. Gaining it by any route other than the application flow
+/// (an admin setting the role directly, or approving a role request) records an
+/// approved row with an empty `agreement_version` — they hold the role but never
+/// signed anything, which is exactly what the admin list shows as "Outstanding".
+///
+/// No-ops when the role is unchanged, so callers need not check first.
+pub async fn apply_role_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: &str,
+    role: AccountRole,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut **tx)
+            .await?;
     let Some(current) = current else {
         return Ok(());
     };
     if current == role.slug() {
         return Ok(());
     }
+
     sqlx::query("UPDATE users SET role = $1 WHERE id = $2")
         .bind(role.slug())
         .bind(user_id)
-        .execute(pool())
+        .execute(&mut **tx)
         .await?;
-    audit::record(
-        pool(),
+
+    // Reconcile the volunteer record with the new role.
+    let was_volunteer = AccountRole::from_slug(&current) == Some(AccountRole::Volunteer);
+    match role {
+        AccountRole::Volunteer => {
+            sqlx::query(
+                "INSERT INTO volunteers (user_id, status, agreement_version, decided_by_name)
+                 VALUES ($1, 'approved', '', $2)
+                 ON CONFLICT (user_id) DO UPDATE SET
+                     status = 'approved',
+                     decided_by_name = EXCLUDED.decided_by_name,
+                     decided_at = now()",
+            )
+            .bind(user_id)
+            .bind(actor)
+            .execute(&mut **tx)
+            .await?;
+        }
+        _ if was_volunteer => {
+            sqlx::query(
+                "UPDATE volunteers SET
+                     status = 'revoked',
+                     decided_by_name = $2,
+                     decided_at = now()
+                 WHERE user_id = $1",
+            )
+            .bind(user_id)
+            .bind(actor)
+            .execute(&mut **tx)
+            .await?;
+        }
+        _ => {}
+    }
+
+    if role == AccountRole::Client {
+        clients::insert_in(tx, user_id).await?;
+    }
+
+    audit::record_in_transaction(
+        tx,
         audit::Entity::User,
         user_id,
         actor,
@@ -270,6 +336,14 @@ pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(
         role.slug(),
     )
     .await
+}
+
+/// Change a user's global role in its own transaction. Thin wrapper over
+/// [`apply_role_in`] for callers that are not already inside one.
+pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(), sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    apply_role_in(&mut tx, user_id, role, actor).await?;
+    tx.commit().await
 }
 
 /// Remove a user's assignment to a case entirely.

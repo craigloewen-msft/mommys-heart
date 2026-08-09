@@ -243,10 +243,10 @@ fn ApplicationCard(
     reload: RwSignal<u32>,
 ) -> impl IntoView {
     let state = expect_context::<AppState>();
-    let user_id = StoredValue::new(volunteer.user.id.clone());
+    let user_id = StoredValue::new(volunteer.id.clone());
     let name = volunteer.full_name();
-    let email = volunteer.user.email.clone();
-    let agreed_at = volunteer.application.agreed_at.clone();
+    let email = volunteer.email.clone();
+    let agreed_at = volunteer.agreed_at.clone();
     let note = RwSignal::new(String::new());
     let deciding = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
@@ -276,7 +276,7 @@ fn ApplicationCard(
         <div class="rounded-lg border border-slate-800 bg-slate-950 p-4">
             <div class="flex flex-wrap items-start justify-between gap-3">
                 <div class="min-w-0">
-                    <ProfileLink user_id=volunteer.user.id name=name />
+                    <ProfileLink user_id=volunteer.id name=name />
                     <p class="truncate text-xs text-slate-500">{email}</p>
                     <p class="mt-1 text-xs text-slate-500">"Agreement accepted " {agreed_at}</p>
                 </div>

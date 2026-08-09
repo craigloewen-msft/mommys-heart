@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::server::db::{audit, ids, pool};
+use crate::server::db::{audit, ids, pool, users};
 use crate::server_fns::admin_requests::{AdminRequest, AdminRequestKind, AdminRequestStatus};
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::pagination::Page;
@@ -380,21 +380,12 @@ pub async fn decide(
                 let requested_role = requested_role.ok_or_else(|| {
                     Error::InvalidData("Role request has no requested role.".into())
                 })?;
-                sqlx::query("UPDATE users SET role = $1 WHERE id = $2")
-                    .bind(&requested_role)
-                    .bind(&target_id)
-                    .execute(&mut *tx)
-                    .await?;
-                audit::record_in_transaction(
-                    &mut tx,
-                    audit::Entity::User,
-                    &target_id,
-                    actor_name,
-                    "role",
-                    current_role.as_deref().unwrap_or_default(),
-                    &requested_role,
-                )
-                .await?;
+                // Route through the one function allowed to change a role, so the
+                // subtype records follow it. It writes the audit entry itself.
+                let role = AccountRole::from_slug(&requested_role).ok_or_else(|| {
+                    Error::InvalidData(format!("unknown role {requested_role:?}"))
+                })?;
+                users::apply_role_in(&mut tx, &target_id, role, actor_name).await?;
             }
             "case_capabilities" => {
                 let case_id = case_id

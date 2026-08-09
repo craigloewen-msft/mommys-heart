@@ -272,20 +272,22 @@ pub fn ProfilePage() -> impl IntoView {
             .into_any()
         };
 
-        // Own profile only: the way in to becoming a volunteer. Hidden once the
-        // account already has volunteer access, and replaced by a status note
-        // while an application is being reviewed.
+        // Own profile only: the way in to the volunteer agreement.
+        //
+        // Two distinct jobs, because holding the role and having signed the
+        // agreement are independent facts. Someone without the role applies;
+        // someone who was given the role directly by an admin (or predates the
+        // agreement) still needs a way to sign it, and for them accepting is not
+        // an application and is not reviewed.
         let become_volunteer = move || {
             let Some(p) = profile.get() else {
                 return ().into_any();
             };
-            if !p.is_self || p.role.has_volunteer_privileges() {
+            if !p.is_self {
                 return ().into_any();
             }
-            if p.volunteer
-                .as_ref()
-                .is_some_and(|v| v.status == VolunteerStatus::Pending)
-            {
+            let status = p.volunteer.as_ref().map(|v| v.status);
+            if status == Some(VolunteerStatus::Pending) {
                 return view! {
                     <div class=SECTION_CLASS>
                         <h3 class="text-sm font-semibold text-slate-200">"Volunteer application"</h3>
@@ -296,19 +298,38 @@ pub fn ProfilePage() -> impl IntoView {
                 }
                 .into_any();
             }
-            // A previously declined applicant sees the invitation again: they are
-            // free to accept the agreement and apply a second time.
+
+            let already_a_volunteer = p.role.has_volunteer_privileges();
+            let signed = p.volunteer.as_ref().is_some_and(|v| v.has_agreement());
+            // Nothing to do: they hold the role and have signed.
+            if already_a_volunteer && signed {
+                return ().into_any();
+            }
+
+            let (heading, blurb, cta) = if already_a_volunteer {
+                (
+                    "Volunteer agreement",
+                    "Your account has volunteer access, but we don't have your signed volunteer agreement on file. Please read and accept it.",
+                    "Read and accept the agreement",
+                )
+            } else {
+                (
+                    "Become a volunteer",
+                    "Volunteers work directly with the families the Foundation supports. Read the volunteer agreement and accept it to apply \u{2014} an administrator reviews every application.",
+                    "Read the volunteer agreement",
+                )
+            };
+            // A declined or revoked person sees the invitation again: they are
+            // free to accept the agreement and apply afresh.
             view! {
                 <div class=SECTION_CLASS>
-                    <h3 class="text-sm font-semibold text-slate-200">"Become a volunteer"</h3>
-                    <p class="mt-2 text-sm text-slate-400">
-                        "Volunteers work directly with the families the Foundation supports. Read the volunteer agreement and accept it to apply \u{2014} an administrator reviews every application."
-                    </p>
+                    <h3 class="text-sm font-semibold text-slate-200">{heading}</h3>
+                    <p class="mt-2 text-sm text-slate-400">{blurb}</p>
                     <A
                         href="/volunteer-agreement"
                         attr:class="mt-3 inline-block rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600"
                     >
-                        "Read the volunteer agreement"
+                        {cta}
                     </A>
                 </div>
             }
