@@ -7,8 +7,13 @@ pub mod server_fns;
 pub mod state;
 
 pub mod components {
+    pub mod admin_case_access;
+    pub mod admin_case_requests;
     pub mod admin_cases;
+    pub mod admin_request_center;
     pub mod admin_requests;
+    pub mod admin_user_card;
+    pub mod admin_volunteers;
     pub mod case_intake;
     pub mod change_log;
     pub mod email_failures;

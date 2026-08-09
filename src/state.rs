@@ -54,9 +54,8 @@ pub async fn load_app_badges() -> Result<AppBadges, ServerFnError> {
         0
     };
 
-    // Operations admins see the queue even though only site admins may decide,
-    // so the badge follows visibility rather than the decision permission.
-    let volunteer_requests_pending = if user.role.has_operations_admin_permissions() {
+    // Site admins only, matching who may see and decide the applications.
+    let volunteer_requests_pending = if user.role.is_site_admin() {
         volunteers::pending_count()
             .await
             .map_err(ServerFnError::new)?

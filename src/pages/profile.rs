@@ -273,13 +273,8 @@ pub fn ProfilePage() -> impl IntoView {
             .into_any()
         };
 
-        // Own profile only: the way in to the volunteer agreement.
-        //
-        // Two distinct jobs, because holding the role and having signed the
-        // agreement are independent facts. Someone without the role applies;
-        // someone who was given the role directly by an admin (or predates the
-        // agreement) still needs a way to sign it, and for them accepting is not
-        // an application and is not reviewed.
+        // Own profile only. Holding the role and having signed are independent
+        // facts: a client applies, an existing volunteer just signs.
         let become_volunteer = move || {
             let Some(p) = profile.get() else {
                 return ().into_any();

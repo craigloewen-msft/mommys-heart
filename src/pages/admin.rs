@@ -1,19 +1,13 @@
 //! The admin dashboard shell: the guard, the tab bar, and one component per tab.
 
-pub mod case_access;
-pub mod case_requests;
-pub mod requests;
-pub mod user_card;
-pub mod volunteers;
-
 use leptos::prelude::*;
 
+use crate::components::admin_case_access::CaseAccessTab;
+use crate::components::admin_case_requests::CaseRequestsTab;
+use crate::components::admin_request_center::RequestsTab;
+use crate::components::admin_volunteers::VolunteersTab;
 use crate::components::guard::require_operations_admin;
 use crate::components::layout::Layout;
-use crate::pages::admin::case_access::CaseAccessTab;
-use crate::pages::admin::case_requests::CaseRequestsTab;
-use crate::pages::admin::requests::RequestsTab;
-use crate::pages::admin::volunteers::VolunteersTab;
 use crate::state::AppState;
 
 /// Which section of the admin dashboard is showing.

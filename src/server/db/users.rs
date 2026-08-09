@@ -243,29 +243,13 @@ async fn lock_capability_target(
     Ok(())
 }
 
-/// Change a user's global role, keeping the subtype tables in step.
+/// Change a user's role inside the caller's transaction, keeping the subtype
+/// tables in step. This is the only code that may change `users.role`.
 ///
-/// **This is the only code that may change `users.role`.** A role is the
-/// discriminator for the `volunteers` and `clients` subtype records, so changing
-/// it and reconciling them has to be one atomic step — otherwise a user ends up
-/// with a role whose subtype record disagrees, which is unrepresentable in the
-/// model but was reachable before this existed. Call it from inside whatever
-/// transaction the caller already has so the role change, the subtype rows, and
-/// the audit entry all commit together.
-///
-/// Maintains:
-/// - `role = 'volunteer'` ⟺ a `volunteers` row with `status = 'approved'`
-/// - `role = 'client'` ⟹ a `clients` row
-///
-/// Losing the volunteer role *revokes* rather than deletes: the agreement they
-/// accepted is a historical fact worth keeping, and a revoked user can accept it
-/// again to re-apply. Gaining it by any route other than the application flow
-/// (an admin setting the role directly, or approving a role request) records an
-/// approved row with an empty `agreement_version` — they hold the role but never
-/// signed anything, which is exactly what the admin list shows as "Outstanding".
-///
-/// No-ops when the role is unchanged, so callers need not check first.
-pub async fn apply_role_in(
+/// Maintains `role = 'volunteer'` ⟺ an approved `volunteers` row, and
+/// `role = 'client'` ⟹ a `clients` row. Losing the volunteer role revokes rather
+/// than deletes, so the agreement they accepted survives. No-ops when unchanged.
+pub async fn set_role_in(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: &str,
     role: AccountRole,
@@ -338,11 +322,10 @@ pub async fn apply_role_in(
     .await
 }
 
-/// Change a user's global role in its own transaction. Thin wrapper over
-/// [`apply_role_in`] for callers that are not already inside one.
+/// Change a user's role in its own transaction, for callers not already in one.
 pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
-    apply_role_in(&mut tx, user_id, role, actor).await?;
+    set_role_in(&mut tx, user_id, role, actor).await?;
     tx.commit().await
 }
 

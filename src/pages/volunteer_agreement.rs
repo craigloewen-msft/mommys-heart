@@ -1,11 +1,8 @@
 //! `/volunteer-agreement`: read the Volunteer Agreement and accept it, which
 //! files an application for an administrator to review.
 //!
-//! The reading experience deliberately mirrors the client terms at
-//! [`crate::pages::case_signup`]: the same scroll-to-the-end gate on the
-//! acceptance control, so "I have read" sits under text the reader was at least
-//! shown all of. Unlike that flow, acceptance posts immediately — there is no
-//! second step to carry it forward to.
+//! Mirrors the client terms at [`crate::pages::case_signup`], including the
+//! scroll-to-the-end gate, but acceptance posts immediately.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;

@@ -1,11 +1,8 @@
-//! Volunteers as an object built on top of a user: the volunteer agreement they
-//! accepted, their application to become one, and the admin decision on it.
+//! Volunteers as an object built on top of a user: the agreement they accepted,
+//! their application to become one, and the admin decision on it.
 //!
-//! A user is the base record (identity, contact details, role); this module adds
-//! what is true *because* someone is a volunteer. There is exactly one volunteer
-//! record per person and it doubles as their application, so a decision updates
-//! it in place. A denied applicant may accept the agreement again, which returns
-//! them to `Pending`.
+//! One record per person, doubling as their application, so a decision updates it
+//! in place and a declined applicant may accept again to re-apply.
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -90,10 +87,7 @@ impl VolunteerApplication {
 }
 
 /// One row of the admin's pending-application queue: who applied and when.
-///
-/// Deliberately narrow rather than a whole [`User`] plus their record — the queue
-/// renders a name, an email and a date, and a pending applicant has no case
-/// assignments worth loading.
+/// Narrow on purpose — the queue shows a name, an email and a date.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Volunteer {
     pub id: String,
@@ -112,18 +106,12 @@ impl Volunteer {
     }
 }
 
-/// Accept the volunteer agreement.
+/// Accept the volunteer agreement: a client files an application, an existing
+/// volunteer just records their signed agreement.
 ///
-/// For a client this files an application for an admin to review. For someone
-/// who already holds the Volunteer role — an admin set it directly, or they
-/// predate the agreement — it simply records the signed agreement against their
-/// existing record, because there is nothing left to approve.
-///
-/// Administrators are refused. They have volunteer *privileges* without being
-/// volunteers, and the `volunteers` table tracks the Volunteer role specifically:
-/// recording one for an admin would contradict
-/// [`crate::server::db::users::apply_role_in`]'s invariant, and treating it as an
-/// application would demote them to Volunteer on approval.
+/// Administrators are refused: they have volunteer privileges without being
+/// volunteers, so a record for one would break the invariant, and approving it
+/// would demote them.
 #[server(prefix = "/api")]
 pub async fn apply_to_volunteer(agreement_version: String) -> Result<(), ServerFnError> {
     use crate::server::db::volunteers;
@@ -178,24 +166,21 @@ pub async fn apply_to_volunteer(agreement_version: String) -> Result<(), ServerF
     Ok(())
 }
 
-/// Every volunteer application waiting on a decision, oldest first. Visible to
-/// anyone with operations-admin permissions, though only site admins may decide.
+/// Every volunteer application waiting on a decision, oldest first. Site admins
+/// only, matching who may decide one.
 #[server(prefix = "/api")]
 pub async fn list_pending_volunteer_applications() -> Result<Vec<Volunteer>, ServerFnError> {
     use crate::server::db::volunteers;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::{require_site_admin, require_user};
 
     let actor = require_user().await?;
-    require_operations_admin(&actor)?;
+    require_site_admin(&actor)?;
     volunteers::list_pending().await.map_err(ServerFnError::new)
 }
 
-/// Approve or decline a volunteer application.
-///
-/// Site admins only: approving grants the Volunteer role, and changing a user's
-/// role is site-admin-only everywhere else in the app (see
-/// [`crate::server_fns::users::set_user_role`]). Either outcome emails the
-/// applicant; a decline has no other visible effect, and they may apply again.
+/// Approve or decline a volunteer application. Site admins only, because
+/// approving grants a role. Either outcome emails the applicant; a decline has
+/// no other visible effect and they may apply again.
 #[server(prefix = "/api")]
 pub async fn decide_volunteer_application(
     user_id: String,

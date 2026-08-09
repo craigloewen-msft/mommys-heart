@@ -1,19 +1,12 @@
-//! The Volunteer Agreement a prospective volunteer accepts before they can apply,
-//! and the version string that records *which* wording they accepted.
+//! The Volunteer Agreement and the version string recording which wording was
+//! accepted. Mirrors [`crate::helpers::terms`].
 //!
 //! # PLACEHOLDER WORDING
 //!
-//! The text below is **placeholder prose written by a developer, not reviewed
-//! legal language**. It describes the volunteer relationship as this application
-//! models it, so the flow can be built and tested end to end, but it must be
-//! replaced with wording the Foundation has actually approved before any real
-//! volunteer is asked to accept it. When it is replaced, bump
-//! [`VOLUNTEER_AGREEMENT_VERSION`] in the same edit.
-//!
-//! Structurally this mirrors [`crate::helpers::terms`]: the text lives in code
-//! because it applies org-wide and changes by deploy, and acceptances store the
-//! version string rather than a reference so revising the wording never changes
-//! what a past volunteer agreed to.
+//! The text below is placeholder prose written by a developer, not reviewed legal
+//! language. Replace it with wording the Foundation has approved before any real
+//! volunteer accepts it, and bump [`VOLUNTEER_AGREEMENT_VERSION`] in the same
+//! edit.
 
 use crate::helpers::terms::TermsSection;
 

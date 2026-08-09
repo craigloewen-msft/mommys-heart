@@ -132,7 +132,9 @@ pub fn VolunteersTab(
     });
 
     view! {
-        <PendingApplications active=active is_site_admin=is_site_admin reload=reload />
+        {is_site_admin.then(|| view! {
+            <PendingApplications active=active reload=reload />
+        })}
         <p class="mb-4 text-sm text-slate-400">
             "Everyone with a volunteer account, and whether they have completed the volunteer agreement. Click a name to open their profile."
         </p>
@@ -151,14 +153,11 @@ pub fn VolunteersTab(
     }
 }
 
-/// The volunteer applications waiting on a decision. Hidden entirely when the
-/// queue is empty, so the tab stays quiet when there is nothing to do.
+/// The volunteer applications waiting on a decision, for site admins only.
+/// Hidden entirely when the queue is empty, so the tab stays quiet when there is
+/// nothing to do.
 #[component]
-fn PendingApplications(
-    #[prop(into)] active: Signal<bool>,
-    is_site_admin: bool,
-    reload: RwSignal<u32>,
-) -> impl IntoView {
+fn PendingApplications(#[prop(into)] active: Signal<bool>, reload: RwSignal<u32>) -> impl IntoView {
     let state = expect_context::<AppState>();
     let items = RwSignal::new(Vec::<Volunteer>::new());
     let load_error = RwSignal::new(None::<String>);
@@ -168,7 +167,7 @@ fn PendingApplications(
             return;
         }
         reload.track();
-        if !state.has_operations_admin_permissions() {
+        if !state.is_site_admin() {
             return;
         }
         spawn_local(async move {
@@ -202,11 +201,7 @@ fn PendingApplications(
             .into_iter()
             .map(|volunteer| {
                 view! {
-                    <ApplicationCard
-                        volunteer=volunteer
-                        is_site_admin=is_site_admin
-                        reload=reload
-                    />
+                    <ApplicationCard volunteer=volunteer reload=reload />
                 }
                 .into_any()
             })
@@ -222,11 +217,7 @@ fn PendingApplications(
                     </span>
                 </div>
                 <p class="mb-4 text-xs text-slate-500">
-                    {if is_site_admin {
-                        "People who accepted the volunteer agreement and are waiting to be approved. Approving grants them the Volunteer role; either decision emails them."
-                    } else {
-                        "People who accepted the volunteer agreement and are waiting to be approved. A site admin decides these."
-                    }}
+                    "People who accepted the volunteer agreement and are waiting to be approved. Approving grants them the Volunteer role; either decision emails them."
                 </p>
                 <div class="space-y-3">{cards}</div>
             </div>
@@ -235,13 +226,9 @@ fn PendingApplications(
     }
 }
 
-/// One pending application, with the approve/deny controls for a site admin.
+/// One pending application, with its approve/deny controls.
 #[component]
-fn ApplicationCard(
-    volunteer: Volunteer,
-    is_site_admin: bool,
-    reload: RwSignal<u32>,
-) -> impl IntoView {
+fn ApplicationCard(volunteer: Volunteer, reload: RwSignal<u32>) -> impl IntoView {
     let state = expect_context::<AppState>();
     let user_id = StoredValue::new(volunteer.id.clone());
     let name = volunteer.full_name();
@@ -291,8 +278,7 @@ fn ApplicationCard(
                 </p>
             </Show>
 
-            <Show when=move || is_site_admin>
-                <div class="mt-3 flex flex-wrap items-center gap-2">
+            <div class="mt-3 flex flex-wrap items-center gap-2">
                     <input
                         class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500"
                         placeholder="Decision note (optional, included in the email)"
@@ -312,10 +298,9 @@ fn ApplicationCard(
                         prop:disabled=move || deciding.get()
                         class="rounded-lg border border-rose-500/40 px-3 py-1.5 text-sm font-medium text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
                     >
-                        "Deny"
-                    </button>
-                </div>
-            </Show>
+                    "Deny"
+                </button>
+            </div>
         </div>
     }
 }

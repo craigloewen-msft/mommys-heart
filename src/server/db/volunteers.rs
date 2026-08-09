@@ -1,15 +1,8 @@
 //! Persistence for the volunteer record built on top of a user (SSR only): the
-//! agreement they accepted, their application, and the decision on it.
+//! agreement they accepted and the decision on their application.
 //!
-//! There is exactly one row per person and it doubles as the application, so a
-//! decision updates it in place rather than filing a second record.
-//!
-//! The role itself is *not* set here. Granting or removing volunteer access goes
-//! through [`crate::server::db::users::apply_role_in`], the single function
-//! allowed to change `users.role`, which keeps this table in step with it. That
-//! is what makes the invariant hold no matter which route a role change takes:
-//!
-//!   `users.role = 'volunteer'`  <=>  a row here with `status = 'approved'`
+//! The role itself is set by [`crate::server::db::users::set_role_in`], which
+//! keeps this table in step with it.
 
 use std::fmt;
 
@@ -20,10 +13,8 @@ use crate::server_fns::volunteers::{Volunteer, VolunteerApplication, VolunteerSt
 /// How timestamps are rendered for display. These are shown, never compared.
 const STAMP: &str = "%Y-%m-%d %H:%M";
 
-/// What can go wrong deciding an application. Mirrors
-/// [`crate::server::db::admin_requests::Error`]: the `Display` text is what the
-/// person on the other end reads, so a lost race explains itself rather than
-/// surfacing a database error string.
+/// What can go wrong deciding an application. The `Display` text is what the
+/// admin reads, so a lost race explains itself instead of leaking a db error.
 #[derive(Debug)]
 pub enum Error {
     Database(sqlx::Error),
@@ -94,18 +85,9 @@ pub async fn get(user_id: &str) -> Result<Option<VolunteerApplication>, sqlx::Er
 
 /// Record an acceptance of the volunteer agreement.
 ///
-/// `already_a_volunteer` decides what the acceptance *means*:
-///
-/// - `false` — this is an application. The record goes to `pending` for an admin
-///   to decide, clearing any earlier decision so a declined or revoked person can
-///   apply afresh.
-/// - `true` — the person already holds the role (an admin set it directly, or
-///   they predate the agreement) and is signing the paperwork after the fact.
-///   There is nothing to approve, so the record stays `approved` and only gains
-///   the agreement version. Without this, an existing volunteer signing would
-///   demote themselves into a review queue.
-///
-/// Upsert either way, so the caller need not know whether a record exists.
+/// `already_a_volunteer` says what it means: `false` files a `pending`
+/// application, `true` records the agreement against an existing volunteer, who
+/// has nothing left to approve. Upserts either way.
 pub async fn apply(
     user_id: &str,
     agreement_version: &str,
@@ -188,13 +170,9 @@ pub async fn pending_count() -> Result<i64, sqlx::Error> {
         .await
 }
 
-/// Approve or decline a pending application.
-///
-/// Approving delegates the role change to [`users::apply_role_in`], which grants
-/// the Volunteer role, marks this record approved, and writes the audit entry as
-/// one atomic step. Declining only records the decision. Deciding an application
-/// that is no longer pending is an error rather than a silent overwrite, so two
-/// admins acting at once cannot both "win".
+/// Approve or decline a pending application. Approving delegates to
+/// [`users::set_role_in`], which grants the role and audits it atomically.
+/// Deciding one that is no longer pending errors rather than overwriting.
 pub async fn decide(
     user_id: &str,
     approve: bool,
@@ -217,7 +195,7 @@ pub async fn decide(
 
     if approve {
         // Sets the role *and* flips this record to approved, together.
-        users::apply_role_in(&mut tx, user_id, AccountRole::Volunteer, actor_name).await?;
+        users::set_role_in(&mut tx, user_id, AccountRole::Volunteer, actor_name).await?;
     }
 
     // Record the decision itself. On approval the status is already 'approved';

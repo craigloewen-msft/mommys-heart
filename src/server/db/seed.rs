@@ -59,11 +59,8 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .execute(pool)
         .await?;
 
-        // Give each seeded user the subtype record their role implies, so a
-        // fresh database satisfies the same invariant `users::apply_role_in`
-        // maintains at runtime. Seeded volunteers predate the agreement, so
-        // their `agreement_version` is empty -- they hold the role but never
-        // signed anything, which the admin list shows as "Outstanding".
+        // The subtype record each role implies, so a fresh database satisfies
+        // the same invariant `users::set_role_in` maintains at runtime.
         match u.role {
             AccountRole::Volunteer => {
                 sqlx::query(

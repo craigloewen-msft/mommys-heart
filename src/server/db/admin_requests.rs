@@ -385,7 +385,7 @@ pub async fn decide(
                 let role = AccountRole::from_slug(&requested_role).ok_or_else(|| {
                     Error::InvalidData(format!("unknown role {requested_role:?}"))
                 })?;
-                users::apply_role_in(&mut tx, &target_id, role, actor_name).await?;
+                users::set_role_in(&mut tx, &target_id, role, actor_name).await?;
             }
             "case_capabilities" => {
                 let case_id = case_id

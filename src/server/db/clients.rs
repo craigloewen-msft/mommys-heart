@@ -1,13 +1,9 @@
 //! Persistence for the client record built on top of a user (SSR only).
 //!
 //! The counterpart to [`crate::server::db::volunteers`]: `users` holds identity
-//! and role, and this table holds what is true *because* someone is a client.
-//! It is deliberately thin for now — it exists so client-only data has a home and
-//! the two account kinds are structured the same way.
-//!
-//! Rows are written by registration and by
-//! [`crate::server::db::users::apply_role_in`], which maintains
-//! `users.role = 'client'` ⟹ a row here.
+//! and role, this holds what is true because someone is a client. Deliberately
+//! thin for now. Rows are written by registration and
+//! [`crate::server::db::users::set_role_in`].
 
 /// Record that a user is a client as part of a larger transaction, so the client
 /// record and the account it extends commit together or not at all.

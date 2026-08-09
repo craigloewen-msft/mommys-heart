@@ -4,8 +4,8 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::components::admin_user_card::UserCard;
 use crate::components::email_failures::EmailFailureLog;
-use crate::pages::admin::user_card::UserCard;
 use crate::server_fns::err_text;
 use crate::server_fns::users::User;
 use crate::state::AppState;
