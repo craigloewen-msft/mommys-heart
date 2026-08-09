@@ -704,19 +704,13 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
     Ok(Page { items, total })
 }
 
-/// A volunteer's agreement status.
-///
-/// The volunteer agreement itself does not exist yet (a separate change adds the
-/// document and its acceptance record), so every volunteer reports
-/// [`AgreementStatus::NotTracked`]. When that lands, resolving the real status is
-/// a change to this one function.
-fn agreement_status(_user_id: &str) -> AgreementStatus {
-    AgreementStatus::NotTracked
-}
-
 /// One page of volunteer accounts for the admin "Volunteers" tab: the
 /// `volunteer` role only, with the same optional search as [`page`]. Case
 /// assignments are not fetched — the list does not show them.
+///
+/// Left-joins the `volunteers` record so the list can report whether each person
+/// has actually accepted the volunteer agreement. A volunteer with no record, or
+/// one backfilled by migration (empty version), predates the agreement.
 pub async fn volunteers_page(
     offset: i64,
     limit: i64,
@@ -738,23 +732,26 @@ pub async fn volunteers_page(
     };
 
     // A NULL pattern (no search term) matches every volunteer.
-    const FILTER: &str = "WHERE role = 'volunteer'
+    const FILTER: &str = "WHERE u.role = 'volunteer'
            AND ($1::text IS NULL
-                OR first_name ILIKE $1
-                OR last_name ILIKE $1
-                OR (first_name || ' ' || last_name) ILIKE $1
-                OR email ILIKE $1)";
+                OR u.first_name ILIKE $1
+                OR u.last_name ILIKE $1
+                OR (u.first_name || ' ' || u.last_name) ILIKE $1
+                OR u.email ILIKE $1)";
 
-    let count_sql = format!("SELECT count(*) FROM users {FILTER}");
+    let count_sql = format!("SELECT count(*) FROM users u {FILTER}");
     let page_sql = format!(
-        "SELECT id, first_name, last_name, email
-         FROM users {FILTER} ORDER BY last_name, first_name, id LIMIT $2 OFFSET $3"
+        "SELECT u.id, u.first_name, u.last_name, u.email,
+                COALESCE(v.agreement_version, '') AS agreement_version
+         FROM users u
+         LEFT JOIN volunteers v ON v.user_id = u.id
+         {FILTER} ORDER BY u.last_name, u.first_name, u.id LIMIT $2 OFFSET $3"
     );
 
     let total_fut = sqlx::query_scalar::<_, i64>(&count_sql)
         .bind(&pattern)
         .fetch_one(pool());
-    let rows_fut = sqlx::query_as::<_, (String, String, String, String)>(&page_sql)
+    let rows_fut = sqlx::query_as::<_, (String, String, String, String, String)>(&page_sql)
         .bind(&pattern)
         .bind(limit)
         .bind(offset)
@@ -763,13 +760,19 @@ pub async fn volunteers_page(
 
     let items = rows
         .into_iter()
-        .map(|(id, first_name, last_name, email)| VolunteerListItem {
-            agreement: agreement_status(&id),
-            id,
-            first_name,
-            last_name,
-            email,
-        })
+        .map(
+            |(id, first_name, last_name, email, agreement_version)| VolunteerListItem {
+                id,
+                first_name,
+                last_name,
+                email,
+                agreement: if agreement_version.is_empty() {
+                    AgreementStatus::Outstanding
+                } else {
+                    AgreementStatus::Completed
+                },
+            },
+        )
         .collect();
     Ok(Page { items, total })
 }

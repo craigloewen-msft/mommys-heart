@@ -32,6 +32,7 @@ pub mod pages {
     pub mod reset_password;
     pub mod settings;
     pub mod verify_email;
+    pub mod volunteer_agreement;
 }
 
 #[cfg(feature = "ssr")]

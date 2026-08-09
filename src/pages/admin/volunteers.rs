@@ -7,6 +7,9 @@ use leptos::task::spawn_local;
 use crate::components::profile_link::ProfileLink;
 use crate::server_fns::err_text;
 use crate::server_fns::users::{list_volunteers_page, VolunteerListItem};
+use crate::server_fns::volunteers::{
+    decide_volunteer_application, list_pending_volunteer_applications, Volunteer,
+};
 use crate::state::AppState;
 
 /// How many volunteers each "Load more" click adds to the visible window.
@@ -17,8 +20,14 @@ pub fn VolunteersTab(
     /// Whether this tab is the one on screen; the fetch is deferred until it is.
     #[prop(into)]
     active: Signal<bool>,
+    /// Only site admins may decide an application, because approving grants the
+    /// Volunteer role. Everyone else sees the queue read-only.
+    is_site_admin: bool,
 ) -> impl IntoView {
     let state = expect_context::<AppState>();
+    // Bumped after a decision so both the pending queue and the volunteer list
+    // below it refetch.
+    let reload = RwSignal::new(0u32);
     // Instant-feedback search text plus its debounced mirror, which drives the
     // fetch so we don't hit the server on every keystroke.
     let query = RwSignal::new(String::new());
@@ -35,6 +44,7 @@ pub fn VolunteersTab(
         }
         let count = window.get();
         let q = debounced_query.get();
+        reload.track();
         if !state.has_operations_admin_permissions() {
             return;
         }
@@ -122,6 +132,7 @@ pub fn VolunteersTab(
     });
 
     view! {
+        <PendingApplications active=active is_site_admin=is_site_admin reload=reload />
         <p class="mb-4 text-sm text-slate-400">
             "Everyone with a volunteer account, and whether they have completed the volunteer agreement. Click a name to open their profile."
         </p>
@@ -137,5 +148,174 @@ pub fn VolunteersTab(
         />
         <div class="rounded-xl border border-slate-800 bg-slate-900">{rows}</div>
         {footer}
+    }
+}
+
+/// The volunteer applications waiting on a decision. Hidden entirely when the
+/// queue is empty, so the tab stays quiet when there is nothing to do.
+#[component]
+fn PendingApplications(
+    #[prop(into)] active: Signal<bool>,
+    is_site_admin: bool,
+    reload: RwSignal<u32>,
+) -> impl IntoView {
+    let state = expect_context::<AppState>();
+    let items = RwSignal::new(Vec::<Volunteer>::new());
+    let load_error = RwSignal::new(None::<String>);
+
+    Effect::new(move |_| {
+        if !active.get() {
+            return;
+        }
+        reload.track();
+        if !state.has_operations_admin_permissions() {
+            return;
+        }
+        spawn_local(async move {
+            match list_pending_volunteer_applications().await {
+                Ok(list) => {
+                    // Keep the badge honest against what is on screen.
+                    state.volunteer_requests_pending.set(list.len() as i64);
+                    items.set(list);
+                    load_error.set(None);
+                }
+                Err(e) => load_error.set(Some(err_text(e))),
+            }
+        });
+    });
+
+    move || {
+        if let Some(message) = load_error.get() {
+            return view! {
+                <p class="mb-4 text-sm text-rose-300">
+                    "Could not load volunteer applications: " {message}
+                </p>
+            }
+            .into_any();
+        }
+        let pending = items.get();
+        if pending.is_empty() {
+            return ().into_any();
+        }
+        let count = pending.len();
+        let cards = pending
+            .into_iter()
+            .map(|volunteer| {
+                view! {
+                    <ApplicationCard
+                        volunteer=volunteer
+                        is_site_admin=is_site_admin
+                        reload=reload
+                    />
+                }
+                .into_any()
+            })
+            .collect_view();
+        view! {
+            <div class="mb-6 rounded-xl border border-slate-800 bg-slate-900 p-5">
+                <div class="mb-3 flex items-center gap-2">
+                    <h2 class="text-base font-semibold text-slate-100">
+                        "Pending volunteer requests"
+                    </h2>
+                    <span class="inline-flex min-w-5 items-center justify-center rounded-full bg-primary-500 px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-white">
+                        {count}
+                    </span>
+                </div>
+                <p class="mb-4 text-xs text-slate-500">
+                    {if is_site_admin {
+                        "People who accepted the volunteer agreement and are waiting to be approved. Approving grants them the Volunteer role; either decision emails them."
+                    } else {
+                        "People who accepted the volunteer agreement and are waiting to be approved. A site admin decides these."
+                    }}
+                </p>
+                <div class="space-y-3">{cards}</div>
+            </div>
+        }
+        .into_any()
+    }
+}
+
+/// One pending application, with the approve/deny controls for a site admin.
+#[component]
+fn ApplicationCard(
+    volunteer: Volunteer,
+    is_site_admin: bool,
+    reload: RwSignal<u32>,
+) -> impl IntoView {
+    let state = expect_context::<AppState>();
+    let user_id = StoredValue::new(volunteer.user.id.clone());
+    let name = volunteer.full_name();
+    let email = volunteer.user.email.clone();
+    let agreed_at = volunteer.application.agreed_at.clone();
+    let note = RwSignal::new(String::new());
+    let deciding = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+
+    let decide = move |approve: bool| {
+        if deciding.get_untracked() {
+            return;
+        }
+        deciding.set(true);
+        error.set(None);
+        let target = user_id.get_value();
+        let decision_note = note.get_untracked();
+        spawn_local(async move {
+            match decide_volunteer_application(target, approve, decision_note).await {
+                Ok(()) => {
+                    reload.update(|value| *value += 1);
+                    // The decided row leaves the queue, so keep the badge in step.
+                    state.refresh_badges();
+                }
+                Err(e) => error.set(Some(err_text(e))),
+            }
+            deciding.set(false);
+        });
+    };
+
+    view! {
+        <div class="rounded-lg border border-slate-800 bg-slate-950 p-4">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+                <div class="min-w-0">
+                    <ProfileLink user_id=volunteer.user.id name=name />
+                    <p class="truncate text-xs text-slate-500">{email}</p>
+                    <p class="mt-1 text-xs text-slate-500">"Agreement accepted " {agreed_at}</p>
+                </div>
+                <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/30">
+                    "Pending review"
+                </span>
+            </div>
+
+            <Show when=move || error.get().is_some()>
+                <p class="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+                    {move || error.get().unwrap_or_default()}
+                </p>
+            </Show>
+
+            <Show when=move || is_site_admin>
+                <div class="mt-3 flex flex-wrap items-center gap-2">
+                    <input
+                        class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500"
+                        placeholder="Decision note (optional, included in the email)"
+                        maxlength="1000"
+                        prop:value=move || note.get()
+                        on:input=move |event| note.set(event_target_value(&event))
+                    />
+                    <button
+                        on:click=move |_| decide(true)
+                        prop:disabled=move || deciding.get()
+                        class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                    >
+                        "Approve"
+                    </button>
+                    <button
+                        on:click=move |_| decide(false)
+                        prop:disabled=move || deciding.get()
+                        class="rounded-lg border border-rose-500/40 px-3 py-1.5 text-sm font-medium text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
+                    >
+                        "Deny"
+                    </button>
+                </div>
+            </Show>
+        </div>
     }
 }

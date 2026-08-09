@@ -23,13 +23,14 @@ pub struct AppBadges {
     pub unread: Vec<ChannelUnread>,
     pub admin_requests_pending: i64,
     pub cases_pending_review: i64,
+    pub volunteer_requests_pending: i64,
 }
 
 /// Load every badge count for the signed-in user in one round trip. Counts the
 /// caller may not see are zero rather than an error.
 #[server(prefix = "/api")]
 pub async fn load_app_badges() -> Result<AppBadges, ServerFnError> {
-    use crate::server::db::{admin_requests, cases, channel_notifications};
+    use crate::server::db::{admin_requests, cases, channel_notifications, volunteers};
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
@@ -53,10 +54,21 @@ pub async fn load_app_badges() -> Result<AppBadges, ServerFnError> {
         0
     };
 
+    // Operations admins see the queue even though only site admins may decide,
+    // so the badge follows visibility rather than the decision permission.
+    let volunteer_requests_pending = if user.role.has_operations_admin_permissions() {
+        volunteers::pending_count()
+            .await
+            .map_err(ServerFnError::new)?
+    } else {
+        0
+    };
+
     Ok(AppBadges {
         unread,
         admin_requests_pending,
         cases_pending_review,
+        volunteer_requests_pending,
     })
 }
 
@@ -97,6 +109,8 @@ pub struct AppState {
     pub admin_request_pending: RwSignal<i64>,
     /// Cases waiting for an admin accept/decline; drives the count badges.
     pub cases_pending_review: RwSignal<i64>,
+    /// Volunteer applications waiting on a decision.
+    pub volunteer_requests_pending: RwSignal<i64>,
 }
 
 impl Default for AppState {
@@ -113,6 +127,7 @@ impl AppState {
             unread: RwSignal::new(Vec::new()),
             admin_request_pending: RwSignal::new(0),
             cases_pending_review: RwSignal::new(0),
+            volunteer_requests_pending: RwSignal::new(0),
         }
     }
 
@@ -169,6 +184,8 @@ impl AppState {
                 self.admin_request_pending
                     .set(badges.admin_requests_pending);
                 self.cases_pending_review.set(badges.cases_pending_review);
+                self.volunteer_requests_pending
+                    .set(badges.volunteer_requests_pending);
             }
         });
     }
@@ -271,6 +288,7 @@ impl AppState {
         self.unread.set(Vec::new());
         self.admin_request_pending.set(0);
         self.cases_pending_review.set(0);
+        self.volunteer_requests_pending.set(0);
         spawn_local(async move {
             let _ = auth::logout().await;
         });

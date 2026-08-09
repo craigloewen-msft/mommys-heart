@@ -93,14 +93,13 @@ pub fn notify_case_decision(
         return;
     };
     tokio::spawn(async move {
-        let mut recipients =
-            match settings::recipients_for_case(&case_id, &actor_id, false).await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("notify_case_decision: recipient lookup failed for {case_id}: {e}");
-                    return;
-                }
-            };
+        let mut recipients = match settings::recipients_for_case(&case_id, &actor_id, false).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("notify_case_decision: recipient lookup failed for {case_id}: {e}");
+                return;
+            }
+        };
         recipients.retain(|recipient| recipient.settings.wants(NotificationKind::CaseData));
         if recipients.is_empty() {
             return;
@@ -183,6 +182,29 @@ pub fn notify_admin_request_decided(request: AdminRequest) {
         };
         let email = templates::admin_request_decided(&Brand::from_env(), &request);
         dispatch(&cfg, recipients, &email, "Admin request notification").await;
+    });
+}
+
+/// Notify an applicant that their volunteer application was approved or
+/// declined. For a decline this email is the only notice they get — nothing is
+/// shown on the page — so it is sent regardless of notification preferences,
+/// like the account emails in [`crate::server::email::auth_notifications`].
+pub fn notify_volunteer_decision(user_id: String, approved: bool, decision_note: String) {
+    let Some(cfg) = configured_email() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let recipient = match settings::recipient_for_user(&user_id).await {
+            Ok(Some(recipient)) => recipient,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!("volunteer decision recipient lookup failed for {user_id}: {error}");
+                return;
+            }
+        };
+        let email =
+            templates::volunteer_application_decided(&Brand::from_env(), approved, &decision_note);
+        dispatch(&cfg, vec![recipient], &email, "Volunteer application").await;
     });
 }
 

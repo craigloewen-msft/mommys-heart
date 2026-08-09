@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::server_fns::users::{AccountRole, User};
 use crate::server_fns::volunteer_hours::VolunteerHours;
+use crate::server_fns::volunteers::VolunteerApplication;
 
 /// The personal contact details on a profile. Only ever populated for the
 /// profile's owner and viewers with operations-admin permissions.
@@ -50,6 +51,12 @@ pub struct UserProfile {
     /// viewer owns this profile or has operations-admin permissions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volunteer_hours: Option<VolunteerHours>,
+    /// This person's volunteer record: the agreement they accepted and where
+    /// their application stands. Present only for the profile's owner and for
+    /// viewers with operations-admin permissions, under the same rule as the
+    /// contact block. `None` when they have never applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volunteer: Option<VolunteerApplication>,
     /// Whether this profile belongs to the caller (drives the edit affordances).
     #[serde(default)]
     pub is_self: bool,
@@ -75,6 +82,7 @@ impl UserProfile {
         has_operations_admin_permissions: bool,
         shares_case: bool,
         volunteer_hours: Option<VolunteerHours>,
+        volunteer: Option<VolunteerApplication>,
     ) -> Self {
         let User {
             id,
@@ -97,6 +105,7 @@ impl UserProfile {
                 home_address,
             }),
             volunteer_hours,
+            volunteer,
             is_self,
             shares_case,
         }
@@ -154,7 +163,7 @@ pub struct ProfileEdit {
 /// owner and for admins.
 #[server(prefix = "/api")]
 pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError> {
-    use crate::server::db::{users, volunteer_hours};
+    use crate::server::db::{users, volunteer_hours, volunteers};
     use crate::server::permissions::{has_volunteer_access, require_user};
 
     let viewer = require_user().await?;
@@ -194,12 +203,22 @@ pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError>
         None
     };
 
+    // Same rule as the contact block: the owner and operations admins only.
+    let volunteer = if is_self || has_operations_admin_permissions {
+        volunteers::get(&record.id)
+            .await
+            .map_err(ServerFnError::new)?
+    } else {
+        None
+    };
+
     Ok(UserProfile::for_viewer(
         record,
         is_self,
         has_operations_admin_permissions,
         shares_case,
         hours,
+        volunteer,
     ))
 }
 

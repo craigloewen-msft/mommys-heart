@@ -115,12 +115,11 @@ impl UserSummary {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgreementStatus {
+    /// They accepted a specific version of the volunteer agreement.
     Completed,
+    /// No accepted agreement on file. True for volunteers who predate the
+    /// agreement, who were backfilled by migration.
     Outstanding,
-    /// Temporary: the volunteer agreement itself does not exist yet, so nothing
-    /// distinguishes completed from outstanding. Remove this variant once the
-    /// agreement flow lands and real acceptances are recorded.
-    NotTracked,
 }
 
 impl AgreementStatus {
@@ -128,7 +127,6 @@ impl AgreementStatus {
         match self {
             AgreementStatus::Completed => "Completed",
             AgreementStatus::Outstanding => "Outstanding",
-            AgreementStatus::NotTracked => "Not recorded yet",
         }
     }
 
@@ -140,7 +138,6 @@ impl AgreementStatus {
             AgreementStatus::Outstanding => {
                 "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"
             }
-            AgreementStatus::NotTracked => "bg-slate-800 text-slate-400 ring-1 ring-slate-700",
         }
     }
 }

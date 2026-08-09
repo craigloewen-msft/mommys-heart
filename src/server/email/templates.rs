@@ -126,10 +126,7 @@ pub fn case_decision(
     let theme = theme(NotificationKind::CaseData);
     let actor = actor_or_default(actor_name);
     let outcome = if accepted { "accepted" } else { "not accepted" };
-    let subject = format!(
-        "[{}] Your case was {}: {}",
-        brand.name, outcome, case_name
-    );
+    let subject = format!("[{}] Your case was {}: {}", brand.name, outcome, case_name);
 
     let reason = reason.trim();
     // The reason gets its own sentence rather than being spliced into one.
@@ -236,6 +233,94 @@ pub fn assignment(brand: &Brand, case_name: &str, actor_name: &str) -> RenderedE
         subject,
         html,
         plain_text: plain,
+    }
+}
+
+/// Build the applicant's notification that their volunteer application was
+/// approved or declined. A decline says so plainly and invites them to reapply:
+/// the email is the *only* place the outcome is communicated, so it has to stand
+/// on its own.
+pub fn volunteer_application_decided(
+    brand: &Brand,
+    approved: bool,
+    decision_note: &str,
+) -> RenderedEmail {
+    let theme = Theme {
+        accent: if approved {
+            palette::color("emerald-300")
+        } else {
+            palette::color("rose-400")
+        },
+        emoji: if approved { "\u{2705}" } else { "\u{274C}" },
+    };
+    let subject = format!(
+        "[{}] Your volunteer application was {}",
+        brand.name,
+        if approved { "approved" } else { "declined" },
+    );
+    let note = if decision_note.is_empty() {
+        String::new()
+    } else {
+        format!("<br><br>{}", escape(decision_note))
+    };
+    let callout = if approved {
+        format!(
+            "Welcome aboard \u{2014} your volunteer application has been <strong>approved</strong>. \
+             Your account now has volunteer access, and a case can be assigned to you.{note}"
+        )
+    } else {
+        format!(
+            "Thank you for offering your time. After review, your volunteer application was \
+             <strong>not approved</strong> at this time.{note}"
+        )
+    };
+    let cta_href = cta_url(brand, if approved { "/cases" } else { "/profile" });
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: &format!(
+                "Your volunteer application was {}.",
+                if approved { "approved" } else { "declined" },
+            ),
+            eyebrow: "Volunteer application",
+            heading: if approved {
+                "Your application was approved"
+            } else {
+                "Your application was declined"
+            },
+            callout_html: &callout,
+            cta: cta_href.as_deref().map(|url| {
+                (
+                    url,
+                    if approved {
+                        "Sign in"
+                    } else {
+                        "View your profile"
+                    },
+                )
+            }),
+            body_note: if approved {
+                "Sign in to see the cases you have been given access to."
+            } else {
+                "You are welcome to accept the volunteer agreement and apply again."
+            },
+            footer_html: "This is a required notification about your account.",
+        },
+    );
+    let plain_text = plain(
+        brand,
+        &if approved {
+            format!("Your volunteer application was approved. {decision_note}")
+        } else {
+            format!("Your volunteer application was not approved at this time. {decision_note}")
+        },
+        if approved { "/cases" } else { "/profile" },
+    );
+    RenderedEmail {
+        subject,
+        html,
+        plain_text,
     }
 }
 

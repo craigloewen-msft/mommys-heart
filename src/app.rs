@@ -16,6 +16,7 @@ use crate::pages::{
     reset_password::ResetPasswordPage,
     settings::SettingsPage,
     verify_email::{CaseSignupVerifyPage, VerifyEmailPage},
+    volunteer_agreement::VolunteerAgreementPage,
 };
 use crate::state::AppState;
 
@@ -123,6 +124,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/inbox") view=InboxPage />
                 <Route path=path!("/settings") view=SettingsPage />
                 <Route path=path!("/profile") view=ProfilePage />
+                <Route path=path!("/volunteer-agreement") view=VolunteerAgreementPage />
                 <Route path=path!("/profile/:id") view=ProfilePage />
                 <Route path=path!("/admin") view=AdminDashboardPage />
             </Routes>

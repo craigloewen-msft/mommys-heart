@@ -54,7 +54,12 @@ pub fn AdminDashboardPage() -> impl IntoView {
                             // Any admin can review a case, so not site-admin gated.
                             badge=Signal::derive(move || state.cases_pending_review.get())
                         />
-                        <TabButton tab=tab this_tab=AdminTab::Volunteers label="Volunteers" />
+                        <TabButton
+                            tab=tab
+                            this_tab=AdminTab::Volunteers
+                            label="Volunteers"
+                            badge=Signal::derive(move || state.volunteer_requests_pending.get())
+                        />
                         <TabButton tab=tab this_tab=AdminTab::CaseAccess label="Case access" />
                         <TabButton
                             tab=tab
@@ -72,7 +77,10 @@ pub fn AdminDashboardPage() -> impl IntoView {
                 </div>
 
                 <div role="tabpanel" class:hidden=move || tab.get() != AdminTab::Volunteers>
-                    <VolunteersTab active=Signal::derive(move || tab.get() == AdminTab::Volunteers) />
+                    <VolunteersTab
+                        active=Signal::derive(move || tab.get() == AdminTab::Volunteers)
+                        is_site_admin=is_site_admin
+                    />
                 </div>
 
                 <div role="tabpanel" class:hidden=move || tab.get() != AdminTab::CaseAccess>
