@@ -114,17 +114,28 @@ impl Volunteer {
 
 /// Accept the volunteer agreement.
 ///
-/// For someone without volunteer access this files an application for an admin
-/// to review. For someone who already holds the role — an admin set it directly,
-/// or they predate the agreement — it simply records the signed agreement
-/// against their existing record, because there is nothing left to approve.
-/// Rejects only a caller whose application is already awaiting a decision.
+/// For a client this files an application for an admin to review. For someone
+/// who already holds the Volunteer role — an admin set it directly, or they
+/// predate the agreement — it simply records the signed agreement against their
+/// existing record, because there is nothing left to approve.
+///
+/// Administrators are refused. They have volunteer *privileges* without being
+/// volunteers, and the `volunteers` table tracks the Volunteer role specifically:
+/// recording one for an admin would contradict
+/// [`crate::server::db::users::apply_role_in`]'s invariant, and treating it as an
+/// application would demote them to Volunteer on approval.
 #[server(prefix = "/api")]
 pub async fn apply_to_volunteer(agreement_version: String) -> Result<(), ServerFnError> {
     use crate::server::db::volunteers;
     use crate::server::permissions::require_user;
+    use crate::server_fns::users::AccountRole;
 
     let user = require_user().await?;
+    if user.role.has_operations_admin_permissions() {
+        return Err(ServerFnError::new(
+            "Administrator accounts cannot apply to volunteer.",
+        ));
+    }
     // An old tab holding a stale version never saw the wording it claims to
     // accept, so make it re-read rather than record consent it cannot evidence.
     if !crate::helpers::volunteer_terms::is_current(agreement_version.trim()) {
@@ -143,7 +154,7 @@ pub async fn apply_to_volunteer(agreement_version: String) -> Result<(), ServerF
             "Your volunteer application is already awaiting review.",
         ));
     }
-    let already_a_volunteer = user.role.has_volunteer_privileges();
+    let already_a_volunteer = user.role == AccountRole::Volunteer;
     if already_a_volunteer
         && existing
             .as_ref()
@@ -155,7 +166,16 @@ pub async fn apply_to_volunteer(agreement_version: String) -> Result<(), ServerF
     }
     volunteers::apply(&user.id, agreement_version.trim(), already_a_volunteer)
         .await
-        .map_err(ServerFnError::new)
+        .map_err(ServerFnError::new)?;
+    // Only a genuine application needs a decision, so only that emails the site
+    // admins. An existing volunteer signing the paperwork has nothing to review.
+    if !already_a_volunteer {
+        crate::server::notifications::notify_volunteer_application_filed(
+            user.full_name(),
+            user.email.clone(),
+        );
+    }
+    Ok(())
 }
 
 /// Every volunteer application waiting on a decision, oldest first. Visible to

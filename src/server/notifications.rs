@@ -185,6 +185,34 @@ pub fn notify_admin_request_decided(request: AdminRequest) {
     });
 }
 
+/// Notify site admins that a volunteer application is waiting for review. Only
+/// site admins may decide one, so this matches [`notify_admin_request_filed`]
+/// rather than notifying every administrator.
+pub fn notify_volunteer_application_filed(applicant_name: String, applicant_email: String) {
+    let Some(cfg) = configured_email() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let mut recipients = match settings::recipients_for_site_admins().await {
+            Ok(recipients) => recipients,
+            Err(error) => {
+                tracing::warn!("volunteer application recipient lookup failed: {error}");
+                return;
+            }
+        };
+        recipients.retain(|recipient| recipient.settings.wants(NotificationKind::AdminRequests));
+        if recipients.is_empty() {
+            return;
+        }
+        let email = templates::volunteer_application_filed(
+            &Brand::from_env(),
+            &applicant_name,
+            &applicant_email,
+        );
+        dispatch(&cfg, recipients, &email, "Volunteer application").await;
+    });
+}
+
 /// Notify an applicant that their volunteer application was approved or
 /// declined. For a decline this email is the only notice they get — nothing is
 /// shown on the page — so it is sent regardless of notification preferences,

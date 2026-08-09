@@ -21,6 +21,7 @@ use crate::components::volunteer_hours::VolunteerHoursPanel;
 use crate::helpers::volunteer_terms::{VOLUNTEER_AGREEMENT_SECTIONS, VOLUNTEER_AGREEMENT_VERSION};
 use crate::server_fns::err_text;
 use crate::server_fns::profile::{load_profile, save_my_profile, ProfileEdit, UserProfile};
+use crate::server_fns::users::AccountRole;
 use crate::server_fns::volunteers::VolunteerStatus;
 use crate::state::AppState;
 
@@ -299,7 +300,12 @@ pub fn ProfilePage() -> impl IntoView {
                 .into_any();
             }
 
-            let already_a_volunteer = p.role.has_volunteer_privileges();
+            // The Volunteer role exactly. Admins have volunteer *privileges*
+            // without being volunteers, and have no agreement to sign.
+            if p.role.has_operations_admin_permissions() {
+                return ().into_any();
+            }
+            let already_a_volunteer = p.role == AccountRole::Volunteer;
             let signed = p.volunteer.as_ref().is_some_and(|v| v.has_agreement());
             // Nothing to do: they hold the role and have signed.
             if already_a_volunteer && signed {

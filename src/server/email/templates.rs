@@ -236,6 +236,56 @@ pub fn assignment(brand: &Brand, case_name: &str, actor_name: &str) -> RenderedE
     }
 }
 
+/// Build the site-admin notification that someone accepted the volunteer
+/// agreement and is waiting to be approved.
+pub fn volunteer_application_filed(
+    brand: &Brand,
+    applicant_name: &str,
+    applicant_email: &str,
+) -> RenderedEmail {
+    let theme = Theme {
+        accent: palette::color("amber-300"),
+        emoji: "\u{1F64B}",
+    };
+    let subject = format!(
+        "[{}] Approval needed: volunteer application from {}",
+        brand.name, applicant_name,
+    );
+    let callout = format!(
+        "<strong>{name}</strong> ({email}) accepted the volunteer agreement and is \
+         waiting to be approved as a volunteer.",
+        name = escape(applicant_name),
+        email = escape(applicant_email),
+    );
+    let cta_href = cta_url(brand, "/admin");
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: "A volunteer application is waiting for review.",
+            eyebrow: "Volunteer application",
+            heading: "Review requested",
+            callout_html: &callout,
+            cta: cta_href.as_deref().map(|url| (url, "Review application")),
+            body_note: "Only a site admin can approve or deny this application.",
+            footer_html: "This is a required administrative workflow notification.",
+        },
+    );
+    let plain_text = plain(
+        brand,
+        &format!(
+            "{applicant_name} ({applicant_email}) accepted the volunteer agreement and is \
+             waiting to be approved as a volunteer."
+        ),
+        "/admin",
+    );
+    RenderedEmail {
+        subject,
+        html,
+        plain_text,
+    }
+}
+
 /// Build the applicant's notification that their volunteer application was
 /// approved or declined. A decline says so plainly and invites them to reapply:
 /// the email is the *only* place the outcome is communicated, so it has to stand
