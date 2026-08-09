@@ -13,4 +13,8 @@
 .idea
 .vscode/*
 !.vscode/extensions.json
-.phoenix
+# Agent worktrees live here. The pattern MUST stay anchored with a leading '/':
+# an unanchored '.phoenix' matches at every depth, so a checkout located *inside*
+# .phoenix/worktrees/ would have its own source files treated as ignored — which
+# silently blinds `cargo leptos watch` (it builds its watch list from .gitignore).
+/.phoenix

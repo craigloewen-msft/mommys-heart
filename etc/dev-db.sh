@@ -225,6 +225,7 @@ build_seed_dump() {
   done
 
   ( cd "$REPO_ROOT" && DATABASE_URL="postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@127.0.0.1:$seed_port/$POSTGRES_DB" \
+      CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target/oneshot}" \
       RUST_LOG="${MH_SEED_LOG:-info}" cargo run --quiet --no-default-features --features ssr -- seed \
   ) || { remove_container "$scratch"; return 1; }
 

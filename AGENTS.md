@@ -14,14 +14,32 @@ etc/dev-run.sh        # cargo leptos watch, on this checkout's port
 `etc/dev-run.sh` prints the URL it is serving on. It calls `dev-db.sh up` for you
 if the containers are not running yet.
 
-Run one-off commands against the same instance with `--`:
+Run one-off commands against the same instance with `--`. These automatically
+get their own build directory (`target/oneshot`), so they never disturb a
+running `cargo leptos watch`:
 
 ```bash
 etc/dev-run.sh -- cargo run --no-default-features --features ssr -- seed
 ```
 
-Use `cargo check --no-default-features --features ssr` for a quick compile check;
-no containers are needed for that.
+For a quick compile check, prefer the wrapper so it uses that separate build
+directory too; no containers are needed for compiling:
+
+```bash
+etc/dev-run.sh -- cargo check --no-default-features --features ssr
+```
+
+Running a bare `cargo check` in the repo root still works, but it shares
+`target/` with the watcher. Because the two build different feature sets
+(ssr binary vs hydrate wasm lib) they invalidate each other's fingerprints, so
+alternating between them makes both noticeably slower.
+
+**If `cargo leptos watch` stops picking up edits, check `.gitignore` first.**
+cargo-leptos builds its watch list from `.gitignore`, so any pattern that
+matches your checkout's own source files makes the watcher go silently deaf.
+This is why the `.phoenix` entry is anchored as `/.phoenix` — unanchored, it
+matched agent worktrees living under `.phoenix/worktrees/`, and edits inside
+them never triggered a rebuild.
 
 You can run `./etc/dev-db.sh --help` to see additional dev database commands if needed.
 

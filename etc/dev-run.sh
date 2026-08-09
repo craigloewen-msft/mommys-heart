@@ -18,7 +18,14 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 set -a; source "$REPO_ROOT/.env.local"; set +a
 cd "$REPO_ROOT"
 
-if [ "${1:-}" = "--" ]; then shift; exec "$@"; fi
+# One-off commands get their own build directory. Sharing `target/` with a live
+# `cargo leptos watch` makes the two invalidate each other's fingerprints (they
+# build different feature sets), turning every watch rebuild into a slow one.
+if [ "${1:-}" = "--" ]; then
+  shift
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target/oneshot}"
+  exec "$@"
+fi
 
 echo "Starting '$MH_INSTANCE' on http://$LEPTOS_SITE_ADDR"
 exec cargo leptos "${1:-watch}" "${@:2}"
