@@ -32,6 +32,7 @@ pub mod profile;
 pub mod settings;
 pub mod users;
 pub mod volunteer_hours;
+pub mod volunteers;
 
 use leptos::prelude::*;
 

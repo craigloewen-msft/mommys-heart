@@ -18,8 +18,11 @@ use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::components::volunteer_hours::VolunteerHoursPanel;
+use crate::helpers::volunteer_terms::{VOLUNTEER_AGREEMENT_SECTIONS, VOLUNTEER_AGREEMENT_VERSION};
 use crate::server_fns::err_text;
 use crate::server_fns::profile::{load_profile, save_my_profile, ProfileEdit, UserProfile};
+use crate::server_fns::users::AccountRole;
+use crate::server_fns::volunteers::VolunteerStatus;
 use crate::state::AppState;
 
 const INPUT_CLASS: &str = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
@@ -270,6 +273,167 @@ pub fn ProfilePage() -> impl IntoView {
             .into_any()
         };
 
+        // Own profile only. Holding the role and having signed are independent
+        // facts: a client applies, an existing volunteer just signs.
+        let become_volunteer = move || {
+            let Some(p) = profile.get() else {
+                return ().into_any();
+            };
+            if !p.is_self {
+                return ().into_any();
+            }
+            let status = p.volunteer.as_ref().map(|v| v.status);
+            if status == Some(VolunteerStatus::Pending) {
+                return view! {
+                    <div class=SECTION_CLASS>
+                        <h3 class="text-sm font-semibold text-slate-200">"Volunteer application"</h3>
+                        <p class="mt-2 text-sm text-slate-400">
+                            "Your volunteer application is being reviewed. We'll email you when there's a decision."
+                        </p>
+                    </div>
+                }
+                .into_any();
+            }
+
+            // The Volunteer role exactly. Admins have volunteer *privileges*
+            // without being volunteers, and have no agreement to sign.
+            if p.role.has_operations_admin_permissions() {
+                return ().into_any();
+            }
+            let already_a_volunteer = p.role == AccountRole::Volunteer;
+            let signed = p.volunteer.as_ref().is_some_and(|v| v.has_agreement());
+            // Nothing to do: they hold the role and have signed.
+            if already_a_volunteer && signed {
+                return ().into_any();
+            }
+
+            let (heading, blurb, cta) = if already_a_volunteer {
+                (
+                    "Volunteer agreement",
+                    "Your account has volunteer access, but we don't have your signed volunteer agreement on file. Please read and accept it.",
+                    "Read and accept the agreement",
+                )
+            } else {
+                (
+                    "Become a volunteer",
+                    "Volunteers work directly with the families the Foundation supports. Read the volunteer agreement and accept it to apply \u{2014} an administrator reviews every application.",
+                    "Read the volunteer agreement",
+                )
+            };
+            // A declined or revoked person sees the invitation again: they are
+            // free to accept the agreement and apply afresh.
+            view! {
+                <div class=SECTION_CLASS>
+                    <h3 class="text-sm font-semibold text-slate-200">{heading}</h3>
+                    <p class="mt-2 text-sm text-slate-400">{blurb}</p>
+                    <A
+                        href="/volunteer-agreement"
+                        attr:class="mt-3 inline-block rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600"
+                    >
+                        {cta}
+                    </A>
+                </div>
+            }
+            .into_any()
+        };
+
+        // The volunteer agreement on file, for the owner and for admins. The
+        // wording is only rendered when the accepted version matches this build:
+        // showing the current text for an older acceptance would misrepresent
+        // what the person actually agreed to.
+        let agreement_open = RwSignal::new(false);
+        let volunteer_agreement = move || {
+            let Some(p) = profile.get() else {
+                return ().into_any();
+            };
+            let Some(volunteer) = p.volunteer.clone() else {
+                return ().into_any();
+            };
+            if !volunteer.has_agreement() {
+                return ().into_any();
+            }
+            let status_badge = format!(
+                "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {}",
+                volunteer.status.badge_classes(),
+            );
+            let is_current = volunteer.agreement_version == VOLUNTEER_AGREEMENT_VERSION;
+            let version = volunteer.agreement_version.clone();
+            let body = move || {
+                if !agreement_open.get() {
+                    return ().into_any();
+                }
+                if !is_current {
+                    return view! {
+                        <p class="mt-3 text-sm text-slate-400 italic">
+                            "This person accepted version " {version.clone()}
+                            ", which is not the wording this version of the app carries. The text they agreed to is not shown rather than showing them wording they never saw."
+                        </p>
+                    }
+                    .into_any();
+                }
+                view! {
+                    <div class="mt-3 max-h-[28rem] space-y-6 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-5 text-sm leading-relaxed text-slate-300">
+                        {VOLUNTEER_AGREEMENT_SECTIONS
+                            .iter()
+                            .map(|section| {
+                                view! {
+                                    <div class="space-y-3">
+                                        <Show when=move || !section.heading.is_empty()>
+                                            <h4 class="text-base font-semibold text-slate-100">
+                                                {section.heading}
+                                            </h4>
+                                        </Show>
+                                        {section
+                                            .paragraphs
+                                            .iter()
+                                            .map(|paragraph| view! { <p>{*paragraph}</p> })
+                                            .collect_view()}
+                                    </div>
+                                }
+                            })
+                            .collect_view()}
+                    </div>
+                }
+                .into_any()
+            };
+            let decided = (!volunteer.decided_at.is_empty()).then(|| {
+                let who = if volunteer.decided_by_name.is_empty() {
+                    String::new()
+                } else {
+                    format!(" by {}", volunteer.decided_by_name)
+                };
+                format!("{}{}", volunteer.decided_at, who)
+            });
+            view! {
+                <div class=SECTION_CLASS>
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <h3 class="text-sm font-semibold text-slate-200">"Volunteer agreement"</h3>
+                        <div class="flex items-center gap-2">
+                            <span class=status_badge>{volunteer.status.label()}</span>
+                            <button
+                                on:click=move |_| agreement_open.update(|open| *open = !*open)
+                                class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                            >
+                                {move || if agreement_open.get() { "Hide" } else { "View agreement" }}
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <DetailRow label="Accepted" value=volunteer.agreed_at.clone() />
+                        <DetailRow label="Version" value=volunteer.agreement_version.clone() />
+                        {decided.map(|decided| view! {
+                            <DetailRow label="Decided" value=decided />
+                        })}
+                        {(!volunteer.decision_note.is_empty()).then(|| view! {
+                            <DetailRow label="Decision note" value=volunteer.decision_note.clone() />
+                        })}
+                    </div>
+                    {body}
+                </div>
+            }
+            .into_any()
+        };
+
         let edit_form = move || {
             if !editing.get() {
                 return ().into_any();
@@ -386,6 +550,8 @@ pub fn ProfilePage() -> impl IntoView {
                     {edit_form}
                     <Show when=move || !editing.get()>{details.clone()}</Show>
                     {volunteer_hours}
+                    {become_volunteer}
+                    {volunteer_agreement}
                     {shared}
                 </div>
             }

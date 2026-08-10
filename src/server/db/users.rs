@@ -1,10 +1,10 @@
 //! Users, their per-case capability assignments, and admin mutations.
 
-use crate::server::db::{audit, ids, pool};
+use crate::server::db::{audit, clients, ids, pool};
 use crate::server_fns::capabilities::{CaseAssignment, CaseCapability};
 use crate::server_fns::pagination::Page;
 use crate::server_fns::profile::ProfileEdit;
-use crate::server_fns::users::{AccountRole, User};
+use crate::server_fns::users::{AccountRole, AgreementStatus, User, VolunteerListItem};
 use std::collections::BTreeMap;
 
 #[derive(sqlx::FromRow)]
@@ -243,25 +243,75 @@ async fn lock_capability_target(
     Ok(())
 }
 
-/// Change a user's global role, recording an audit entry when it changes.
-pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(), sqlx::Error> {
-    let current: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(pool())
-        .await?;
+/// Change a user's role inside the caller's transaction, keeping the subtype
+/// tables in step. This is the only code that may change `users.role`.
+///
+/// Maintains `role = 'volunteer'` ⟺ an approved `volunteers` row, and
+/// `role = 'client'` ⟹ a `clients` row. Losing the volunteer role revokes rather
+/// than deletes, so the agreement they accepted survives. No-ops when unchanged.
+pub async fn set_role_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: &str,
+    role: AccountRole,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut **tx)
+            .await?;
     let Some(current) = current else {
         return Ok(());
     };
     if current == role.slug() {
         return Ok(());
     }
+
     sqlx::query("UPDATE users SET role = $1 WHERE id = $2")
         .bind(role.slug())
         .bind(user_id)
-        .execute(pool())
+        .execute(&mut **tx)
         .await?;
-    audit::record(
-        pool(),
+
+    // Reconcile the volunteer record with the new role.
+    let was_volunteer = AccountRole::from_slug(&current) == Some(AccountRole::Volunteer);
+    match role {
+        AccountRole::Volunteer => {
+            sqlx::query(
+                "INSERT INTO volunteers (user_id, status, agreement_version, decided_by_name)
+                 VALUES ($1, 'approved', '', $2)
+                 ON CONFLICT (user_id) DO UPDATE SET
+                     status = 'approved',
+                     decided_by_name = EXCLUDED.decided_by_name,
+                     decided_at = now()",
+            )
+            .bind(user_id)
+            .bind(actor)
+            .execute(&mut **tx)
+            .await?;
+        }
+        _ if was_volunteer => {
+            sqlx::query(
+                "UPDATE volunteers SET
+                     status = 'revoked',
+                     decided_by_name = $2,
+                     decided_at = now()
+                 WHERE user_id = $1",
+            )
+            .bind(user_id)
+            .bind(actor)
+            .execute(&mut **tx)
+            .await?;
+        }
+        _ => {}
+    }
+
+    if role == AccountRole::Client {
+        clients::insert_in(tx, user_id).await?;
+    }
+
+    audit::record_in_transaction(
+        tx,
         audit::Entity::User,
         user_id,
         actor,
@@ -270,6 +320,13 @@ pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(
         role.slug(),
     )
     .await
+}
+
+/// Change a user's role in its own transaction, for callers not already in one.
+pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(), sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    set_role_in(&mut tx, user_id, role, actor).await?;
+    tx.commit().await
 }
 
 /// Remove a user's assignment to a case entirely.
@@ -701,5 +758,78 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
 
         items.push(row.into_user(assignments));
     }
+    Ok(Page { items, total })
+}
+
+/// One page of volunteer accounts for the admin "Volunteers" tab: the
+/// `volunteer` role only, with the same optional search as [`page`]. Case
+/// assignments are not fetched — the list does not show them.
+///
+/// Left-joins the `volunteers` record so the list can report whether each person
+/// has actually accepted the volunteer agreement. A volunteer with no record, or
+/// one backfilled by migration (empty version), predates the agreement.
+pub async fn volunteers_page(
+    offset: i64,
+    limit: i64,
+    search: &str,
+) -> Result<Page<VolunteerListItem>, sqlx::Error> {
+    let limit = limit.clamp(1, 100);
+    let offset = offset.max(0);
+
+    let term = search.trim();
+    let pattern = if term.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            term.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        ))
+    };
+
+    // A NULL pattern (no search term) matches every volunteer.
+    const FILTER: &str = "WHERE u.role = 'volunteer'
+           AND ($1::text IS NULL
+                OR u.first_name ILIKE $1
+                OR u.last_name ILIKE $1
+                OR (u.first_name || ' ' || u.last_name) ILIKE $1
+                OR u.email ILIKE $1)";
+
+    let count_sql = format!("SELECT count(*) FROM users u {FILTER}");
+    let page_sql = format!(
+        "SELECT u.id, u.first_name, u.last_name, u.email,
+                COALESCE(v.agreement_version, '') AS agreement_version
+         FROM users u
+         LEFT JOIN volunteers v ON v.user_id = u.id
+         {FILTER} ORDER BY u.last_name, u.first_name, u.id LIMIT $2 OFFSET $3"
+    );
+
+    let total_fut = sqlx::query_scalar::<_, i64>(&count_sql)
+        .bind(&pattern)
+        .fetch_one(pool());
+    let rows_fut = sqlx::query_as::<_, (String, String, String, String, String)>(&page_sql)
+        .bind(&pattern)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool());
+    let (total, rows) = tokio::try_join!(total_fut, rows_fut)?;
+
+    let items = rows
+        .into_iter()
+        .map(
+            |(id, first_name, last_name, email, agreement_version)| VolunteerListItem {
+                id,
+                first_name,
+                last_name,
+                email,
+                agreement: if agreement_version.is_empty() {
+                    AgreementStatus::Outstanding
+                } else {
+                    AgreementStatus::Completed
+                },
+            },
+        )
+        .collect();
     Ok(Page { items, total })
 }

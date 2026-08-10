@@ -111,6 +111,55 @@ impl UserSummary {
     }
 }
 
+/// Whether a volunteer has completed the volunteer agreement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgreementStatus {
+    /// They accepted a specific version of the volunteer agreement.
+    Completed,
+    /// No accepted agreement on file. True for volunteers who predate the
+    /// agreement, who were backfilled by migration.
+    Outstanding,
+}
+
+impl AgreementStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            AgreementStatus::Completed => "Completed",
+            AgreementStatus::Outstanding => "Outstanding",
+        }
+    }
+
+    pub fn badge_classes(self) -> &'static str {
+        match self {
+            AgreementStatus::Completed => {
+                "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+            }
+            AgreementStatus::Outstanding => {
+                "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"
+            }
+        }
+    }
+}
+
+/// One row of the admin "Volunteers" list.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VolunteerListItem {
+    pub id: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    pub agreement: AgreementStatus,
+}
+
+impl VolunteerListItem {
+    pub fn full_name(&self) -> String {
+        format!("{} {}", self.first_name, self.last_name)
+            .trim()
+            .to_string()
+    }
+}
+
 /// An application user account
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct User {
@@ -193,6 +242,24 @@ pub async fn list_users_page(
     let actor = require_user().await?;
     require_operations_admin(&actor)?;
     users::page(offset, limit, &search)
+        .await
+        .map_err(ServerFnError::new)
+}
+
+/// One page of volunteer accounts for the admin "Volunteers" tab, with the same
+/// optional search as [`list_users_page`]. Requires operations-admin permissions.
+#[server(prefix = "/api")]
+pub async fn list_volunteers_page(
+    offset: i64,
+    limit: i64,
+    search: String,
+) -> Result<Page<VolunteerListItem>, ServerFnError> {
+    use crate::server::db::users;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let actor = require_user().await?;
+    require_operations_admin(&actor)?;
+    users::volunteers_page(offset, limit, &search)
         .await
         .map_err(ServerFnError::new)
 }

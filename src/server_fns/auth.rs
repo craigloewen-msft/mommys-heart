@@ -491,7 +491,7 @@ pub async fn register_case_signup(
 pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
     use crate::server::auth::{build_session_cookie, clear_register_cookie, REGISTER_COOKIE_NAME};
     use crate::server::db::pending_registrations::{self, Verify};
-    use crate::server::db::{cases, pool, sessions, throttle, users};
+    use crate::server::db::{cases, clients, pool, sessions, throttle, users};
     use crate::server_fns::users::AccountRole;
 
     let code = code.trim();
@@ -559,6 +559,12 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
     )
     .await
     .map_err(ServerFnError::new)?;
+
+    // Every registration creates a client account, so it gets the client record
+    // that `users` is the base of, in the same transaction.
+    clients::insert_in(&mut tx, &id)
+        .await
+        .map_err(ServerFnError::new)?;
 
     if let Some(signup) = pending.case_signup {
         let intake: CaseIntake =

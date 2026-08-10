@@ -6,7 +6,7 @@ use crate::server::auth::hash_password;
 use crate::server::db::{case_folders, case_properties, channels, ids, messages, pool, users};
 use crate::server_fns::audit::ChangeLogEntry;
 use crate::server_fns::channels::{ChannelKind, DEFAULT_CHANNEL_NAME, VOLUNTEER_CHANNEL_NAME};
-use crate::server_fns::users::User;
+use crate::server_fns::users::{AccountRole, User};
 
 /// Seed the database from the mock fixtures, but only if there are no users yet.
 pub async fn seed_if_empty() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -58,6 +58,27 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .bind(u.role.slug())
         .execute(pool)
         .await?;
+
+        // The subtype record each role implies, so a fresh database satisfies
+        // the same invariant `users::set_role_in` maintains at runtime.
+        match u.role {
+            AccountRole::Volunteer => {
+                sqlx::query(
+                    "INSERT INTO volunteers (user_id, status, agreement_version, decided_by_name)
+                     VALUES ($1, 'approved', '', 'Seed')",
+                )
+                .bind(&u.id)
+                .execute(pool)
+                .await?;
+            }
+            AccountRole::Client => {
+                sqlx::query("INSERT INTO clients (user_id) VALUES ($1)")
+                    .bind(&u.id)
+                    .execute(pool)
+                    .await?;
+            }
+            _ => {}
+        }
 
         insert_audit(&u.id, "user", &Vec::<ChangeLogEntry>::new()).await?;
     }

@@ -90,8 +90,11 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
 
     // Reactive unread total driving the "Case Chat" badge.
     let unread_total = Signal::derive(move || state.total_unread());
+    // Everything on the Admin page that is waiting on someone, as one nav badge.
     let pending_requests = Signal::derive(move || {
-        state.admin_request_pending.get() + state.cases_pending_review.get()
+        state.admin_request_pending.get()
+            + state.cases_pending_review.get()
+            + state.volunteer_requests_pending.get()
     });
 
     view! {

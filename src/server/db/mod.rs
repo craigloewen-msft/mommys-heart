@@ -13,6 +13,7 @@ pub mod case_properties;
 pub mod cases;
 pub mod channel_notifications;
 pub mod channels;
+pub mod clients;
 pub mod email_failures;
 pub mod evidence;
 pub mod ids;
@@ -28,6 +29,7 @@ pub mod throttle;
 pub mod trusted_devices;
 pub mod users;
 pub mod volunteer_hours;
+pub mod volunteers;
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
