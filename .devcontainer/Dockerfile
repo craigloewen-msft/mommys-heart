@@ -1,4 +1,4 @@
-# Dev container for the Mommy's Heart CRM (Leptos + Axum fullstack, Rust).
+# Dev container for Mommy's Heart (Leptos + Axum fullstack, Rust).
 #
 # Base image ships a ready-to-use Rust toolchain (rustup, cargo, clippy,
 # rustfmt), a non-root `vscode` user with passwordless sudo, git, and the

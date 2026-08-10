@@ -83,7 +83,7 @@ impl EmailConfig {
 pub struct Brand {
     /// Short product name shown in headers and signatures, e.g. `Mommy's Heart`.
     pub name: String,
-    /// The public base URL of the CRM (no trailing slash), used to build the
+    /// The public base URL of the app (no trailing slash), used to build the
     /// call-to-action and settings links in emails. Empty when unset, in which
     /// case templates omit the buttons and render plain guidance instead.
     pub app_url: String,
@@ -98,7 +98,7 @@ impl Brand {
     pub fn from_env() -> Self {
         Self {
             name: env("BRAND_NAME", "Mommy's Heart"),
-            app_url: env("APP_URL", "https://crm.example.org")
+            app_url: env("APP_URL", "https://app.example.org")
                 .trim_end_matches('/')
                 .to_string(),
             support_email: env("SUPPORT_EMAIL", "support@example.org"),

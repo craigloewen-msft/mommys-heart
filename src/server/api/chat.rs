@@ -1,4 +1,4 @@
-//! `POST /api/chat` — the RAG chatbot endpoint (widget + CRM UI), plus
+//! `POST /api/chat` — the RAG chatbot endpoint (widget + app UI), plus
 //! `POST /api/reingest` to rebuild the vector store on demand.
 
 use axum::{http::StatusCode, routing::post, Json, Router};

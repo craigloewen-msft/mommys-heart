@@ -23,9 +23,9 @@ context.
 - Change the browser title from “Mommy's Heart CRM” to “Mommy's Heart”.
 - Rewrite notification-email guidance such as “Sign in to the Mommy's Heart CRM”
   as natural brand-only wording, including both HTML and plain-text variants.
-- Update README, environment guidance, migration comments, module docs, log
-  messages, and other code comments to say app/application or name the relevant
-  feature directly.
+- Update README, environment guidance, module docs, log messages, and other code
+  comments to say app/application or name the relevant feature directly. Preserve
+  applied SQL migrations byte-for-byte because SQLx validates their checksums.
 - Rename the Cargo package and Leptos output to `mommys-heart-app`, update the
   Rust crate imports and tracing target, and regenerate the lockfile.
 - Keep the Leptos stylesheet reference, release binary paths, runtime output
@@ -39,8 +39,8 @@ context.
 
 - No case-insensitive `CRM` references or old `mommys-heart-crm` /
   `mommys_heart_crm` identifiers remain in application source, configuration,
-  migrations, build files, or maintained documentation. Historical task records
-  may retain the term as context.
+  build files, or maintained documentation. Historical task records and immutable
+  applied migrations may retain the term as context.
 - Browser and email copy identify the product simply as “Mommy's Heart”.
 - Cargo, Leptos, telemetry, and container references all agree on
   `mommys-heart-app`; generated assets are requested under their actual names.
@@ -61,3 +61,17 @@ context.
   including case variants, old crate identifiers, and the old placeholder host.
 - Validate the Containerfile references the renamed release binary and Leptos
   output consistently; build it when the container runtime is available.
+
+## Outcome
+
+Implemented the terminology and artifact rename throughout active code, copy,
+configuration, docs, email templates, and build/deployment files. The existing
+`0001_init.sql` text was deliberately left unchanged: SQLx hashes the complete
+migration file, including comments, and changing those two historical references
+would cause checksum validation failures for deployed databases.
+
+The repository-wide formatter also corrected two pre-existing line wraps in
+`src/pages/cases.rs`, as requested during implementation. SSR compilation, the
+full Leptos build, browser validation, all email previews, and the production
+container build passed. Generated and runtime assets consistently use
+`mommys-heart-app`, and active files contain no old terminology.

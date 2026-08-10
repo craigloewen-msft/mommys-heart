@@ -6,9 +6,9 @@ async fn main() {
     use axum::Router;
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
-    use mommys_heart_crm::app::{shell, App};
-    use mommys_heart_crm::server::{api, rag, telemetry};
-    use mommys_heart_crm::server_fns;
+    use mommys_heart_app::app::{shell, App};
+    use mommys_heart_app::server::{api, rag, telemetry};
+    use mommys_heart_app::server_fns;
     use tower_http::trace::TraceLayer;
 
     let _ = dotenvy::from_filename(".env.local");
@@ -19,17 +19,17 @@ async fn main() {
     telemetry::init();
 
     if std::env::args().nth(1).as_deref() == Some("seed") {
-        if let Err(e) = mommys_heart_crm::server::db::init().await {
+        if let Err(e) = mommys_heart_app::server::db::init().await {
             panic!("failed to initialize database: {e}");
         }
-        if let Err(e) = mommys_heart_crm::server::db::seed::reseed().await {
+        if let Err(e) = mommys_heart_app::server::db::seed::reseed().await {
             panic!("failed to seed database: {e}");
         }
         tracing::info!("demo data loaded");
         return;
     }
 
-    // `mommys-heart-crm preview-emails [out-dir]` — render every notification
+    // `mommys-heart-app preview-emails [out-dir]` — render every notification
     // email template with placeholder data to standalone HTML files (default
     // `target/email-preview/`) and exit, without a database, email service, or
     // web server. Open the printed `index.html` in a browser to iterate on the
@@ -40,7 +40,7 @@ async fn main() {
             .nth(2)
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("target/email-preview"));
-        match mommys_heart_crm::server::email::preview::write_gallery(&out_dir) {
+        match mommys_heart_app::server::email::preview::write_gallery(&out_dir) {
             Ok(index) => tracing::info!("email preview written — open {}", index.display()),
             Err(e) => panic!("failed to write email preview: {e}"),
         }
@@ -48,14 +48,14 @@ async fn main() {
     }
 
     // Connect to PostgreSQL, run migrations, and seed on first run. Fail fast if
-    // the database is unreachable — the CRM cannot function without it.
-    if let Err(e) = mommys_heart_crm::server::db::init().await {
+    // the database is unreachable — the app cannot function without it.
+    if let Err(e) = mommys_heart_app::server::db::init().await {
         panic!("failed to initialize database: {e}");
     }
 
     // Configure Azure Blob Storage for evidence uploads. Missing configuration
     // is not fatal — uploads degrade gracefully like the RAG pipeline does.
-    if let Err(e) = mommys_heart_crm::server::storage::init().await {
+    if let Err(e) = mommys_heart_app::server::storage::init().await {
         panic!("failed to initialize evidence storage: {e}");
     }
 
@@ -65,15 +65,15 @@ async fn main() {
 
     // Prune audit-log entries older than the retention window, on startup and
     // then every 30 days.
-    mommys_heart_crm::server::db::audit::start_retention_task();
+    mommys_heart_app::server::db::audit::start_retention_task();
 
     // Same for the durable email-delivery-failure log surfaced in the admin
     // dashboard.
-    mommys_heart_crm::server::db::email_failures::start_retention_task();
+    mommys_heart_app::server::db::email_failures::start_retention_task();
 
     // Prune case-chat notifications that were never read within the retention
     // window (unread ones a user never opened), on startup and every 30 days.
-    mommys_heart_crm::server::db::channel_notifications::start_retention_task();
+    mommys_heart_app::server::db::channel_notifications::start_retention_task();
 
     let conf = get_configuration(None).unwrap();
     let leptos_options = conf.leptos_options;

@@ -1,5 +1,5 @@
 //! Server-side (SSR-only) code: the dedicated JSON API, authorization layer,
-//! RAG chatbot pipeline, and CAPTCHA verification. The CRM's request handlers
+//! RAG chatbot pipeline, and CAPTCHA verification. The app's request handlers
 //! themselves live in [`crate::server_fns`] as Leptos server functions.
 
 pub mod api;

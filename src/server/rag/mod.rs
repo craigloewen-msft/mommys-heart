@@ -194,7 +194,7 @@ pub async fn reingest() -> Result<IngestStats, String> {
 ///
 /// On any failure (Azure unconfigured, network error, empty store) it returns a
 /// graceful `general_knowledge` fallback instead of erroring, so `/api/chat`
-/// never hard-fails for the widget or the CRM UI.
+/// never hard-fails for the widget or the app UI.
 pub async fn answer(question: &str) -> ChatResponse {
     let cfg = AzureConfig::from_env();
 

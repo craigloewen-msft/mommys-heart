@@ -1,4 +1,4 @@
-//! The CRM's server functions, grouped by concept.
+//! The application's server functions, grouped by concept.
 //!
 //! Each `#[server]` function is written **once**: Leptos generates the server
 //! endpoint *and* the browser-side call, so there is no hand-written API client

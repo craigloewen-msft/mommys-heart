@@ -965,8 +965,9 @@ fn CaseDetail(
         let confirm_id = StoredValue::new(evidence_id.clone());
         // The row header is tight (name + folder picker), so the confirm gets a
         // full-width bar of its own underneath rather than squeezing in there.
-        let confirming =
-            move || confirm_id.with_value(|id| pending_delete.get().as_deref() == Some(id.as_str()));
+        let confirming = move || {
+            confirm_id.with_value(|id| pending_delete.get().as_deref() == Some(id.as_str()))
+        };
         let delete_btn = if can_delete_evidence {
             let id = evidence_id.clone();
             view! {
@@ -1158,8 +1159,9 @@ fn CaseDetail(
             ),
         };
         let confirm_id = StoredValue::new(folder.id.clone());
-        let confirming =
-            move || confirm_id.with_value(|id| pending_delete.get().as_deref() == Some(id.as_str()));
+        let confirming = move || {
+            confirm_id.with_value(|id| pending_delete.get().as_deref() == Some(id.as_str()))
+        };
         let delete_btn = if can_delete_evidence && !folder.is_root() {
             let id = folder.id.clone();
             let has_contents = file_count > 0 || child_count > 0;

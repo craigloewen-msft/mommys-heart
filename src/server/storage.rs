@@ -25,7 +25,7 @@ const DEFAULT_CONTAINER: &str = "evidence";
 static CONTAINER: OnceLock<BlobContainerClient> = OnceLock::new();
 
 /// Whether evidence storage is configured at all. When `false`, uploads are
-/// rejected with a clear error and the rest of the CRM keeps working — matching
+/// rejected with a clear error and the rest of the app keeps working — matching
 /// how the RAG pipeline degrades when Azure OpenAI is absent.
 pub fn is_configured() -> bool {
     CONTAINER.get().is_some()

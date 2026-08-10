@@ -1,5 +1,5 @@
 [package]
-name = "mommys-heart-crm"
+name = "mommys-heart-app"
 version = "1.1.2"
 edition = "2021"
 
@@ -118,7 +118,7 @@ ssr = [
 denylist = ["axum", "tokio", "tower", "tower-http", "leptos_axum", "reqwest", "dotenvy", "zip", "quick-xml", "sqlx", "argon2", "rand", "sha2", "hex", "chrono", "axum-extra", "time", "tracing", "tracing-subscriber", "azure_storage_blob", "azure_identity", "azure_core", "infer", "futures", "base64", "hmac"]
 
 [package.metadata.leptos]
-output-name = "mommys-heart-crm"
+output-name = "mommys-heart-app"
 site-root = "target/site"
 site-pkg-dir = "pkg"
 tailwind-input-file = "style/tailwind.css"

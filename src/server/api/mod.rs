@@ -2,7 +2,7 @@
 //!
 //! Plain Axum routes under `/api/*` returning JSON. This now covers only the
 //! endpoints that must stay REST: the embeddable Squarespace chat widget
-//! (cross-origin, hence [`cors_layer`]) plus health/version/docs. The CRM's own
+//! (cross-origin, hence [`cors_layer`]) plus health/version/docs. The app's own
 //! authenticated operations are Leptos server functions in
 //! [`crate::server_fns`], served under `/api/rpc/*`.
 //!

@@ -21,7 +21,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// The filter applied when `RUST_LOG` is not set: informative app + request
 /// logs, plus SQLx per-query logs, while keeping noisy dependencies quiet.
-const DEFAULT_FILTER: &str = "info,mommys_heart_crm=debug,tower_http=debug,sqlx::query=debug";
+const DEFAULT_FILTER: &str = "info,mommys_heart_app=debug,tower_http=debug,sqlx::query=debug";
 
 /// Install the global tracing subscriber. Safe to call once at startup; a second
 /// call is ignored so tests and re-inits don't panic.

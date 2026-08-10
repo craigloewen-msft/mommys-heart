@@ -1,5 +1,5 @@
 {
-  "name": "Mommy's Heart CRM (Leptos + Axum)",
+  "name": "Mommy's Heart (Leptos + Axum)",
   "build": {
     "dockerfile": "Dockerfile"
   },

@@ -19,12 +19,12 @@ pub async fn seed_if_empty() -> Result<(), Box<dyn std::error::Error + Send + Sy
 }
 
 /// Force-refresh the demo/test data: wipe every domain table and re-insert the
-/// mock fixtures. Invoked by `mommys-heart-crm seed`, which `etc/dev.sh` runs
+/// mock fixtures. Invoked by `mommys-heart-app seed`, which `etc/dev.sh` runs
 /// once to bake the pre-seeded database image that every instance starts from.
 /// Not used by the normal server startup path, which only seeds an empty
 /// database via [`seed_if_empty`].
 pub async fn reseed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing::info!("wiping existing CRM data before reseeding");
+    tracing::info!("wiping existing application data before reseeding");
     // One statement so FK constraints are satisfied atomically; RESTART IDENTITY
     // resets the audit_log sequence so ids are reproducible across reseeds.
     sqlx::query(

@@ -1,4 +1,4 @@
-//! Outbound email (SSR only): the branded templates for the CRM's notifications,
+//! Outbound email (SSR only): the branded templates for app notifications,
 //! the ACS REST transport that delivers them, and offline preview tooling.
 //!
 //! Each concern lives in its own submodule:

@@ -104,8 +104,8 @@ pub fn App() -> impl IntoView {
     });
 
     view! {
-        <Stylesheet id="leptos" href="/pkg/mommys-heart-crm.css" />
-        <Title text="Mommy's Heart CRM" />
+        <Stylesheet id="leptos" href="/pkg/mommys-heart-app.css" />
+        <Title text="Mommy's Heart" />
 
         <Router>
             <Routes fallback=|| view! { <NotFoundPage /> }>

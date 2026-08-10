@@ -1,5 +1,5 @@
 //! Database access layer (SSR only): connection pool, migrations, and the
-//! repositories that persist the CRM domain in PostgreSQL.
+//! repositories that persist application data in PostgreSQL.
 //!
 //! The pool lives in a process-wide [`OnceLock`] because the SSR branch of
 //! [`crate::api_client`] calls the service/repository layer directly (it has no

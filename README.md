@@ -1,8 +1,9 @@
 # Mommy's Heart management website
 
-A Rust + Leptos (Axum SSR + WASM hydrate) CRM. The CRM domain (users, cases,
-evidence, messages, audit logs) is persisted in **PostgreSQL** via SQLx,
-with server-side authentication (argon2 password hashing + session cookies).
+A Rust + Leptos (Axum SSR + WASM hydrate) application for managing users,
+cases, evidence, messages, and audit logs. Data is persisted in **PostgreSQL**
+via SQLx, with server-side authentication (argon2 password hashing + session
+cookies).
 
 ## Run
 

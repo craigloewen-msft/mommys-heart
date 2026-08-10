@@ -694,7 +694,7 @@ pub async fn request_password_reset(email: String) -> Result<(), ServerFnError> 
         } else {
             let base = Brand::from_env().app_url;
             let base = if base.is_empty() {
-                "https://crm.example.org".to_string()
+                "https://app.example.org".to_string()
             } else {
                 base
             };

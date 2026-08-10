@@ -1,4 +1,4 @@
-//! Branded HTML email templates for the CRM's notifications (SSR only).
+//! Branded HTML email templates for app notifications (SSR only).
 //!
 //! Every notification email is built here so the look — colors, header, footer,
 //! button, spacing — is defined once and shared by all message types. Callers in
@@ -98,7 +98,7 @@ pub fn case_event(
             heading: &format!("Update on {}", case_name),
             callout_html: &callout,
             cta: cta_href.as_deref().map(|u| (u, "Open the case")),
-            body_note: &format!("Sign in to the {} CRM to see the full details.", brand.name),
+            body_note: &format!("Sign in to {} to see the full details.", brand.name),
             footer_html: &footer,
         },
     );
@@ -169,7 +169,7 @@ pub fn case_decision(
         "Your case was not accepted"
     };
     let body_note = if accepted {
-        format!("Sign in to the {} CRM to see the full details.", brand.name)
+        format!("Sign in to {} to see the full details.", brand.name)
     } else {
         "If you have questions about this decision, reply to this email.".to_string()
     };
@@ -219,7 +219,7 @@ pub fn assignment(brand: &Brand, case_name: &str, actor_name: &str) -> RenderedE
             heading: &format!("You've been added to {}", case_name),
             callout_html: &callout,
             cta: cta_href.as_deref().map(|u| (u, "View the case")),
-            body_note: &format!("Sign in to the {} CRM to see the full details.", brand.name),
+            body_note: &format!("Sign in to {} to see the full details.", brand.name),
             footer_html: &footer,
         },
     );
@@ -527,7 +527,7 @@ pub fn case_signup(
             heading: "A client signed up",
             callout_html: &callout,
             cta: cta_href.as_deref().map(|url| (url, "View cases")),
-            body_note: &format!("Sign in to the {} CRM to review the new case.", brand.name),
+            body_note: &format!("Sign in to {} to review the new case.", brand.name),
             footer_html: &footer,
         },
     );
@@ -834,10 +834,10 @@ fn button(url: &str, label: &str, color: &str) -> String {
 /// prefer text. `event` is the one-sentence summary; `cta_path` deep-links.
 fn plain(brand: &Brand, event: &str, cta_path: &str) -> String {
     let action = if brand.app_url.is_empty() {
-        format!("Sign in to the {} CRM to see the full details.", brand.name)
+        format!("Sign in to {} to see the full details.", brand.name)
     } else {
         format!(
-            "Open the case: {}{}\nOr sign in to the {} CRM to see the full details.",
+            "Open the case: {}{}\nOr sign in to {} to see the full details.",
             brand.app_url, cta_path, brand.name
         )
     };
@@ -948,7 +948,7 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
         email: verify_email(brand, "048213"),
     });
     let reset_base = if brand.app_url.is_empty() {
-        "https://crm.example.org"
+        "https://app.example.org"
     } else {
         brand.app_url.as_str()
     };

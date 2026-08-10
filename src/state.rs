@@ -1,4 +1,4 @@
-//! Client-side application state for the CRM. Holds the signed-in user plus
+//! Client-side application state. Holds the signed-in user plus
 //! reactive caches (users, cases, messages) that are **loaded from and
 //! written through to the server** via the Leptos server functions in
 //! [`crate::server_fns`]. The server (backed by PostgreSQL) is the source of

@@ -22,16 +22,16 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=build /app/target/release/mommys-heart-crm /app/mommys-heart-crm
+COPY --from=build /app/target/release/mommys-heart-app /app/mommys-heart-app
 COPY --from=build /app/target/site /app/site
 COPY --from=build /app/docs /app/docs
 
 # Leptos runtime configuration (mirrors [package.metadata.leptos]).
-ENV LEPTOS_OUTPUT_NAME=mommys-heart-crm \
+ENV LEPTOS_OUTPUT_NAME=mommys-heart-app \
     LEPTOS_SITE_ROOT=site \
     LEPTOS_SITE_PKG_DIR=pkg \
     LEPTOS_SITE_ADDR=0.0.0.0:3000 \
     LEPTOS_ENV=PROD
 
 EXPOSE 3000
-CMD ["/app/mommys-heart-crm"]
+CMD ["/app/mommys-heart-app"]
