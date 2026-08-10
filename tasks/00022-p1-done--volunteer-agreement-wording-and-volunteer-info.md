@@ -351,4 +351,11 @@ The Agreement between the parties is entirely written, and does not include any 
 
 ### Attestation (`VOLUNTEER_ATTESTATION`)
 
-Volunteer acknowledges, affirms, and certifies that they have read and reviewed, and now and hereby agree to all above-stated 20 paragraphs.  By affixing their signature, together with the Foundation President, Volunteer certifies that they understand the terms and conditions set forth above are a binding contract with the Foundation.
+The Foundation's paper form ends with a signature clause. This is an online
+acceptance that captures no signature from either party, so that clause is
+replaced by what actually happens here. **As shipped:**
+
+Volunteer acknowledges, affirms, and certifies that they have read and reviewed, and now and hereby agree to all above-stated 20 paragraphs.  By accepting below, Volunteer certifies that they understand the terms and conditions set forth above are a binding contract with the Foundation.
+
+The original paper wording, for reference, read "By affixing their signature,
+together with the Foundation President, Volunteer certifies that...".

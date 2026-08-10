@@ -40,6 +40,9 @@ pub async fn reseed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let pool = pool();
+    // Only the first volunteer gets a signed agreement and filled-in details;
+    // see the match below.
+    let mut seeded_a_signed_volunteer = false;
 
     // 1. Users (hash the plaintext demo passwords) + their per-user audit log.
     for (u, password) in crate::mockdata::users() {
@@ -63,11 +66,39 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // the same invariant `users::set_role_in` maintains at runtime.
         match u.role {
             AccountRole::Volunteer => {
+                // The first seeded volunteer has signed the current agreement
+                // and filled the details form in (including an SSN, so the
+                // "On file" state and the audited reveal are both demoable).
+                // The rest stay backfill-shaped: approved, but predating the
+                // agreement, which is what the admin list calls Outstanding.
+                let signed = !seeded_a_signed_volunteer;
+                seeded_a_signed_volunteer = true;
                 sqlx::query(
-                    "INSERT INTO volunteers (user_id, status, agreement_version, decided_by_name)
-                     VALUES ($1, 'approved', '', 'Seed')",
+                    "INSERT INTO volunteers (
+                         user_id, status, agreement_version, decided_by_name, skills_focus,
+                         date_of_birth, ssn, phone, emergency_first_name, emergency_last_name,
+                         emergency_relationship, emergency_phone
+                     )
+                     VALUES ($1, 'approved', $2, 'Seed', $3, NULLIF($4, '')::date, $5, $6, $7, $8, $9, $10)",
                 )
                 .bind(&u.id)
+                .bind(if signed {
+                    crate::helpers::volunteer_terms::VOLUNTEER_AGREEMENT_VERSION
+                } else {
+                    ""
+                })
+                .bind(if signed {
+                    "Family law research, client intake, and grant writing."
+                } else {
+                    ""
+                })
+                .bind(if signed { "1988-04-02" } else { "" })
+                .bind(if signed { "123456789" } else { "" })
+                .bind(if signed { u.phone.as_str() } else { "" })
+                .bind(if signed { "Priya" } else { "" })
+                .bind(if signed { "Patel" } else { "" })
+                .bind(if signed { "Sister" } else { "" })
+                .bind(if signed { "(555) 204-1188" } else { "" })
                 .execute(pool)
                 .await?;
             }

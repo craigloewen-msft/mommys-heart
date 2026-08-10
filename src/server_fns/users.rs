@@ -259,9 +259,14 @@ pub async fn list_volunteers_page(
 
     let actor = require_user().await?;
     require_operations_admin(&actor)?;
-    users::volunteers_page(offset, limit, &search)
-        .await
-        .map_err(ServerFnError::new)
+    users::volunteers_page(
+        offset,
+        limit,
+        &search,
+        crate::helpers::volunteer_terms::VOLUNTEER_AGREEMENT_VERSION,
+    )
+    .await
+    .map_err(ServerFnError::new)
 }
 
 /// Change a user's account role.

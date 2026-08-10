@@ -233,6 +233,7 @@ fn ApplicationCard(volunteer: Volunteer, reload: RwSignal<u32>) -> impl IntoView
     let user_id = StoredValue::new(volunteer.id.clone());
     let name = volunteer.full_name();
     let email = volunteer.email.clone();
+    let skills_focus = volunteer.skills_focus.clone();
     let agreed_at = volunteer.agreed_at.clone();
     let note = RwSignal::new(String::new());
     let deciding = RwSignal::new(false);
@@ -277,6 +278,22 @@ fn ApplicationCard(volunteer: Volunteer, reload: RwSignal<u32>) -> impl IntoView
                     {move || error.get().unwrap_or_default()}
                 </p>
             </Show>
+
+            // What they say they can do, so an application can be judged
+            // without opening their profile.
+            {(!skills_focus.is_empty())
+                .then(|| {
+                    view! {
+                        <div class="mt-3 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+                            <p class="text-xs font-medium text-slate-400">
+                                "Skills and area of focus"
+                            </p>
+                            <p class="mt-0.5 whitespace-pre-line text-sm text-slate-200">
+                                {skills_focus}
+                            </p>
+                        </div>
+                    }
+                })}
 
             <div class="mt-3 flex flex-wrap items-center gap-2">
                     <input
