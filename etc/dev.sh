@@ -1,38 +1,110 @@
 #!/usr/bin/env bash
-# Manage this checkout's local development containers using wslc.exe — the WSL
-# container CLI (a Docker equivalent).
+# Develop this checkout.
 #
+#   etc/dev.sh build          compile the app (slow the first time; do this once)
+#   etc/dev.sh run            start it — prints MH_READY when the port is live
+#   etc/dev.sh reset          wipe the database back to fresh seed data
+#
+#   etc/dev.sh -- <cmd...>    run one command with this instance's env, in its
+#                             own build dir (e.g. -- cargo check ...)
+#   etc/dev.sh clean          remove this checkout's containers, volumes, env
+#
+# `build` and `run` start the containers themselves; there is nothing to do
+# first. Everything below the dispatch is plumbing you should not need to read.
+set -euo pipefail
+
+# ══ commands ════════════════════════════════════════════════════════════════
+# The whole user-facing surface. Everything they call lives further down.
+
+main() {
+  case "${1:-}" in
+    build)       shift; cmd_build "$@" ;;
+    run)         shift; cmd_run "$@" ;;
+    reset)       shift; cmd_reset "$@" ;;
+    clean)       shift; cmd_clean "$@" ;;
+    --)          shift; cmd_oneshot "$@" ;;
+    -h|--help|"") usage ;;
+    *)           usage >&2; exit 1 ;;
+  esac
+}
+
+# Prints the header block above, so the usage text exists in exactly one place.
+usage() {
+  awk '/^# `build`/{exit} NR>1 && /^#/{sub(/^# ?/, ""); print}' "$0"
+}
+
+# All the cold-build cost lives here, so `run` starts quickly and a caller's
+# readiness timeout never has to cover a compile.
+cmd_build() {
+  instance_up
+  ( set -a; . "$ENV_LOCAL"; set +a; cd "$REPO_ROOT"; cargo leptos build )
+  echo "Build complete for '$SLUG'. Start it with: etc/dev.sh run"
+}
+
+# Default is `watch`; pass `serve` (or any cargo-leptos subcommand) to override.
+cmd_run() {
+  instance_up
+  set -a; . "$ENV_LOCAL"; set +a
+  cd "$REPO_ROOT"
+
+  # Refuse to run unbuilt. A cold `cargo leptos` build takes many minutes and
+  # would be invisible to a caller waiting on readiness.
+  if ! compgen -G "$REPO_ROOT/target/site/pkg/*" >/dev/null 2>&1; then
+    echo "dev: not built yet — run 'etc/dev.sh build' first" >&2
+    exit 1
+  fi
+
+  echo "Starting '$MH_INSTANCE' on http://$LEPTOS_SITE_ADDR"
+  serve_and_await_readiness "${1:-watch}" "${@:2}"
+}
+
+cmd_reset() {
+  if [ "${1:-}" = --rebuild-seed ]; then build_seed_image force; fi
+  build_seed_image
+  remove_container "$DB_CONTAINER"
+  "$WSLC" volume remove "$DB_VOLUME" >/dev/null 2>&1 || true
+  instance_up
+  echo "Database reset to fresh seed data."
+}
+
+# The only way to reclaim a deleted worktree's containers, volumes and ports.
+cmd_clean() {
+  remove_container "$DB_CONTAINER"; remove_container "$STORAGE_CONTAINER"
+  "$WSLC" volume remove "$DB_VOLUME" >/dev/null 2>&1 || true
+  "$WSLC" volume remove "$STORAGE_VOLUME" >/dev/null 2>&1 || true
+  if owns_env_local; then rm -f "$ENV_LOCAL"; fi
+  release_port_reservation
+  echo "Removed this instance's containers and volumes."
+}
+
+# One-off commands get their own build directory. Sharing `target/` with a live
+# `cargo leptos watch` makes the two invalidate each other's fingerprints (they
+# build different feature sets), turning every watch rebuild into a slow one.
+cmd_oneshot() {
+  instance_up
+  set -a; . "$ENV_LOCAL"; set +a
+  cd "$REPO_ROOT"
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target/oneshot}"
+  exec "$@"
+}
+
+# ══ plumbing ════════════════════════════════════════════════════════════════
 # Every checkout gets its OWN containers, so any number of agents can work at
-# the same time without coordinating:
+# the same time without coordinating (via wslc.exe, the WSL container CLI):
 #   * mh-db-<instance>       — PostgreSQL, comes up already seeded
 #   * mh-storage-<instance>  — Azurite, the Azure Storage emulator for evidence
 #
 # Names and ports derive from an *instance slug* (the checkout's directory name
-# plus a path hash by default), and `up` writes them to a git-ignored .env.local
-# that the app and etc/dev-run.sh both read.
+# plus a path hash by default), written to a git-ignored .env.local the app and
+# this script both read.
 #
-# ── Fast seeding ────────────────────────────────────────────────────────────
-# Running the Rust seeder is slow (it compiles the SSR binary and argon2-hashes
-# every demo password). So we do it once, dump the result, and bake the dump
-# into a database *image* tagged with a fingerprint of the migrations + seed
-# sources. A container from that image is fully seeded in ~3s, no cargo needed.
-#
+# Fast seeding: running the Rust seeder is slow (it compiles the SSR binary and
+# argon2-hashes every demo password). So we do it once, dump the result, and
+# bake the dump into a database *image* tagged with a fingerprint of the
+# migrations + seed sources. A container from that image is seeded in ~3s.
 # Editing a migration or the fixtures changes the fingerprint, so a new image is
 # built while other agents keep using theirs. Images are immutable and the
-# runtime refuses to delete one that is in use, so this needs no locking or
-# bookkeeping on our side.
-#
-# Usage:
-#   etc/dev-db.sh up            # create/start this checkout's containers
-#   etc/dev-db.sh build         # up + compile the app (do this before dev-run.sh)
-#   etc/dev-db.sh reset         # wipe the database back to fresh seed data
-#   etc/dev-db.sh rebuild-seed  # force-rebuild the seed image (runs cargo)
-#   etc/dev-db.sh down          # stop this checkout's containers (keeps data)
-#   etc/dev-db.sh drop          # remove its containers, volumes and .env.local
-#   etc/dev-db.sh info          # print names, ports and URLs
-#   etc/dev-db.sh list          # every instance's containers on this machine
-#   etc/dev-db.sh psql | logs [db|storage]
-set -euo pipefail
+# runtime refuses to delete one in use, so this needs no bookkeeping from us.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WSLC="${WSLC:-wslc.exe}"
@@ -329,62 +401,54 @@ LEPTOS_RELOAD_PORT="$RELOAD_PORT"
 EOF
 }
 
-summary() {
-  cat <<EOF
+# Idempotent: start the containers, refresh .env.local, print where things are.
+# Unconditional on every command — a stale .env.local pointing at stopped
+# containers otherwise makes the app panic at startup and hang the caller.
+# All of it goes to stderr so `dev.sh -- <cmd>` keeps a clean stdout while its
+# progress (a first-time seed build takes minutes) still reaches the terminal.
+instance_up() {
+  {
+    db_up; storage_up; write_env_local
+    cat <<EOF
 
   instance      $SLUG
   database      $DB_CONTAINER  (127.0.0.1:$DB_PORT)
   blob storage  $STORAGE_CONTAINER  (127.0.0.1:$BLOB_PORT)
   web server    http://127.0.0.1:$SITE_PORT   (live-reload $RELOAD_PORT)
-  seed image    $SEED_IMAGE
+  DATABASE_URL  $DATABASE_URL_VALUE
 
-  Build it with:       etc/dev-db.sh build
-  Then start it with:  etc/dev-run.sh
 EOF
+  } >&2
 }
 
-case "${1:-up}" in
-  up)
-    db_up; storage_up; write_env_local; summary ;;
-  build)
-    # All the cold-build cost lives here so `etc/dev-run.sh` can start quickly
-    # and a caller's readiness timeout never has to cover a compile.
-    db_up; storage_up; write_env_local
-    ( set -a; . "$ENV_LOCAL"; set +a; cd "$REPO_ROOT"; cargo leptos build )
-    echo "Build complete for '$SLUG'. Start it with: etc/dev-run.sh" ;;
-  reset|seed)
-    build_seed_image
-    remove_container "$DB_CONTAINER"
-    "$WSLC" volume remove "$DB_VOLUME" >/dev/null 2>&1 || true
-    db_up; storage_up; write_env_local
-    echo "Database reset to fresh seed data ($DB_CONTAINER, 127.0.0.1:$DB_PORT)." ;;
-  rebuild-seed)
-    build_seed_image force; exec "$0" reset ;;
-  down|stop)
-    "$WSLC" stop "$DB_CONTAINER" >/dev/null 2>&1 || true
-    "$WSLC" stop "$STORAGE_CONTAINER" >/dev/null 2>&1 || true
-    echo "Stopped this instance's containers (data kept)." ;;
-  drop)
-    remove_container "$DB_CONTAINER"; remove_container "$STORAGE_CONTAINER"
-    "$WSLC" volume remove "$DB_VOLUME" >/dev/null 2>&1 || true
-    "$WSLC" volume remove "$STORAGE_VOLUME" >/dev/null 2>&1 || true
-    if owns_env_local; then rm -f "$ENV_LOCAL"; fi
-    release_port_reservation
-    echo "Removed this instance's containers and volumes." ;;
-  info)
-    summary; echo "  DATABASE_URL  $DATABASE_URL_VALUE"; echo ;;
-  list)
-    "$WSLC" list --all --no-trunc 2>/dev/null | tr -d '\r' \
-      | awk 'NR==1 || $2 ~ /^mh-(db|storage)-/' \
-      | sed -E 's/^([0-9a-f]{12,}|CONTAINER ID) +//' ;;
-  psql)
-    db_up >/dev/null; "$WSLC" exec -it "$DB_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" ;;
-  logs)
-    case "${2:-db}" in
-      db) "$WSLC" logs -f "$DB_CONTAINER" ;;
-      storage) "$WSLC" logs -f "$STORAGE_CONTAINER" ;;
-      *) echo "Usage: $0 logs [db|storage]" >&2; exit 1 ;;
-    esac ;;
-  *)
-    echo "Usage: $0 {up|build|reset|rebuild-seed|down|drop|info|list|psql|logs}" >&2; exit 1 ;;
-esac
+# Readiness contract for automated harnesses: once the site port actually
+# accepts connections this prints a single line beginning `MH_READY`. If the
+# server dies first it prints `MH_FAILED` and exits non-zero. Wait for one of
+# those two tokens — never for an app log line, which may never arrive.
+serve_and_await_readiness() {
+  local host="${LEPTOS_SITE_ADDR%:*}" port="${LEPTOS_SITE_ADDR##*:}" child status
+
+  # Run as a child, not exec, so we can watch for readiness alongside it.
+  cargo leptos "$@" &
+  child=$!
+  # Forward termination so Ctrl-C leaves no orphaned cargo/leptos.
+  trap 'kill -TERM "$child" 2>/dev/null || true' INT TERM
+
+  # Poll the real socket rather than scraping logs: a port that accepts a
+  # connection cannot be a false positive.
+  until (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; do
+    if ! kill -0 "$child" 2>/dev/null; then
+      status=0; wait "$child" 2>/dev/null || status=$?
+      [ "$status" -ne 0 ] || status=1
+      echo "MH_FAILED dev: server exited before becoming ready (status $status)"
+      exit "$status"
+    fi
+    sleep 0.5
+  done
+
+  echo "MH_READY listening on http://$LEPTOS_SITE_ADDR"
+  wait "$child"
+}
+
+main "$@"
+

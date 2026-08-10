@@ -7,22 +7,22 @@ several agents can run the app at the same time without interfering. You do not
 need to pick ports or configure anything:
 
 ```bash
-etc/dev-db.sh up      # start this checkout's containers (already seeded)
-etc/dev-db.sh build   # compile the app (slow the first time; do this once)
-etc/dev-run.sh        # cargo leptos watch, on this checkout's port
+etc/dev.sh build      # containers + compile the app (slow the first time)
+etc/dev.sh run        # cargo leptos watch, on this checkout's port
 ```
 
-`etc/dev-run.sh` prints the URL it is serving on, and calls `dev-db.sh up` for
-you so stopped containers come back automatically.
+Those two are the whole workflow. Both start this checkout's containers first,
+so stopped containers come back automatically, and `run` prints the URL it is
+serving on.
 
-**`dev-run.sh` does not build.** If the project has not been built it exits
-immediately with `dev-run: not built yet — run 'etc/dev-db.sh build' first`.
+**`run` does not build.** If the project has not been built it exits
+immediately with `dev: not built yet — run 'etc/dev.sh build' first`.
 Building is a separate step on purpose: a cold `cargo leptos` build takes many
 minutes, and hiding that inside the run command makes startup unbounded.
 
 ### Readiness signal (for IDEs and automated harnesses)
 
-Do not wait on an application log line. `etc/dev-run.sh` waits until the site
+Do not wait on an application log line. `etc/dev.sh run` waits until the site
 port genuinely accepts connections and then prints one line:
 
 ```
@@ -31,21 +31,21 @@ MH_READY listening on http://127.0.0.1:<port>
 
 If the server dies during startup it prints `MH_FAILED ...` and exits non-zero.
 Wait for `MH_READY`; treat `MH_FAILED` or process exit as immediate failure.
-Run `etc/dev-db.sh build` to completion first, then a ~120s timeout is plenty.
+Run `etc/dev.sh build` to completion first, then a ~120s timeout is plenty.
 
 Run one-off commands against the same instance with `--`. These automatically
 get their own build directory (`target/oneshot`), so they never disturb a
 running `cargo leptos watch`:
 
 ```bash
-etc/dev-run.sh -- cargo run --no-default-features --features ssr -- seed
+etc/dev.sh -- cargo run --no-default-features --features ssr -- seed
 ```
 
 For a quick compile check, prefer the wrapper so it uses that separate build
 directory too; no containers are needed for compiling:
 
 ```bash
-etc/dev-run.sh -- cargo check --no-default-features --features ssr
+etc/dev.sh -- cargo check --no-default-features --features ssr
 ```
 
 Running a bare `cargo check` in the repo root still works, but it shares
@@ -60,7 +60,10 @@ This is why the `.phoenix` entry is anchored as `/.phoenix` — unanchored, it
 matched agent worktrees living under `.phoenix/worktrees/`, and edits inside
 them never triggered a rebuild.
 
-You can run `./etc/dev-db.sh --help` to see additional dev database commands if needed.
+The only other commands are `etc/dev.sh reset` (wipe the database back to fresh
+seed data) and `etc/dev.sh clean` (remove this checkout's containers, volumes
+and `.env.local` — run it before deleting a worktree). `etc/dev.sh --help`
+lists them all.
 
 ## Cargo tests
 

@@ -19,7 +19,7 @@ pub async fn seed_if_empty() -> Result<(), Box<dyn std::error::Error + Send + Sy
 }
 
 /// Force-refresh the demo/test data: wipe every domain table and re-insert the
-/// mock fixtures. Invoked by `mommys-heart-crm seed`, which `etc/dev-db.sh` runs
+/// mock fixtures. Invoked by `mommys-heart-crm seed`, which `etc/dev.sh` runs
 /// once to bake the pre-seeded database image that every instance starts from.
 /// Not used by the normal server startup path, which only seeds an empty
 /// database via [`seed_if_empty`].

@@ -7,14 +7,19 @@ with server-side authentication (argon2 password hashing + session cookies).
 ## Run
 
 ```bash
-etc/dev-db.sh up      # start this checkout's containers (already seeded)
-etc/dev-db.sh build   # compile the app (slow the first time; do this once)
-etc/dev-run.sh        # cargo leptos watch, on this checkout's own port
+etc/dev.sh build      # containers + compile the app (slow the first time)
+etc/dev.sh run        # cargo leptos watch, on this checkout's own port
 ```
 
-`etc/dev-db.sh up` prints the URL to open. `dev-run.sh` does not build — it
-exits with a hint if you skip the build step — and prints `MH_READY ...` once
-the port is actually accepting connections.
+That is the whole workflow. Both commands start this checkout's own database
+and storage containers, so several checkouts can run at once without
+interfering. `run` prints the URL and then `MH_READY ...` once the port is
+actually accepting connections; it does not build, and exits with a hint if you
+skip the build step.
+
+Also available: `etc/dev.sh reset` (wipe the database back to fresh seed data),
+`etc/dev.sh clean` (remove this checkout's containers and volumes), and
+`etc/dev.sh -- <cmd>` (run one command with this instance's env).
 
 ## View email templates
 

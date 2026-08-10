@@ -4,7 +4,7 @@
 
 # Env
 .env
-# Generated per checkout by etc/dev-db.sh — points this instance at its own
+# Generated per checkout by etc/dev.sh — points this instance at its own
 # database, blob container and web port.
 .env.local
 
