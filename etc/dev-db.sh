@@ -24,6 +24,7 @@
 #
 # Usage:
 #   etc/dev-db.sh up            # create/start this checkout's containers
+#   etc/dev-db.sh build         # up + compile the app (do this before dev-run.sh)
 #   etc/dev-db.sh reset         # wipe the database back to fresh seed data
 #   etc/dev-db.sh rebuild-seed  # force-rebuild the seed image (runs cargo)
 #   etc/dev-db.sh down          # stop this checkout's containers (keeps data)
@@ -276,9 +277,11 @@ wait_for_db() {
   # Probe over TCP, not the unix socket: while the seed image's init scripts run,
   # postgres listens on the socket only. A socket probe would report ready during
   # that bootstrap phase, just before the server restarts.
+  # Redirect stdin: `wslc exec -i` inherits the caller's stdin, and under a tty
+  # (an IDE/tmux pane) psql waits for input forever instead of exiting.
   local tries=90
   until "$WSLC" exec -i "$DB_CONTAINER" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-      -tAc "SELECT 1 FROM users LIMIT 1" 2>/dev/null | grep -q 1; do
+      -tAc "SELECT 1 FROM users LIMIT 1" </dev/null 2>/dev/null | grep -q 1; do
     ((tries-- > 0)) || { echo "dev-db: timed out waiting for '$DB_CONTAINER' (see: $0 logs db)" >&2; return 1; }
     sleep 1
   done
@@ -335,13 +338,20 @@ summary() {
   web server    http://127.0.0.1:$SITE_PORT   (live-reload $RELOAD_PORT)
   seed image    $SEED_IMAGE
 
-  Start the app with:  etc/dev-run.sh
+  Build it with:       etc/dev-db.sh build
+  Then start it with:  etc/dev-run.sh
 EOF
 }
 
 case "${1:-up}" in
   up)
     db_up; storage_up; write_env_local; summary ;;
+  build)
+    # All the cold-build cost lives here so `etc/dev-run.sh` can start quickly
+    # and a caller's readiness timeout never has to cover a compile.
+    db_up; storage_up; write_env_local
+    ( set -a; . "$ENV_LOCAL"; set +a; cd "$REPO_ROOT"; cargo leptos build )
+    echo "Build complete for '$SLUG'. Start it with: etc/dev-run.sh" ;;
   reset|seed)
     build_seed_image
     remove_container "$DB_CONTAINER"
@@ -376,5 +386,5 @@ case "${1:-up}" in
       *) echo "Usage: $0 logs [db|storage]" >&2; exit 1 ;;
     esac ;;
   *)
-    echo "Usage: $0 {up|reset|rebuild-seed|down|drop|info|list|psql|logs}" >&2; exit 1 ;;
+    echo "Usage: $0 {up|build|reset|rebuild-seed|down|drop|info|list|psql|logs}" >&2; exit 1 ;;
 esac

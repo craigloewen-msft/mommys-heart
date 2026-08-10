@@ -8,11 +8,30 @@ need to pick ports or configure anything:
 
 ```bash
 etc/dev-db.sh up      # start this checkout's containers (already seeded)
+etc/dev-db.sh build   # compile the app (slow the first time; do this once)
 etc/dev-run.sh        # cargo leptos watch, on this checkout's port
 ```
 
-`etc/dev-run.sh` prints the URL it is serving on. It calls `dev-db.sh up` for you
-if the containers are not running yet.
+`etc/dev-run.sh` prints the URL it is serving on, and calls `dev-db.sh up` for
+you so stopped containers come back automatically.
+
+**`dev-run.sh` does not build.** If the project has not been built it exits
+immediately with `dev-run: not built yet — run 'etc/dev-db.sh build' first`.
+Building is a separate step on purpose: a cold `cargo leptos` build takes many
+minutes, and hiding that inside the run command makes startup unbounded.
+
+### Readiness signal (for IDEs and automated harnesses)
+
+Do not wait on an application log line. `etc/dev-run.sh` waits until the site
+port genuinely accepts connections and then prints one line:
+
+```
+MH_READY listening on http://127.0.0.1:<port>
+```
+
+If the server dies during startup it prints `MH_FAILED ...` and exits non-zero.
+Wait for `MH_READY`; treat `MH_FAILED` or process exit as immediate failure.
+Run `etc/dev-db.sh build` to completion first, then a ~120s timeout is plenty.
 
 Run one-off commands against the same instance with `--`. These automatically
 get their own build directory (`target/oneshot`), so they never disturb a
