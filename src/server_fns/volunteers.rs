@@ -1,11 +1,14 @@
 //! Volunteers as an object built on top of a user: the agreement they accepted,
-//! their application to become one, and the admin decision on it.
+//! the details they gave with it, their application to become one, and the admin
+//! decision on it.
 //!
 //! One record per person, doubling as their application, so a decision updates it
 //! in place and a declined applicant may accept again to re-apply.
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
+
+use crate::helpers::volunteer_details::{VolunteerDetails, VolunteerDetailsView};
 
 /// Where a volunteer application stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,8 +65,8 @@ impl VolunteerStatus {
     }
 }
 
-/// One person's volunteer record: the agreement they accepted and the state of
-/// their application.
+/// One person's volunteer record: the agreement they accepted, the details they
+/// gave with it, and the state of their application.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VolunteerApplication {
     pub status: VolunteerStatus,
@@ -71,6 +74,9 @@ pub struct VolunteerApplication {
     /// agreement (backfilled by migration), which is why it is not an `Option`:
     /// "no version" is a real, meaningful state rather than missing data.
     pub agreement_version: String,
+    /// What they told us about themselves. Carries `has_ssn`, never the number.
+    #[serde(default)]
+    pub details: VolunteerDetailsView,
     /// Pre-formatted for display; these are only ever shown, never compared.
     pub agreed_at: String,
     pub decided_by_name: String,
@@ -84,16 +90,24 @@ impl VolunteerApplication {
     pub fn has_agreement(&self) -> bool {
         !self.agreement_version.is_empty()
     }
+
+    /// Whether they accepted the wording currently in force. False for someone
+    /// who never signed and for one on a superseded version, who must re-accept.
+    pub fn is_current_agreement(&self) -> bool {
+        crate::helpers::volunteer_terms::is_current(&self.agreement_version)
+    }
 }
 
-/// One row of the admin's pending-application queue: who applied and when.
-/// Narrow on purpose — the queue shows a name, an email and a date.
+/// One row of the admin's pending-application queue: who applied, when, and what
+/// they say they can do.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Volunteer {
     pub id: String,
     pub first_name: String,
     pub last_name: String,
     pub email: String,
+    #[serde(default)]
+    pub skills_focus: String,
     /// Pre-formatted for display; only ever shown, never compared.
     pub agreed_at: String,
 }
@@ -106,14 +120,14 @@ impl Volunteer {
     }
 }
 
-/// Accept the volunteer agreement: a client files an application, an existing
-/// volunteer just records their signed agreement.
-///
-/// Administrators are refused: they have volunteer privileges without being
-/// volunteers, so a record for one would break the invariant, and approving it
-/// would demote them.
+/// Accept the volunteer agreement and submit the details that go with it: a
+/// client files an application, an existing volunteer records their acceptance.
+/// Administrators are refused, since approving one would demote them.
 #[server(prefix = "/api")]
-pub async fn apply_to_volunteer(agreement_version: String) -> Result<(), ServerFnError> {
+pub async fn apply_to_volunteer(
+    agreement_version: String,
+    details: VolunteerDetails,
+) -> Result<(), ServerFnError> {
     use crate::server::db::volunteers;
     use crate::server::permissions::require_user;
     use crate::server_fns::users::AccountRole;
@@ -131,6 +145,10 @@ pub async fn apply_to_volunteer(agreement_version: String) -> Result<(), ServerF
             "Please read and accept the current volunteer agreement.",
         ));
     }
+    // Normalize first so what is validated is exactly what gets stored.
+    let details = details.normalized();
+    details.validate().map_err(ServerFnError::new)?;
+
     let existing = volunteers::get(&user.id)
         .await
         .map_err(ServerFnError::new)?;
@@ -143,18 +161,26 @@ pub async fn apply_to_volunteer(agreement_version: String) -> Result<(), ServerF
         ));
     }
     let already_a_volunteer = user.role == AccountRole::Volunteer;
+    // Only the current wording counts as already signed, so a volunteer on a
+    // superseded version is not turned away.
     if already_a_volunteer
         && existing
             .as_ref()
-            .is_some_and(VolunteerApplication::has_agreement)
+            .is_some_and(VolunteerApplication::is_current_agreement)
     {
         return Err(ServerFnError::new(
-            "You have already accepted the volunteer agreement.",
+            "You have already accepted the current volunteer agreement.",
         ));
     }
-    volunteers::apply(&user.id, agreement_version.trim(), already_a_volunteer)
-        .await
-        .map_err(ServerFnError::new)?;
+    volunteers::apply(
+        &user.id,
+        agreement_version.trim(),
+        &details,
+        already_a_volunteer,
+        &user.full_name(),
+    )
+    .await
+    .map_err(ServerFnError::new)?;
     // Only a genuine application needs a decision, so only that emails the site
     // admins. An existing volunteer signing the paperwork has nothing to review.
     if !already_a_volunteer {
@@ -164,6 +190,69 @@ pub async fn apply_to_volunteer(agreement_version: String) -> Result<(), ServerF
         );
     }
     Ok(())
+}
+
+/// Update the caller's own volunteer details, always scoped to the signed-in
+/// user. A blank `ssn` keeps the number on file; `remove_ssn` clears it.
+#[server(prefix = "/api")]
+pub async fn save_my_volunteer_details(
+    details: VolunteerDetails,
+    remove_ssn: bool,
+) -> Result<VolunteerDetailsView, ServerFnError> {
+    use crate::server::db::volunteers;
+    use crate::server::permissions::require_user;
+
+    let user = require_user().await?;
+    let details = details.normalized();
+    details.validate().map_err(ServerFnError::new)?;
+
+    let existing = volunteers::get(&user.id)
+        .await
+        .map_err(ServerFnError::new)?
+        .ok_or_else(|| ServerFnError::new("You do not have a volunteer record to edit."))?;
+
+    volunteers::save_details(&user.id, &details, remove_ssn, &user.full_name())
+        .await
+        .map_err(ServerFnError::new)?;
+
+    Ok(VolunteerDetailsView {
+        skills_focus: details.skills_focus,
+        date_of_birth: details.date_of_birth,
+        has_ssn: if remove_ssn {
+            false
+        } else {
+            !details.ssn.is_empty() || existing.details.has_ssn
+        },
+        phone: details.phone,
+        emergency_first_name: details.emergency_first_name,
+        emergency_last_name: details.emergency_last_name,
+        emergency_relationship: details.emergency_relationship,
+        emergency_phone: details.emergency_phone,
+    })
+}
+
+/// Reveal one volunteer's Social Security Number, formatted `000-00-0000`. Site
+/// admins only, and the disclosure is audited before the number is returned.
+#[server(prefix = "/api")]
+pub async fn reveal_volunteer_ssn(user_id: String) -> Result<String, ServerFnError> {
+    use crate::server::db::volunteers;
+    use crate::server::permissions::{require_site_admin, require_user};
+
+    let actor = require_user().await?;
+    require_site_admin(&actor)?;
+    let user_id = user_id.trim().to_string();
+    if user_id.is_empty() {
+        return Err(ServerFnError::new("No volunteer was chosen."));
+    }
+    let ssn = volunteers::reveal_ssn(&user_id, &actor.full_name())
+        .await
+        .map_err(ServerFnError::new)?;
+    if ssn.is_empty() {
+        return Err(ServerFnError::new(
+            "This volunteer has no Social Security Number on file.",
+        ));
+    }
+    Ok(crate::helpers::volunteer_details::format_ssn(&ssn))
 }
 
 /// Every volunteer application waiting on a decision, oldest first. Site admins

@@ -17,6 +17,7 @@ use leptos_router::hooks::use_params_map;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
+use crate::components::volunteer_details::VolunteerDetailsPanel;
 use crate::components::volunteer_hours::VolunteerHoursPanel;
 use crate::helpers::volunteer_terms::{VOLUNTEER_AGREEMENT_SECTIONS, VOLUNTEER_AGREEMENT_VERSION};
 use crate::server_fns::err_text;
@@ -301,16 +302,31 @@ pub fn ProfilePage() -> impl IntoView {
                 return ().into_any();
             }
             let already_a_volunteer = p.role == AccountRole::Volunteer;
-            let signed = p.volunteer.as_ref().is_some_and(|v| v.has_agreement());
-            // Nothing to do: they hold the role and have signed.
+            // Only the current wording counts, so a volunteer on a superseded
+            // version is asked to accept the new one.
+            let signed = p
+                .volunteer
+                .as_ref()
+                .is_some_and(|v| v.is_current_agreement());
+            let signed_older = p
+                .volunteer
+                .as_ref()
+                .is_some_and(|v| v.has_agreement() && !v.is_current_agreement());
+            // Nothing to do: they hold the role and have signed the current one.
             if already_a_volunteer && signed {
                 return ().into_any();
             }
 
-            let (heading, blurb, cta) = if already_a_volunteer {
+            let (heading, blurb, cta) = if signed_older {
+                (
+                    "Volunteer agreement updated",
+                    "The volunteer agreement has been updated since you last accepted it. Please read the current version and accept it.",
+                    "Read and accept the current agreement",
+                )
+            } else if already_a_volunteer {
                 (
                     "Volunteer agreement",
-                    "Your account has volunteer access, but we don't have your signed volunteer agreement on file. Please read and accept it.",
+                    "Your account has volunteer access, but we don't have your acceptance of the volunteer agreement on file. Please read and accept it.",
                     "Read and accept the agreement",
                 )
             } else {
@@ -333,6 +349,29 @@ pub fn ProfilePage() -> impl IntoView {
                         {cta}
                     </A>
                 </div>
+            }
+            .into_any()
+        };
+
+        // The details submitted with the agreement, for the owner and admins.
+        // Absent for volunteers who predate the details form.
+        let volunteer_details = move || {
+            let Some(p) = profile.get() else {
+                return ().into_any();
+            };
+            let Some(volunteer) = p.volunteer.clone() else {
+                return ().into_any();
+            };
+            if !volunteer.details.is_present() {
+                return ().into_any();
+            }
+            view! {
+                <VolunteerDetailsPanel
+                    initial_details=volunteer.details
+                    user_id=p.id.clone()
+                    is_self=p.is_self
+                    is_site_admin=state.is_site_admin()
+                />
             }
             .into_any()
         };
@@ -551,6 +590,7 @@ pub fn ProfilePage() -> impl IntoView {
                     <Show when=move || !editing.get()>{details.clone()}</Show>
                     {volunteer_hours}
                     {become_volunteer}
+                    {volunteer_details}
                     {volunteer_agreement}
                     {shared}
                 </div>

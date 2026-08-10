@@ -765,13 +765,14 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
 /// `volunteer` role only, with the same optional search as [`page`]. Case
 /// assignments are not fetched — the list does not show them.
 ///
-/// Left-joins the `volunteers` record so the list can report whether each person
-/// has actually accepted the volunteer agreement. A volunteer with no record, or
-/// one backfilled by migration (empty version), predates the agreement.
+/// Left-joins the `volunteers` record to report whether each person has
+/// accepted the agreement currently in force. `current_version` is passed in to
+/// keep this a pure query.
 pub async fn volunteers_page(
     offset: i64,
     limit: i64,
     search: &str,
+    current_version: &str,
 ) -> Result<Page<VolunteerListItem>, sqlx::Error> {
     let limit = limit.clamp(1, 100);
     let offset = offset.max(0);
@@ -823,10 +824,10 @@ pub async fn volunteers_page(
                 first_name,
                 last_name,
                 email,
-                agreement: if agreement_version.is_empty() {
-                    AgreementStatus::Outstanding
-                } else {
+                agreement: if agreement_version == current_version {
                     AgreementStatus::Completed
+                } else {
+                    AgreementStatus::Outstanding
                 },
             },
         )

@@ -16,4 +16,5 @@ pub mod new_case_folders;
 pub mod sections;
 pub mod terms;
 pub mod visibility;
+pub mod volunteer_details;
 pub mod volunteer_terms;
