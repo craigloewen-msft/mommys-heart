@@ -302,9 +302,8 @@ pub fn ProfilePage() -> impl IntoView {
                 return ().into_any();
             }
             let already_a_volunteer = p.role == AccountRole::Volunteer;
-            // Only the current wording counts. A volunteer who signed a
-            // superseded version is asked to read and accept the new one
-            // rather than being left holding text the app will not render.
+            // Only the current wording counts, so a volunteer on a superseded
+            // version is asked to accept the new one.
             let signed = p
                 .volunteer
                 .as_ref()
@@ -354,8 +353,8 @@ pub fn ProfilePage() -> impl IntoView {
             .into_any()
         };
 
-        // The details submitted with the agreement, for the owner and for
-        // admins. Absent for volunteers who predate the details form.
+        // The details submitted with the agreement, for the owner and admins.
+        // Absent for volunteers who predate the details form.
         let volunteer_details = move || {
             let Some(p) = profile.get() else {
                 return ().into_any();

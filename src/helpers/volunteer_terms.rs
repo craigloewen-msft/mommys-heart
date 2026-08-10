@@ -1,10 +1,8 @@
 //! The Volunteer Agreement and the version string recording which wording was
 //! accepted. Mirrors [`crate::helpers::terms`].
 //!
-//! The wording below is the Foundation's approved text, transcribed verbatim
-//! including its own punctuation and phrasing. Revising it is a two-part edit:
-//! change the prose *and* bump [`VOLUNTEER_AGREEMENT_VERSION`], so acceptances
-//! already recorded keep pointing at the wording they were shown.
+//! The wording is the Foundation's approved text, transcribed verbatim. Revising
+//! it means changing the prose *and* bumping [`VOLUNTEER_AGREEMENT_VERSION`].
 
 use crate::helpers::terms::TermsSection;
 
@@ -164,11 +162,8 @@ pub const VOLUNTEER_AGREEMENT_SECTIONS: &[TermsSection] = &[
 /// from [`VOLUNTEER_AGREEMENT_SECTIONS`] because it is what the checkbox attests
 /// to, not part of the agreement it attests about.
 ///
-/// The Foundation's paper form ends "by affixing their signature, together with
-/// the Foundation President". This is an online acceptance and captures no
-/// signature from either party, so that clause is replaced by what actually
-/// happens here: ticking the box and submitting. Describing a signature that is
-/// never taken would misdescribe the record we keep.
+/// The paper form's closing signature clause is replaced by what happens here,
+/// since this acceptance captures no signature from either party.
 pub const VOLUNTEER_ATTESTATION: &str = "Volunteer acknowledges, affirms, and certifies that they have read and reviewed, and now and hereby agree to all above-stated 20 paragraphs.  By accepting below, Volunteer certifies that they understand the terms and conditions set forth above are a binding contract with the Foundation.";
 
 /// Whether `version` is an agreement version this build knows how to honour. Only

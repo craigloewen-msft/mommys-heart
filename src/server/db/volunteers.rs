@@ -1,17 +1,9 @@
 //! Persistence for the volunteer record built on top of a user (SSR only): the
-//! agreement they accepted, the details they gave with it, and the decision on
-//! their application.
+//! agreement they accepted, the details given with it, and the decision on
+//! their application. The role is set by [`crate::server::db::users::set_role_in`].
 //!
-//! The role itself is set by [`crate::server::db::users::set_role_in`], which
-//! keeps this table in step with it.
-//!
-//! # The Social Security Number
-//!
-//! [`SELECT_COLUMNS`] deliberately does *not* include the `ssn` column. Every
-//! ordinary read reports only `ssn <> ''` as a boolean, so no query on the
-//! normal path has the digits in hand and none can leak them. The single raw
-//! read is [`reveal_ssn`], which audits the disclosure in the same transaction
-//! that fetches it.
+//! [`SELECT_COLUMNS`] omits the `ssn` column and reports only `ssn <> ''`, so no
+//! ordinary read can leak it; [`reveal_ssn`] audits the one exception.
 
 use std::fmt;
 
@@ -60,7 +52,7 @@ struct VolunteerRow {
     decided_at: Option<chrono::DateTime<chrono::Utc>>,
     skills_focus: String,
     date_of_birth: Option<String>,
-    /// Whether a number is on file. Never the number: see the module note.
+    /// Whether a number is on file. Never the number itself.
     has_ssn: bool,
     phone: String,
     emergency_first_name: String,
@@ -98,8 +90,7 @@ impl From<VolunteerRow> for VolunteerApplication {
     }
 }
 
-/// The columns every ordinary read selects. `ssn` is absent by design and
-/// reduced to a boolean; see the module note.
+/// The columns every ordinary read selects. `ssn` is absent by design.
 const SELECT_COLUMNS: &str =
     "status, agreement_version, agreed_at, decided_by_name, decision_note, decided_at,
      skills_focus, to_char(date_of_birth, 'YYYY-MM-DD') AS date_of_birth,
@@ -117,16 +108,9 @@ pub async fn get(user_id: &str) -> Result<Option<VolunteerApplication>, sqlx::Er
     Ok(row.map(Into::into))
 }
 
-/// Record an acceptance of the volunteer agreement together with the details
-/// submitted alongside it.
-///
-/// `already_a_volunteer` says what it means: `false` files a `pending`
-/// application, `true` records the agreement against an existing volunteer, who
-/// has nothing left to approve. Upserts either way.
-///
-/// The phone number is written through to `users.phone` in the same transaction,
-/// so the account and the accepted application cannot disagree about how to reach
-/// this person.
+/// Record an acceptance of the volunteer agreement and the details submitted
+/// with it. `already_a_volunteer` files `approved` rather than `pending`, and
+/// the phone is written through to `users.phone` in the same transaction.
 pub async fn apply(
     user_id: &str,
     agreement_version: &str,
@@ -191,11 +175,8 @@ pub async fn apply(
     Ok(())
 }
 
-/// Update one volunteer's own details, auditing each field that changed.
-///
-/// A blank `details.ssn` leaves the stored number alone; `remove_ssn` is the
-/// only way to clear it. The audit entry for the SSN records presence only,
-/// never a value, so reading the log can never disclose it.
+/// Update one volunteer's own details, auditing each field that changed. A blank
+/// `details.ssn` keeps the stored number; only `remove_ssn` clears it.
 pub async fn save_details(
     user_id: &str,
     details: &VolunteerDetails,
@@ -332,7 +313,7 @@ pub async fn save_details(
 }
 
 /// Copy the volunteer's phone onto their user record when it differs, auditing
-/// the change so it reads the same as an edit made from the profile form.
+/// the change.
 async fn sync_user_phone(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: &str,
@@ -366,12 +347,8 @@ async fn sync_user_phone(
     .await
 }
 
-/// One volunteer's Social Security Number, auditing the disclosure first.
-///
-/// The audit entry and the read share a transaction, so the number cannot be
-/// returned without the record of who asked for it being committed alongside.
-/// This is the only query in the codebase that selects the `ssn` column, and
-/// [`crate::server_fns::volunteers::reveal_volunteer_ssn`] is its only caller.
+/// One volunteer's Social Security Number, auditing the disclosure first. The
+/// only query that selects the `ssn` column.
 pub async fn reveal_ssn(user_id: &str, actor: &str) -> Result<String, sqlx::Error> {
     let mut tx = pool().begin().await?;
     let ssn: Option<String> = sqlx::query_scalar("SELECT ssn FROM volunteers WHERE user_id = $1")

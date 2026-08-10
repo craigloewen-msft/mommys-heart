@@ -1,14 +1,9 @@
 //! `/volunteer-agreement`: read the Volunteer Agreement, give the details that
-//! go with it, and accept — which files an application for an administrator to
-//! review.
+//! go with it, and accept, which files an application for review.
 //!
 //! Mirrors the client terms at [`crate::pages::case_signup`], including the
-//! scroll-to-the-end gate, but acceptance posts immediately.
-//!
-//! The information fields sit below the acceptance control and stay disabled
-//! until the agreement has been read to the end and the box is ticked: what is
-//! being collected belongs to the application being accepted, so it should not
-//! be filled in before there is an acceptance to attach it to.
+//! scroll-to-the-end gate. The information fields stay disabled until the
+//! agreement is read to the end and the box is ticked.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -48,8 +43,7 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
     let agreement_ref = NodeRef::<leptos::html::Div>::new();
 
     let details = RwSignal::new(VolunteerDetails::default());
-    // Shown read-only: the account's email is the sign-in identity and is not
-    // the volunteer's to change here.
+    // Shown read-only: the account's email is the sign-in identity.
     let email = RwSignal::new(String::new());
 
     // Whether the pane is scrolled to (or within a pixel of) its end. Also true
@@ -68,8 +62,8 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
     // Runs once after mount to catch the no-scrollbar case described above.
     Effect::new(move |_| check_scrolled());
 
-    // Prefill the contact fields from the signed-in account, so the volunteer
-    // confirms what we already hold rather than retyping it.
+    // Prefill contact from the account, so the volunteer confirms what we hold
+    // rather than retyping it.
     Effect::new(move |_| {
         let Some(current) = state.current_user_summary.get() else {
             return;
@@ -88,8 +82,7 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
         });
     });
 
-    // The information fields are only answerable once the agreement has been
-    // read and accepted.
+    // Only answerable once the agreement has been read and accepted.
     let unlocked = move || read_to_end.get() && accepted.get();
 
     require_login(state, move || {

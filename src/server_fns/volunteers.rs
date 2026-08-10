@@ -74,9 +74,7 @@ pub struct VolunteerApplication {
     /// agreement (backfilled by migration), which is why it is not an `Option`:
     /// "no version" is a real, meaningful state rather than missing data.
     pub agreement_version: String,
-    /// What they told us about themselves. Carries `has_ssn` rather than the
-    /// number, so this type is safe to send to any viewer allowed to see the
-    /// record at all.
+    /// What they told us about themselves. Carries `has_ssn`, never the number.
     #[serde(default)]
     pub details: VolunteerDetailsView,
     /// Pre-formatted for display; these are only ever shown, never compared.
@@ -93,17 +91,15 @@ impl VolunteerApplication {
         !self.agreement_version.is_empty()
     }
 
-    /// Whether they accepted the wording currently in force. False both for a
-    /// volunteer who never signed and for one who signed a superseded version:
-    /// either way they are asked to read and accept the current agreement.
+    /// Whether they accepted the wording currently in force. False for someone
+    /// who never signed and for one on a superseded version, who must re-accept.
     pub fn is_current_agreement(&self) -> bool {
         crate::helpers::volunteer_terms::is_current(&self.agreement_version)
     }
 }
 
 /// One row of the admin's pending-application queue: who applied, when, and what
-/// they say they can do, which is enough to judge an application without leaving
-/// the queue.
+/// they say they can do.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Volunteer {
     pub id: String,
@@ -125,12 +121,8 @@ impl Volunteer {
 }
 
 /// Accept the volunteer agreement and submit the details that go with it: a
-/// client files an application, an existing volunteer just records their signed
-/// agreement.
-///
-/// Administrators are refused: they have volunteer privileges without being
-/// volunteers, so a record for one would break the invariant, and approving it
-/// would demote them.
+/// client files an application, an existing volunteer records their acceptance.
+/// Administrators are refused, since approving one would demote them.
 #[server(prefix = "/api")]
 pub async fn apply_to_volunteer(
     agreement_version: String,
@@ -169,9 +161,8 @@ pub async fn apply_to_volunteer(
         ));
     }
     let already_a_volunteer = user.role == AccountRole::Volunteer;
-    // Only the *current* wording counts as already signed. A volunteer holding a
-    // superseded version is expected to accept the new one, so this must not
-    // turn them away.
+    // Only the current wording counts as already signed, so a volunteer on a
+    // superseded version is not turned away.
     if already_a_volunteer
         && existing
             .as_ref()
@@ -201,12 +192,8 @@ pub async fn apply_to_volunteer(
     Ok(())
 }
 
-/// Update the caller's own volunteer details. Always scoped to the signed-in
-/// user; there is no way to edit someone else's here.
-///
-/// A blank `ssn` means "keep the number on file" rather than "clear it", because
-/// the edit form is never sent the stored value and so cannot echo it back.
-/// Clearing it is the explicit `remove_ssn` flag.
+/// Update the caller's own volunteer details, always scoped to the signed-in
+/// user. A blank `ssn` keeps the number on file; `remove_ssn` clears it.
 #[server(prefix = "/api")]
 pub async fn save_my_volunteer_details(
     details: VolunteerDetails,
@@ -244,12 +231,8 @@ pub async fn save_my_volunteer_details(
     })
 }
 
-/// Reveal one volunteer's Social Security Number, formatted `000-00-0000`.
-///
-/// This is the *only* path by which the number leaves the server, and it is
-/// site-admin-only and audited: the entry naming who asked and when is written
-/// before the number is returned, so a disclosure cannot happen without a
-/// record of it. The number itself is never written to the audit log.
+/// Reveal one volunteer's Social Security Number, formatted `000-00-0000`. Site
+/// admins only, and the disclosure is audited before the number is returned.
 #[server(prefix = "/api")]
 pub async fn reveal_volunteer_ssn(user_id: String) -> Result<String, ServerFnError> {
     use crate::server::db::volunteers;

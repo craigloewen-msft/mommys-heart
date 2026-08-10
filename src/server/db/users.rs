@@ -765,11 +765,9 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
 /// `volunteer` role only, with the same optional search as [`page`]. Case
 /// assignments are not fetched — the list does not show them.
 ///
-/// Left-joins the `volunteers` record so the list can report whether each person
-/// has accepted the agreement *currently in force*. `current_version` is passed
-/// in rather than read from `helpers` here so this stays a pure query: a
-/// volunteer who signed superseded wording reads as outstanding, because they
-/// are being asked to sign again.
+/// Left-joins the `volunteers` record to report whether each person has
+/// accepted the agreement currently in force. `current_version` is passed in to
+/// keep this a pure query.
 pub async fn volunteers_page(
     offset: i64,
     limit: i64,

@@ -40,8 +40,7 @@ pub async fn reseed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let pool = pool();
-    // Only the first volunteer gets a signed agreement and filled-in details;
-    // see the match below.
+    // Only the first volunteer gets a signed agreement and filled-in details.
     let mut seeded_a_signed_volunteer = false;
 
     // 1. Users (hash the plaintext demo passwords) + their per-user audit log.
@@ -67,10 +66,9 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match u.role {
             AccountRole::Volunteer => {
                 // The first seeded volunteer has signed the current agreement
-                // and filled the details form in (including an SSN, so the
-                // "On file" state and the audited reveal are both demoable).
-                // The rest stay backfill-shaped: approved, but predating the
-                // agreement, which is what the admin list calls Outstanding.
+                // and filled in the details form, including an SSN, so the
+                // panel and the audited reveal are demoable. The rest stay
+                // backfill-shaped: approved but predating the agreement.
                 let signed = !seeded_a_signed_volunteer;
                 seeded_a_signed_volunteer = true;
                 sqlx::query(

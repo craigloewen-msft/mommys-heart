@@ -1,19 +1,9 @@
 //! The volunteer's own details: skills, date of birth, contact, emergency
 //! contact, and the optional Social Security Number.
 //!
-//! Pure data and pure functions, so the one implementation serves both the
-//! application form in the browser and the server function that stores it —
-//! the same arrangement as [`crate::helpers::case_intake`]. Validating in both
-//! places from one source means the form's message and the server's refusal can
-//! never drift apart.
-//!
-//! # The Social Security Number
-//!
-//! [`VolunteerDetails::ssn`] is the *only* place the digits appear in a type
-//! that travels. It is write-only from the browser's point of view: nothing
-//! sends it back, and the read side ([`VolunteerDetailsView`]) carries a
-//! `has_ssn` flag instead. Reading the number is a separate, site-admin-only,
-//! audited server function.
+//! Pure functions, so one implementation serves both the browser form and the
+//! server function. The SSN is write-only from the browser's side: the read
+//! type [`VolunteerDetailsView`] carries a `has_ssn` flag instead.
 
 use serde::{Deserialize, Serialize};
 
@@ -25,9 +15,8 @@ const EARLIEST_BIRTH_YEAR: i32 = 1900;
 const PHONE_DIGITS: usize = 10;
 const SSN_DIGITS: usize = 9;
 
-/// The consent the volunteer gives by filling the contact block in. Shown
-/// directly above those fields wherever they are edited, so it is never
-/// separated from what it governs.
+/// The consent the volunteer gives by filling the contact block in, shown
+/// directly above those fields wherever they are edited.
 pub const BACKGROUND_CHECK_CONSENT: &str = "By providing the information below, Volunteer consents to the Foundation performing a background check.";
 
 /// What a volunteer submits about themselves. Every field is a string because
@@ -49,9 +38,8 @@ pub struct VolunteerDetails {
 }
 
 impl VolunteerDetails {
-    /// Trim everything, format both phone numbers consistently, and reduce the
-    /// SSN to bare digits. Always run before [`Self::validate`] and before
-    /// storing, so what is checked is what is written.
+    /// Trim everything, format both phones, and reduce the SSN to bare digits.
+    /// Always run before [`Self::validate`] and before storing.
     pub fn normalized(&self) -> Self {
         Self {
             skills_focus: self.skills_focus.trim().to_string(),
@@ -65,11 +53,8 @@ impl VolunteerDetails {
         }
     }
 
-    /// Whether these details are complete and well-formed. The error is written
-    /// to be shown to the volunteer as-is.
-    ///
-    /// Age is deliberately not gated: paragraph 13 of the agreement
-    /// contemplates a minor volunteering with a guardian's permission.
+    /// Whether these details are complete and well-formed; the error is shown to
+    /// the volunteer as-is. Age is not gated — paragraph 13 allows minors.
     pub fn validate(&self) -> Result<(), String> {
         if self.skills_focus.trim().is_empty() {
             return Err("Please describe your skills and area of focus.".to_string());
@@ -99,11 +84,8 @@ impl VolunteerDetails {
     }
 }
 
-/// The read side of [`VolunteerDetails`]: what a browser is allowed to see.
-///
-/// Structurally identical but for the SSN, which is reduced to a yes/no. There
-/// is deliberately no field here the digits could travel in, not even a masked
-/// suffix — the only way to see the number is the audited reveal.
+/// The read side of [`VolunteerDetails`]: identical but for the SSN, which is
+/// reduced to a yes/no so the digits have no field to travel in.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct VolunteerDetailsView {
     pub skills_focus: String,
@@ -120,7 +102,7 @@ pub struct VolunteerDetailsView {
 
 impl VolunteerDetailsView {
     /// Whether this volunteer has filled the details form in at all. False for
-    /// the rows backfilled by migration and seed, which predate it.
+    /// rows backfilled by migration and seed.
     pub fn is_present(&self) -> bool {
         !self.skills_focus.is_empty()
             || !self.date_of_birth.is_empty()
@@ -130,9 +112,8 @@ impl VolunteerDetailsView {
             || !self.emergency_phone.is_empty()
     }
 
-    /// Seed an edit form from what is on file. The SSN is necessarily blank:
-    /// the browser was never sent it, so an empty box means "keep what is
-    /// stored" rather than "clear it".
+    /// Seed an edit form from what is on file. The SSN is necessarily blank, so
+    /// an empty box means "keep what is stored" rather than "clear it".
     pub fn to_edit(&self) -> VolunteerDetails {
         VolunteerDetails {
             skills_focus: self.skills_focus.clone(),
@@ -160,8 +141,7 @@ fn digits(value: &str) -> String {
 }
 
 /// A phone number as `(000) 000-0000`, or the trimmed input when it is not ten
-/// digits — normalization must not destroy what the person typed, so validation
-/// can quote it back at them.
+/// digits, so validation can quote back what was typed.
 fn normalize_phone(value: &str) -> String {
     format_phone(value).unwrap_or_else(|| value.trim().to_string())
 }
@@ -180,8 +160,7 @@ pub fn format_phone(value: &str) -> Option<String> {
     ))
 }
 
-/// A stored SSN as `000-00-0000`. Only ever called on the reveal path, where an
-/// administrator has explicitly asked for the number and the ask was audited.
+/// A stored SSN as `000-00-0000`. Only called on the audited reveal path.
 pub fn format_ssn(value: &str) -> String {
     let digits = digits(value);
     if digits.len() != SSN_DIGITS {
@@ -191,7 +170,7 @@ pub fn format_ssn(value: &str) -> String {
 }
 
 /// An ISO `YYYY-MM-DD` date as `MM-DD-YYYY`, the format the Foundation's form
-/// uses. Anything unparseable is passed through rather than hidden.
+/// uses. Anything unparseable is passed through.
 pub fn format_dob(value: &str) -> String {
     match parse_iso_date(value.trim()) {
         Some((year, month, day)) => format!("{month:02}-{day:02}-{year:04}"),
@@ -199,9 +178,8 @@ pub fn format_dob(value: &str) -> String {
     }
 }
 
-/// Split an ISO `YYYY-MM-DD` date, checking the parts are in range. Does not
-/// check the day against the month's real length; the date input the form uses
-/// cannot produce a 31st of February.
+/// Split an ISO `YYYY-MM-DD` date, checking the parts are in range. The day is
+/// not checked against the month's real length; the date input cannot produce one.
 fn parse_iso_date(value: &str) -> Option<(i32, u32, u32)> {
     let mut parts = value.split('-');
     let year: i32 = parts.next()?.parse().ok()?;
@@ -214,11 +192,7 @@ fn parse_iso_date(value: &str) -> Option<(i32, u32, u32)> {
 }
 
 /// A date of birth must be a real date, in the past, and not absurdly early.
-///
-/// "In the past" is checked against the caller's clock in the browser and the
-/// server's clock on the server. That is deliberate: a date of birth that is
-/// tomorrow in one timezone and today in another is not a case worth failing a
-/// submission over.
+/// "In the past" is checked against whichever clock is running this code.
 fn validate_date_of_birth(value: &str) -> Result<(), String> {
     const MALFORMED: &str = "Enter your date of birth as a valid date.";
     if value.is_empty() {
@@ -234,11 +208,8 @@ fn validate_date_of_birth(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Today as ISO `YYYY-MM-DD`.
-///
-/// [`crate::state::today`] is a browser clock and stubs to 1970 when there is no
-/// `hydrate` feature, so the server must read its own clock instead — sharing
-/// the browser's would reject every real date of birth server-side.
+/// Today as ISO `YYYY-MM-DD`. [`crate::state::today`] is a browser clock that
+/// stubs to 1970 without `hydrate`, so the server reads its own.
 fn today() -> String {
     #[cfg(feature = "ssr")]
     {

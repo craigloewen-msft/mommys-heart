@@ -1,17 +1,9 @@
 //! The volunteer's own details on their profile: skills, date of birth,
-//! contact, emergency contact, and whether a Social Security Number is on file.
+//! contact, emergency contact, and whether an SSN is on file.
 //!
-//! Shown to the profile's owner and to viewers with operations-admin
-//! permissions, under the same rule as the contact block. The owner may edit it
-//! in place.
-//!
-//! # The Social Security Number
-//!
-//! The panel is never sent the number — only [`VolunteerDetailsView::has_ssn`],
-//! so it can say "On file" or "Not provided". A site admin gets a Reveal button
-//! that asks the server for it explicitly; that request is audited, and what it
-//! returns is held for this page view only and never re-rendered from state
-//! that outlives it.
+//! Shown to the owner and to operations admins; the owner may edit in place.
+//! The panel is never sent the SSN, only `has_ssn`; a site admin's Reveal
+//! button asks for it explicitly and that request is audited.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -68,8 +60,7 @@ pub fn VolunteerDetailsPanel(
     let saving = RwSignal::new(false);
     let saved = RwSignal::new(false);
 
-    // The revealed number, held only as long as this page view. Nothing writes
-    // it anywhere that outlives the panel.
+    // Held only as long as this page view.
     let revealed_ssn = RwSignal::new(None::<String>);
     let revealing = RwSignal::new(false);
     let reveal_error = RwSignal::new(None::<String>);
@@ -92,8 +83,8 @@ pub fn VolunteerDetailsPanel(
             return;
         }
         let edit = draft.get_untracked();
-        // Check here as well as on the server so the message appears without a
-        // round trip; both sides run the same validator.
+        // Checked here too so the message appears without a round trip; both
+        // sides run the same validator.
         if let Err(message) = edit.normalized().validate() {
             save_error.set(Some(message));
             return;
