@@ -101,6 +101,73 @@ fn summary_select(message_count_scope: &str) -> String {
     )
 }
 
+/// Escape a free-text term for a literal `%term%` ILIKE match, or `None` for an
+/// empty filter.
+fn escaped_like_pattern(search: &str) -> Option<String> {
+    let term = search.trim();
+    if term.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            term.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        ))
+    }
+}
+
+/// One page of case summaries for the admin directory, ordered by id with an
+/// optional case-insensitive search over case id, case name, or owner name.
+pub async fn admin_page(
+    offset: i64,
+    limit: i64,
+    search: &str,
+    user_id: &str,
+) -> Result<Page<CaseSummary>, sqlx::Error> {
+    let limit = limit.clamp(1, 100);
+    let offset = offset.max(0);
+    let pattern = escaped_like_pattern(search);
+
+    const SEARCH: &str = "($1::text IS NULL OR c.id ILIKE $1 OR c.name ILIKE $1 \
+        OR COALESCE(u.first_name, '') ILIKE $1 OR COALESCE(u.last_name, '') ILIKE $1 \
+        OR concat_ws(' ', COALESCE(u.first_name, ''), COALESCE(u.last_name, '')) ILIKE $1)";
+    let count_sql = format!(
+        "SELECT count(*) FROM cases c LEFT JOIN users u ON u.id = c.owner_id WHERE {SEARCH}"
+    );
+    let page_sql = format!(
+        "{} WHERE {SEARCH} ORDER BY c.id LIMIT $2 OFFSET $3",
+        // Admin-only listing, so count every message like the other admin lookups.
+        summary_select("true")
+    );
+
+    let count_fut = sqlx::query_scalar::<_, i64>(&count_sql)
+        .bind(&pattern)
+        .fetch_one(pool());
+    let rows_fut = sqlx::query_as::<_, SummaryRow>(&page_sql)
+        .bind(&pattern)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool());
+    let (total, rows) = tokio::try_join!(count_fut, rows_fut)?;
+
+    let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+    let mut capabilities_by_case = if ids.is_empty() {
+        Default::default()
+    } else {
+        capabilities::get_multi_case(user_id, &ids).await?
+    };
+    let threshold = inactivity_threshold();
+    let items = rows
+        .into_iter()
+        .map(|r| {
+            let caps = capabilities_by_case.remove(&r.id).unwrap_or_default();
+            r.into_summary(caps, &threshold)
+        })
+        .collect();
+    Ok(Page { items, total })
+}
+
 /// The owner id of a case, if it exists (cheap authorization lookup).
 pub async fn owner_id(case_id: &str) -> Result<Option<String>, sqlx::Error> {
     let owner: Option<String> = sqlx::query_scalar("SELECT owner_id FROM cases WHERE id = $1")
@@ -131,17 +198,7 @@ pub async fn get_summaries_for_user(
 
     // Escaped `%term%` pattern (or `None` for "no filter"), so user input is
     // matched literally rather than as LIKE metacharacters.
-    let term = search.trim();
-    let pattern = if term.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "%{}%",
-            term.replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        ))
-    };
+    let pattern = escaped_like_pattern(search);
 
     // `$1` is the (nullable) search pattern; the viewer id scopes the results to
     // cases they can actually open — i.e. where they hold the `view_case`
@@ -213,17 +270,7 @@ pub async fn get_summaries_for_user(
 /// returns the first `limit` cases.
 pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, sqlx::Error> {
     let limit = limit.clamp(1, 50);
-    let term = search.trim();
-    let pattern = if term.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "%{}%",
-            term.replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        ))
-    };
+    let pattern = escaped_like_pattern(search);
     let rows = sqlx::query_as::<_, SummaryRow>(&format!(
         "{}
          WHERE $1::text IS NULL OR c.id ILIKE $1 OR c.name ILIKE $1

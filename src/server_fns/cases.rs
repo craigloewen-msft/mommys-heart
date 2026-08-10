@@ -222,7 +222,7 @@ pub async fn load_case_summaries_for_user(
         .map_err(ServerFnError::new)
 }
 
-/// Load a fully hydrated case
+/// Load a fully hydrated case through an ordinary `ViewCase` assignment.
 #[server(prefix = "/api")]
 pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
     use crate::server::db::cases;
@@ -230,6 +230,22 @@ pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::ViewCase).await?;
+    cases::get(&case_id, &user.id, has_volunteer_access(&user))
+        .await
+        .map_err(ServerFnError::new)
+}
+
+/// Load a fully hydrated case for the admin case detail view. This is read-only:
+/// admins do not gain stored capabilities, write access, or chat access.
+#[server(prefix = "/api")]
+pub async fn load_admin_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::{
+        has_volunteer_access, require_case_view_or_admin_read, require_user,
+    };
+
+    let user = require_user().await?;
+    require_case_view_or_admin_read(&user, &case_id).await?;
     cases::get(&case_id, &user.id, has_volunteer_access(&user))
         .await
         .map_err(ServerFnError::new)
@@ -260,6 +276,24 @@ pub async fn admin_cases_by_ids(ids: Vec<String>) -> Result<Vec<CaseSummary>, Se
     let user = require_user().await?;
     require_operations_admin(&user)?;
     cases::get_summaries_by_ids(&ids)
+        .await
+        .map_err(ServerFnError::new)
+}
+
+/// One page of all cases for the admin directory, with accurate totals and a
+/// search over case id, case name, and owner name.
+#[server(prefix = "/api")]
+pub async fn admin_list_cases_page(
+    offset: i64,
+    limit: i64,
+    search: String,
+) -> Result<Page<CaseSummary>, ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+    cases::admin_page(offset, limit, &search, &user.id)
         .await
         .map_err(ServerFnError::new)
 }

@@ -107,6 +107,43 @@ pub async fn capabilities_on(
     Ok(user.capabilities_for(case_id))
 }
 
+/// Read-only case access for surfaces an admin may inspect without taking an
+/// assignment. Mutations and chat must keep using [`require_cap`] or
+/// [`require_channel`].
+async fn require_case_read_cap_or_admin(
+    user: &User,
+    case_id: &str,
+    cap: CaseCapability,
+) -> Result<(), ServerFnError> {
+    let caps = capabilities_on(user, case_id).await?;
+    if caps.contains(&cap) || user.role.has_operations_admin_permissions() {
+        Ok(())
+    } else {
+        Err(ServerFnError::new(format!(
+            "You do not have permission to {} on this case.",
+            cap.label().to_lowercase()
+        )))
+    }
+}
+
+/// Read a case through the dedicated admin view, or through an ordinary
+/// assignment that grants `ViewCase`.
+pub async fn require_case_view_or_admin_read(
+    user: &User,
+    case_id: &str,
+) -> Result<(), ServerFnError> {
+    require_case_read_cap_or_admin(user, case_id, CaseCapability::ViewCase).await
+}
+
+/// Read/download case evidence through either a stored `ViewEvidence`
+/// assignment or the dedicated admin read path.
+pub async fn require_case_evidence_read_or_admin(
+    user: &User,
+    case_id: &str,
+) -> Result<(), ServerFnError> {
+    require_case_read_cap_or_admin(user, case_id, CaseCapability::ViewEvidence).await
+}
+
 /// Require a specific capability on a case, else a `Forbidden`-style error.
 ///
 /// Also enforces the case lifecycle: a declined case is held read-only for

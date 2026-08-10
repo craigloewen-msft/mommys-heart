@@ -513,9 +513,8 @@ mod download {
 
     use crate::server::auth::AuthUser;
     use crate::server::db::evidence as db;
-    use crate::server::permissions::{require_cap, require_visibility};
+    use crate::server::permissions::{require_case_evidence_read_or_admin, require_visibility};
     use crate::server::storage;
-    use crate::server_fns::capabilities::CaseCapability;
 
     /// Wire the whole evidence HTTP surface into the app router: merge the binary
     /// download **GET** route and raise the request body limit so multipart
@@ -544,12 +543,13 @@ mod download {
     }
 
     /// `GET /api/cases/{case_id}/evidence/{evidence_id}/download` — stream the
-    /// stored file back with a download disposition (requires `ViewEvidence`)
+    /// stored file back with a download disposition (stored `ViewEvidence` or
+    /// the dedicated admin read path)
     async fn download(
         AuthUser(user): AuthUser,
         Path((case_id, evidence_id)): Path<(String, String)>,
     ) -> Response {
-        if let Err(e) = require_cap(&user, &case_id, CaseCapability::ViewEvidence).await {
+        if let Err(e) = require_case_evidence_read_or_admin(&user, &case_id).await {
             return (StatusCode::FORBIDDEN, e.to_string()).into_response();
         }
         match db::get(&evidence_id).await {
