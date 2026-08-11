@@ -1,23 +1,23 @@
-//! The people directory and person detail pages — the CRM's front door.
+//! The people directory and person detail views — the CRM's front door.
 //!
-//! Staff only: [`require_staff`] on the server refuses clients, and the routes
-//! here are guarded so a client never sees the navigation either.
+//! These render inside the Admin workspace (see [`crate::pages::admin`]), so
+//! they carry no page shell or guard of their own. Reading a contact is allowed
+//! for any staff account server-side — the case people-picker needs it — but the
+//! directory itself is administrative, which is why it lives under `/admin`.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
-use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::components::change_log::ChangeLog;
 use crate::components::contact_form::ContactForm;
 use crate::components::contact_properties::ContactPropertiesPanel;
-use crate::components::guard::require_login;
-use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::helpers::format::badge_pill;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::contacts::{
-    list_contacts, load_contact, set_contact_archived, Contact, ContactFilters, ContactType,
+    list_contacts, load_contact, set_contact_account, set_contact_archived, unlinked_accounts,
+    Contact, ContactFilters, ContactType,
 };
 use crate::server_fns::err_text;
 use crate::server_fns::organizations::{list_organizations, OrganizationFilters};
@@ -28,28 +28,17 @@ const PANEL: &str = "rounded-xl border border-slate-800 bg-slate-900 p-5";
 const INPUT: &str =
     "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-primary-500 focus:outline-none";
 
-/// `/people` — the searchable contact directory.
+/// The People workspace: the directory, or one person when `selected_id` is set.
 #[component]
-pub fn PeoplePage() -> impl IntoView {
-    let state = expect_context::<AppState>();
-    require_login(state, move || {
-        if !state.is_volunteer_or_admin() {
-            return view! {
-                <Layout title="People".to_string()>
-                    <p class="text-sm text-slate-400">"This area is only available to staff."</p>
-                </Layout>
-            }
-            .into_any();
-        }
-        view! { <Layout title="People".to_string()><PeopleDirectory /></Layout> }.into_any()
-    })
+pub fn ManagePeople(selected_id: Option<String>) -> impl IntoView {
+    match selected_id {
+        Some(id) => view! { <PersonDetail contact_id=id /> }.into_any(),
+        None => view! { <PeopleDirectory /> }.into_any(),
+    }
 }
 
 #[component]
 fn PeopleDirectory() -> impl IntoView {
-    let state = expect_context::<AppState>();
-    let is_admin = state.has_operations_admin_permissions();
-
     let keyword = RwSignal::new(String::new());
     let type_filter = RwSignal::new(String::new());
     let org_filter = RwSignal::new(String::new());
@@ -130,7 +119,7 @@ fn PeopleDirectory() -> impl IntoView {
         }
         list.into_iter()
             .map(|contact| {
-                let href = format!("/people/{}", contact.id);
+                let href = format!("/admin/people/{}", contact.id);
                 let name = contact.display_name();
                 let types = contact.types.clone();
                 let org = contact.organization_name.clone();
@@ -282,39 +271,13 @@ fn PeopleDirectory() -> impl IntoView {
                 </div>
             </div>
 
-            <Show when=move || is_admin>
-                <p class="text-xs text-slate-500">
-                    "Organizations are managed under "
-                    <A href="/organizations" attr:class="text-primary-400 hover:text-primary-300">"Organizations"</A>
-                    "."
-                </p>
-            </Show>
+            <p class="text-xs text-slate-500">
+                "Funders, partner agencies and other bodies live under "
+                <A href="/admin/organizations" attr:class="text-primary-400 hover:text-primary-300">"Organizations"</A>
+                "."
+            </p>
         </div>
     }
-}
-
-/// `/people/:id` — one person: their details, custom properties, and history.
-#[component]
-pub fn PersonDetailPage() -> impl IntoView {
-    let state = expect_context::<AppState>();
-    let params = use_params_map();
-    require_login(state, move || {
-        if !state.is_volunteer_or_admin() {
-            return view! {
-                <Layout title="People".to_string()>
-                    <p class="text-sm text-slate-400">"This area is only available to staff."</p>
-                </Layout>
-            }
-            .into_any();
-        }
-        let id = params.read().get("id").unwrap_or_default();
-        view! {
-            <Layout title="Person".to_string()>
-                <PersonDetail contact_id=id />
-            </Layout>
-        }
-        .into_any()
-    })
 }
 
 #[component]
@@ -322,7 +285,6 @@ fn PersonDetail(contact_id: String) -> impl IntoView {
     let state = expect_context::<AppState>();
     let is_admin = state.has_operations_admin_permissions();
     let id = StoredValue::new(contact_id);
-    let navigate = use_navigate();
 
     let contact = RwSignal::new(None::<Contact>);
     let loading = RwSignal::new(true);
@@ -385,6 +347,7 @@ fn PersonDetail(contact_id: String) -> impl IntoView {
                 let do_not_contact = person.do_not_contact;
                 let types = person.types.clone();
                 let editable = person.clone();
+                let linked = person.clone();
                 view! {
                     <div class=PANEL>
                         <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -444,6 +407,12 @@ fn PersonDetail(contact_id: String) -> impl IntoView {
 
                     <ContactPropertiesPanel contact_id=id.get_value() />
 
+                    <AccountLink
+                        contact=linked.clone()
+                        can_manage=is_admin
+                        on_changed=Callback::new(move |_: ()| reload.update(|r| *r += 1))
+                    />
+
                     <Show when=move || is_admin>
                         <div class=PANEL>
                             <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
@@ -456,13 +425,184 @@ fn PersonDetail(contact_id: String) -> impl IntoView {
                 .into_any()
             }}
 
-            <button
-                type="button"
-                on:click=move |_| navigate("/people", Default::default())
-                class="text-sm text-primary-400 hover:text-primary-300"
-            >
+            <A href="/admin/people" attr:class="inline-block text-sm text-primary-400 hover:text-primary-300">
                 "\u{2190} Back to people"
-            </button>
+            </A>
+        </div>
+    }
+}
+
+/// The link between this person and a sign-in account.
+///
+/// A contact and a user are separate records on purpose (ADR-0005), so this
+/// states plainly which account — if any — belongs to this person, and links
+/// through to their profile. Linking and unlinking never touch the account
+/// itself: unlinking leaves them able to sign in exactly as before.
+#[component]
+fn AccountLink(contact: Contact, can_manage: bool, on_changed: Callback<()>) -> impl IntoView {
+    let contact_id = StoredValue::new(contact.id.clone());
+    let has_account = contact.has_account();
+    let user_id = contact.user_id.clone();
+    let email = contact.linked_email.clone();
+    let role = contact.linked_role;
+    let profile_href = format!("/profile/{user_id}");
+
+    let choices = RwSignal::new(Vec::<(String, String, String)>::new());
+    let chosen = RwSignal::new(String::new());
+    let error = RwSignal::new(String::new());
+    let busy = RwSignal::new(false);
+    let picking = RwSignal::new(false);
+
+    // Accounts that have no person record yet, so linking cannot create a
+    // duplicate. Only loaded when an admin actually opens the picker.
+    Effect::new(move |_| {
+        if !picking.get() || !choices.get_untracked().is_empty() {
+            return;
+        }
+        spawn_local(async move {
+            match unlinked_accounts().await {
+                Ok(list) => {
+                    choices.set(list.into_iter().map(|a| (a.id, a.name, a.email)).collect())
+                }
+                Err(e) => error.set(err_text(e)),
+            }
+        });
+    });
+
+    let apply = move |target: Option<String>| {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        error.set(String::new());
+        spawn_local(async move {
+            match set_contact_account(contact_id.get_value(), target.unwrap_or_default()).await {
+                Ok(()) => {
+                    picking.set(false);
+                    on_changed.run(());
+                }
+                Err(e) => error.set(err_text(e)),
+            }
+            busy.set(false);
+        });
+    };
+
+    view! {
+        <div class=PANEL>
+            <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                    <h3 class="text-sm font-semibold text-slate-200">"Sign-in account"</h3>
+                    <p class="mt-1 text-xs text-slate-500">
+                        "A person and an account are separate records. Most people never need a login."
+                    </p>
+                </div>
+                <Show when=move || can_manage && has_account>
+                    <button
+                        type="button"
+                        prop:disabled=move || busy.get()
+                        on:click=move |_| apply(None)
+                        class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                    >
+                        "Unlink"
+                    </button>
+                </Show>
+            </div>
+
+            <Show when=move || !error.get().is_empty()>
+                <p class="mt-3 text-sm text-rose-300" role="alert">{move || error.get()}</p>
+            </Show>
+
+            {if has_account {
+                let badge = role
+                    .map(|r| view! {
+                        <span class=badge_pill(r.badge_classes())>{r.label()}</span>
+                    }.into_any())
+                    .unwrap_or_else(|| ().into_any());
+                view! {
+                    <div class="mt-3 rounded-lg border border-slate-800 bg-slate-950 p-3">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <A
+                                href=profile_href.clone()
+                                attr:class="text-sm font-medium text-primary-300 hover:text-primary-200"
+                            >
+                                "Open their profile"
+                            </A>
+                            {badge}
+                        </div>
+                        <p class="mt-1 text-xs text-slate-500">
+                            "Signs in as " {email.clone()}
+                            ". Email and role belong to the account and are changed under Manage users."
+                        </p>
+                    </div>
+                }
+                .into_any()
+            } else {
+                view! {
+                    <p class="mt-3 text-sm text-slate-500">
+                        "No account. This person cannot sign in."
+                    </p>
+                }
+                .into_any()
+            }}
+
+            <Show when=move || can_manage && !has_account>
+                <div class="mt-3">
+                    <Show
+                        when=move || picking.get()
+                        fallback=move || view! {
+                            <button
+                                type="button"
+                                on:click=move |_| picking.set(true)
+                                class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                            >
+                                "Link an existing account"
+                            </button>
+                        }
+                    >
+                        <div class="flex flex-wrap gap-2">
+                            <select
+                                class=INPUT
+                                prop:value=move || chosen.get()
+                                on:change=move |e| chosen.set(event_target_value(&e))
+                            >
+                                <option value="">"Choose an account\u{2026}"</option>
+                                {move || choices
+                                    .get()
+                                    .into_iter()
+                                    .map(|(id, name, mail)| view! {
+                                        <option value=id>{format!("{name} \u{2014} {mail}")}</option>
+                                    })
+                                    .collect_view()}
+                            </select>
+                            <button
+                                type="button"
+                                prop:disabled=move || busy.get()
+                                on:click=move |_| {
+                                    let id = chosen.get_untracked();
+                                    if id.is_empty() {
+                                        error.set("Choose an account to link.".into());
+                                    } else {
+                                        apply(Some(id));
+                                    }
+                                }
+                                class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                            >
+                                "Link"
+                            </button>
+                            <button
+                                type="button"
+                                on:click=move |_| picking.set(false)
+                                class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800"
+                            >
+                                "Cancel"
+                            </button>
+                        </div>
+                        <p class="mt-2 text-xs text-slate-500">
+                            "Only accounts that have no person record yet are listed."
+                        </p>
+                    </Show>
+                </div>
+            </Show>
         </div>
     }
 }

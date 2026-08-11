@@ -199,15 +199,16 @@ pub async fn load_contact(id: String) -> Result<Option<Contact>, ServerFnError> 
     contacts::get(&id).await.map_err(ServerFnError::new)
 }
 
-/// Any staff account may add a contact: the people who meet them are the ones
-/// who must be able to record them.
+/// Creating and editing a person is administrative: the directory lives under
+/// Admin. Any staff account may still *read* contacts, because the case
+/// people-picker needs them.
 #[server(prefix = "/api")]
 pub async fn create_contact(input: ContactInput) -> Result<String, ServerFnError> {
     use crate::server::db::contacts;
-    use crate::server::permissions::require_user;
+    use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
-    crate::server_fns::crm::require_staff(&user)?;
+    require_operations_admin(&user)?;
     let input = input.validate().map_err(ServerFnError::new)?;
     contacts::create(&input, &user.full_name())
         .await
@@ -217,10 +218,10 @@ pub async fn create_contact(input: ContactInput) -> Result<String, ServerFnError
 #[server(prefix = "/api")]
 pub async fn update_contact(id: String, input: ContactInput) -> Result<(), ServerFnError> {
     use crate::server::db::contacts;
-    use crate::server::permissions::require_user;
+    use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
-    crate::server_fns::crm::require_staff(&user)?;
+    require_operations_admin(&user)?;
     let input = input.validate().map_err(ServerFnError::new)?;
     contacts::update(&id, &input, &user.full_name())
         .await
@@ -237,6 +238,30 @@ pub async fn set_contact_archived(id: String, archived: bool) -> Result<(), Serv
     let user = require_user().await?;
     require_operations_admin(&user)?;
     contacts::set_archived(&id, archived, &user.full_name())
+        .await
+        .map_err(ServerFnError::new)
+}
+
+/// One account that could be linked to a person, for the link picker.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LinkableAccount {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+}
+
+/// Accounts that have no person record yet.
+///
+/// Only these can be linked, so linking can never point two people at one
+/// account or silently steal an account from another contact.
+#[server(prefix = "/api")]
+pub async fn unlinked_accounts() -> Result<Vec<LinkableAccount>, ServerFnError> {
+    use crate::server::db::contacts;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+    contacts::unlinked_accounts()
         .await
         .map_err(ServerFnError::new)
 }

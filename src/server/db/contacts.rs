@@ -6,7 +6,9 @@
 //! someone is, or a second way to sign in.
 
 use crate::server::db::{audit, ids, pool};
-use crate::server_fns::contacts::{Contact, ContactFilters, ContactInput, ContactType};
+use crate::server_fns::contacts::{
+    Contact, ContactFilters, ContactInput, ContactType, LinkableAccount,
+};
 use crate::server_fns::pagination::Page;
 use crate::server_fns::users::AccountRole;
 
@@ -279,6 +281,22 @@ pub async fn set_archived(id: &str, archived: bool, actor: &str) -> Result<(), s
     )
     .await?;
     tx.commit().await
+}
+
+/// Accounts that no contact points at yet, newest surname order.
+pub async fn unlinked_accounts() -> Result<Vec<LinkableAccount>, sqlx::Error> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT u.id, btrim(u.first_name || ' ' || u.last_name), u.email
+         FROM users u
+         WHERE NOT EXISTS (SELECT 1 FROM contacts c WHERE c.user_id = u.id)
+         ORDER BY lower(u.last_name) ASC, lower(u.first_name) ASC",
+    )
+    .fetch_all(pool())
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, email)| LinkableAccount { id, name, email })
+        .collect())
 }
 
 /// Link this contact to an account, or unlink it when `user_id` is `None`.

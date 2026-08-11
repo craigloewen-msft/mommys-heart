@@ -1,4 +1,5 @@
-//! Route-backed administrative workspaces for cases and users.
+//! Route-backed administrative workspaces: cases, users, people,
+//! organizations, and funding — one place to manage everything.
 
 use leptos::prelude::*;
 use leptos_router::components::{Redirect, A};
@@ -9,13 +10,31 @@ use crate::components::admin_manage_users::ManageUsers;
 use crate::components::email_failures::EmailFailureLog;
 use crate::components::guard::require_operations_admin;
 use crate::components::layout::Layout;
+use crate::pages::organizations::ManageOrganizations;
+use crate::pages::people::ManagePeople;
 use crate::state::AppState;
 
+/// Which workspace a route shows. Funding is absent on purpose: it has its own
+/// route-level page (see [`crate::pages::funding`]) and only shares the tab
+/// strip, so it never flows through [`admin_page`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AdminWorkspace {
     Cases,
     Users,
-    Funding,
+    People,
+    Organizations,
+}
+
+impl AdminWorkspace {
+    /// The slug the tab strip matches on.
+    fn slug(self) -> &'static str {
+        match self {
+            Self::Cases => "cases",
+            Self::Users => "users",
+            Self::People => "people",
+            Self::Organizations => "organizations",
+        }
+    }
 }
 
 /// `/admin` has one obvious starting place.
@@ -52,6 +71,34 @@ pub fn AdminUserDetailPage() -> impl IntoView {
     }
 }
 
+#[component]
+pub fn AdminPeoplePage() -> impl IntoView {
+    admin_page(AdminWorkspace::People, None)
+}
+
+#[component]
+pub fn AdminPersonDetailPage() -> impl IntoView {
+    let params = use_params_map();
+    move || {
+        let id = params.read().get("id").filter(|id| !id.trim().is_empty());
+        admin_page(AdminWorkspace::People, id)
+    }
+}
+
+#[component]
+pub fn AdminOrganizationsPage() -> impl IntoView {
+    admin_page(AdminWorkspace::Organizations, None)
+}
+
+#[component]
+pub fn AdminOrganizationDetailPage() -> impl IntoView {
+    let params = use_params_map();
+    move || {
+        let id = params.read().get("id").filter(|id| !id.trim().is_empty());
+        admin_page(AdminWorkspace::Organizations, id)
+    }
+}
+
 fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView {
     let state = expect_context::<AppState>();
     let reload = RwSignal::new(0u32);
@@ -64,16 +111,14 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
             .expect("admin guard requires a current user");
         let is_site_admin = actor.role.is_site_admin();
         let actor_user_id = actor.id;
-        let case_attention = Signal::derive(move || {
-            state.cases_pending_review.get() + state.admin_case_request_pending.get()
-        });
-        let user_attention = Signal::derive(move || {
-            state.volunteer_requests_pending.get() + state.admin_role_request_pending.get()
-        });
 
         let content = match workspace {
-            // Funding has its own route-level page, so it never reaches here.
-            AdminWorkspace::Funding => ().into_any(),
+            AdminWorkspace::People => {
+                view! { <ManagePeople selected_id=selected_id.get_value() /> }.into_any()
+            }
+            AdminWorkspace::Organizations => {
+                view! { <ManageOrganizations selected_id=selected_id.get_value() /> }.into_any()
+            }
             AdminWorkspace::Cases => view! {
                 <ManageCases
                     is_site_admin=is_site_admin
@@ -97,31 +142,9 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
             <Layout title="Admin".to_string()>
                 <div class="mb-8">
                     <p class="text-sm text-slate-400">
-                        "Review pending work, inspect records, and manage access from focused workspaces."
+                        "Review pending work, inspect records, and manage people, money, and access."
                     </p>
-                    <nav
-                        class="mt-5 grid grid-cols-3 gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5 sm:inline-grid sm:min-w-[36rem]"
-                        aria-label="Admin workspaces"
-                    >
-                        <WorkspaceLink
-                            href="/admin/cases"
-                            label="Manage cases"
-                            selected=workspace == AdminWorkspace::Cases
-                            badge=case_attention
-                        />
-                        <WorkspaceLink
-                            href="/admin/users"
-                            label="Manage users"
-                            selected=workspace == AdminWorkspace::Users
-                            badge=user_attention
-                        />
-                        <WorkspaceLink
-                            href="/admin/funding"
-                            label="Funding"
-                            selected=workspace == AdminWorkspace::Funding
-                            badge=Signal::derive(|| 0)
-                        />
-                    </nav>
+                    <AdminWorkspaceNav selected=workspace.slug() />
                 </div>
 
                 {content}
@@ -146,20 +169,32 @@ pub fn AdminWorkspaceNav(#[prop(into)] selected: String) -> impl IntoView {
     });
     view! {
         <nav
-            class="mt-5 grid grid-cols-3 gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5 sm:inline-grid sm:min-w-[36rem]"
+            class="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5 sm:grid-cols-5"
             aria-label="Admin workspaces"
         >
             <WorkspaceLink
                 href="/admin/cases"
-                label="Manage cases"
+                label="Cases"
                 selected=selected == "cases"
                 badge=case_attention
             />
             <WorkspaceLink
                 href="/admin/users"
-                label="Manage users"
+                label="Users"
                 selected=selected == "users"
                 badge=user_attention
+            />
+            <WorkspaceLink
+                href="/admin/people"
+                label="People"
+                selected=selected == "people"
+                badge=Signal::derive(|| 0)
+            />
+            <WorkspaceLink
+                href="/admin/organizations"
+                label="Organizations"
+                selected=selected == "organizations"
+                badge=Signal::derive(|| 0)
             />
             <WorkspaceLink
                 href="/admin/funding"

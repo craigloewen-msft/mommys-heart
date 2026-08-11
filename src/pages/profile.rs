@@ -19,6 +19,7 @@ use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::components::volunteer_details::VolunteerDetailsPanel;
 use crate::components::volunteer_hours::VolunteerHoursPanel;
+use crate::helpers::format::badge_pill;
 use crate::helpers::volunteer_terms::{VOLUNTEER_AGREEMENT_SECTIONS, VOLUNTEER_AGREEMENT_VERSION};
 use crate::server_fns::err_text;
 use crate::server_fns::profile::{load_profile, save_my_profile, ProfileEdit, UserProfile};
@@ -473,6 +474,49 @@ pub fn ProfilePage() -> impl IntoView {
             .into_any()
         };
 
+        // The CRM person record behind this account. Only ever present for an
+        // operations admin, who is also the only viewer who can open it.
+        let person_record = move || {
+            let Some(person) = profile.get().and_then(|p| p.person) else {
+                return ().into_any();
+            };
+            let href = format!("/admin/people/{}", person.contact_id);
+            let org = person.organization_name.clone();
+            let has_org = !org.is_empty();
+            let archived = person.archived;
+            view! {
+                <div class=SECTION_CLASS>
+                    <h3 class="text-sm font-semibold text-slate-200">"Person record"</h3>
+                    <p class="mt-1 text-xs text-slate-500">
+                        "This account is linked to a person in the CRM. The account is how they sign in; the person record is what the foundation knows about them."
+                    </p>
+                    <div class="mt-3 rounded-lg border border-slate-800 bg-slate-950 p-3">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <A href=href attr:class="text-sm font-medium text-primary-300 hover:text-primary-200">
+                                {person.display_name.clone()}
+                            </A>
+                            <Show when=move || archived>
+                                <span class=badge_pill("bg-slate-700/40 text-slate-300 ring-1 ring-slate-600")>
+                                    "Archived"
+                                </span>
+                            </Show>
+                            {person
+                                .types
+                                .iter()
+                                .map(|t| view! {
+                                    <span class=badge_pill("bg-slate-800 text-slate-300")>{t.clone()}</span>
+                                })
+                                .collect_view()}
+                        </div>
+                        <Show when=move || has_org>
+                            <p class="mt-1 text-xs text-slate-500">{org.clone()}</p>
+                        </Show>
+                    </div>
+                </div>
+            }
+            .into_any()
+        };
+
         let edit_form = move || {
             if !editing.get() {
                 return ().into_any();
@@ -592,6 +636,7 @@ pub fn ProfilePage() -> impl IntoView {
                     {become_volunteer}
                     {volunteer_details}
                     {volunteer_agreement}
+                    {person_record}
                     {shared}
                 </div>
             }

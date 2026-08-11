@@ -1,15 +1,13 @@
-//! The organization directory and detail pages.
+//! The organization directory and detail views.
 //!
-//! Any staff account may read the directory so a volunteer can file a contact
-//! under an organization; only administrators may change one.
+//! These render inside the Admin workspace, so they carry no page shell or
+//! guard of their own. Any staff account may *read* an organization server-side
+//! (the contact form files people under one); managing them is administrative.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
-use leptos_router::hooks::use_params_map;
 
-use crate::components::guard::require_login;
-use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::helpers::format::badge_pill;
 use crate::server_fns::contacts::{list_contacts, Contact, ContactFilters};
@@ -25,21 +23,13 @@ const INPUT: &str =
     "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-primary-500 focus:outline-none";
 const LABEL: &str = "text-xs font-medium text-slate-400";
 
+/// The Organizations workspace: the directory, or one organization.
 #[component]
-pub fn OrganizationsPage() -> impl IntoView {
-    let state = expect_context::<AppState>();
-    require_login(state, move || {
-        if !state.is_volunteer_or_admin() {
-            return view! {
-                <Layout title="Organizations".to_string()>
-                    <p class="text-sm text-slate-400">"This area is only available to staff."</p>
-                </Layout>
-            }
-            .into_any();
-        }
-        view! { <Layout title="Organizations".to_string()><OrganizationDirectory /></Layout> }
-            .into_any()
-    })
+pub fn ManageOrganizations(selected_id: Option<String>) -> impl IntoView {
+    match selected_id {
+        Some(id) => view! { <OrganizationDetail organization_id=id /> }.into_any(),
+        None => view! { <OrganizationDirectory /> }.into_any(),
+    }
 }
 
 #[component]
@@ -96,7 +86,7 @@ fn OrganizationDirectory() -> impl IntoView {
         }
         list.into_iter()
             .map(|org| {
-                let href = format!("/organizations/{}", org.id);
+                let href = format!("/admin/organizations/{}", org.id);
                 let kind = org.kind;
                 let archived = org.archived;
                 let count = org.contact_count;
@@ -197,29 +187,6 @@ fn OrganizationDirectory() -> impl IntoView {
             <div class="mt-4 space-y-2">{rows}</div>
         </div>
     }
-}
-
-#[component]
-pub fn OrganizationDetailPage() -> impl IntoView {
-    let state = expect_context::<AppState>();
-    let params = use_params_map();
-    require_login(state, move || {
-        if !state.is_volunteer_or_admin() {
-            return view! {
-                <Layout title="Organizations".to_string()>
-                    <p class="text-sm text-slate-400">"This area is only available to staff."</p>
-                </Layout>
-            }
-            .into_any();
-        }
-        let id = params.read().get("id").unwrap_or_default();
-        view! {
-            <Layout title="Organization".to_string()>
-                <OrganizationDetail organization_id=id />
-            </Layout>
-        }
-        .into_any()
-    })
 }
 
 #[component]
@@ -359,7 +326,7 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                         }
                         list.into_iter()
                             .map(|c| {
-                                let href = format!("/people/{}", c.id);
+                                let href = format!("/admin/people/{}", c.id);
                                 let title = c.job_title.clone();
                                 let has_title = !title.is_empty();
                                 view! {
@@ -377,7 +344,7 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                 </div>
             </div>
 
-            <A href="/organizations" attr:class="inline-block text-sm text-primary-400 hover:text-primary-300">
+            <A href="/admin/organizations" attr:class="inline-block text-sm text-primary-400 hover:text-primary-300">
                 "\u{2190} Back to organizations"
             </A>
         </div>

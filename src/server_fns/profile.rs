@@ -36,6 +36,21 @@ pub struct ProfileContact {
     pub home_address: String,
 }
 
+/// The CRM person record linked to this account, when there is one.
+///
+/// A `users` row is an account; a `contacts` row is a person (ADR-0005). This
+/// is the bridge, so a profile can say plainly which person record belongs to
+/// this account. Only sent to viewers with operations-admin permissions, since
+/// they are the only ones who can open the People workspace.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProfilePersonRecord {
+    pub contact_id: String,
+    pub display_name: String,
+    pub organization_name: String,
+    pub types: Vec<String>,
+    pub archived: bool,
+}
+
 /// A user's profile, resolved for one specific viewer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UserProfile {
@@ -65,6 +80,9 @@ pub struct UserProfile {
     /// viewer with operations-admin permissions who shares no case with them.
     #[serde(default)]
     pub shares_case: bool,
+    /// The CRM person record for this account. Operations admins only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<ProfilePersonRecord>,
 }
 
 impl UserProfile {
@@ -83,6 +101,7 @@ impl UserProfile {
         shares_case: bool,
         volunteer_hours: Option<VolunteerHours>,
         volunteer: Option<VolunteerApplication>,
+        person: Option<ProfilePersonRecord>,
     ) -> Self {
         let User {
             id,
@@ -108,6 +127,7 @@ impl UserProfile {
             volunteer,
             is_self,
             shares_case,
+            person,
         }
     }
 
@@ -163,7 +183,7 @@ pub struct ProfileEdit {
 /// owner and for admins.
 #[server(prefix = "/api")]
 pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError> {
-    use crate::server::db::{users, volunteer_hours, volunteers};
+    use crate::server::db::{contacts, users, volunteer_hours, volunteers};
     use crate::server::permissions::{has_volunteer_access, require_user};
 
     let viewer = require_user().await?;
@@ -212,6 +232,23 @@ pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError>
         None
     };
 
+    // The CRM person record behind this account. Admins only: they are the only
+    // ones who can open the People workspace it links to.
+    let person = if has_operations_admin_permissions {
+        contacts::for_user(&record.id)
+            .await
+            .map_err(ServerFnError::new)?
+            .map(|c| ProfilePersonRecord {
+                display_name: c.display_name(),
+                organization_name: c.organization_name.clone(),
+                types: c.types.iter().map(|t| t.label().to_string()).collect(),
+                archived: c.archived,
+                contact_id: c.id,
+            })
+    } else {
+        None
+    };
+
     Ok(UserProfile::for_viewer(
         record,
         is_self,
@@ -219,6 +256,7 @@ pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError>
         shares_case,
         hours,
         volunteer,
+        person,
     ))
 }
 

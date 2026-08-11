@@ -125,7 +125,13 @@ attorneys, court clerks, board members, and emergency contacts.
 - A database check requires a last name or an organization, so no nameless row
   can exist.
 - Migration 0019 backfilled one contact per existing account, typed by role, so
-  the directory was populated on first run.
+  the directory was populated on first run. The seed does the same, because on a
+  fresh database the migration runs before any user exists.
+- The link is visible and navigable from both ends: a person's page shows their
+  sign-in account with a link to the profile, and an admin viewing a profile sees
+  a "Person record" panel linking back. Linking offers only accounts that have no
+  person record yet, so it cannot create a duplicate or steal another contact's
+  account.
 
 ### Contact properties — custom fields on a person
 
@@ -197,13 +203,17 @@ extended in place so existing rows survived.
 
 | Object | Client | Volunteer | Operations / site admin |
 | --- | --- | --- | --- |
-| Contacts, contact properties | none | read, create, edit | all, plus archive and account linking |
-| Organizations | none | read | all |
+| Contacts, organizations | none | read only | all, plus archive and account linking |
+| Contact properties | none | read only | all |
 | Case contacts | none | `ViewCase` to read, `EditCase` to edit | same |
 | Grants, funding | none | none | all |
 
-Every CRM server function rejects a client account, and the People navigation
-entry does not render for one.
+Every CRM server function rejects a client account.
+
+The whole CRM is managed from one place: **Admin**, whose tabs are Cases, Users,
+People, Organizations, and Funding. Volunteers keep *read* access to contacts
+and organizations because the case people-picker needs it, but the directory
+itself is admin-only, so they are redirected away from `/admin/people`.
 
 **Limits, stated on purpose:** no field-level sensitivity or break-glass access,
 no email campaigns or donor receipts, no accounting or payment-processor

@@ -121,7 +121,7 @@ pub fn CaseContactsPanel(case_id: String, can_edit: bool) -> impl IntoView {
         list.into_iter()
             .map(|person| {
                 let link_id = person.id.clone();
-                let href = format!("/people/{}", person.contact_id);
+                let href = format!("/admin/people/{}", person.contact_id);
                 let role = person.role;
                 let primary = person.is_primary;
                 let archived = person.contact_archived;
@@ -250,9 +250,7 @@ pub fn CaseContactsPanel(case_id: String, can_edit: bool) -> impl IntoView {
                         "Primary contact for this case"
                     </label>
                     <p class="text-xs text-slate-500">
-                        "Not in the list? Add them in "
-                        <A href="/people" attr:class="text-primary-400 hover:text-primary-300">"People"</A>
-                        " first."
+                        "Not in the list? An administrator adds people under Admin \u{2192} People."
                     </p>
                     <button
                         type="button"

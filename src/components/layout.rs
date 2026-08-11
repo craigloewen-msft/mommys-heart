@@ -103,8 +103,6 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let toggle_menu = move |_| menu_open.update(|open| *open = !*open);
     let close_menu = move |_| menu_open.set(false);
     let has_operations_admin_permissions = role.has_operations_admin_permissions();
-    // The CRM is staff-only; a client never sees the entry at all.
-    let is_staff = role.has_volunteer_privileges();
 
     view! {
         <div class="min-h-screen bg-slate-950 text-slate-100">
@@ -123,11 +121,6 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                         <nav class="hidden md:flex items-center gap-1">
                             <NavLink href="/cases" label="Cases" />
                             <NavLink href="/inbox" label="Case Chat" badge=NavBadge::UnreadMessages />
-                            {if is_staff {
-                                view! { <NavLink href="/people" label="People" /> }.into_any()
-                            } else {
-                                ().into_any()
-                            }}
                             {if has_operations_admin_permissions {
                                 view! {
                                     <NavLink
@@ -178,11 +171,6 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                     >
                         <NavLink href="/cases" label="Cases" />
                         <NavLink href="/inbox" label="Case Chat" badge=NavBadge::UnreadMessages />
-                        {if is_staff {
-                            view! { <NavLink href="/people" label="People" /> }.into_any()
-                        } else {
-                            ().into_any()
-                        }}
                         {if has_operations_admin_permissions {
                             view! {
                                 <NavLink
