@@ -30,7 +30,8 @@ pub async fn reseed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     sqlx::query(
         "TRUNCATE users, sessions, grants, cases, case_properties, case_notes,
                   case_note_addenda, case_note_audit_log, evidence, case_folders,
-                  case_channels, messages, case_assignments, audit_log
+                  case_channels, messages, case_assignments, audit_log,
+                  organizations, contacts, contact_properties, case_contacts, funding
          RESTART IDENTITY CASCADE",
     )
     .execute(pool())
@@ -222,13 +223,17 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
     }
 
-    // 5. A handful of real audit-log entries, date-spread across the last ~6
+    // 5. CRM fixtures: organizations, people who are not accounts, the custom
+    //    properties on them, who is on which case, and the money.
+    seed_crm_fixtures().await?;
+
+    // 6. A handful of real audit-log entries, date-spread across the last ~6
     //    weeks, so the change-log views (which fetch the audit log as their own
     //    paginated, date-filtered data source) have data to show and page
     //    through in the demo. Real edits made in the running app append more.
     seed_audit_fixtures().await?;
 
-    // 6. Advance the shared id sequence past every seeded id. Seed ids are
+    // 7. Advance the shared id sequence past every seeded id. Seed ids are
     //    `prefix-<n>` numbered per prefix from 1 (e.g. `m-1`..`m-13000`), and
     //    those counts can exceed the sequence's START value. Since `ids::next`
     //    hands out `<prefix>-<nextval>` from this one global sequence, leaving it
@@ -260,11 +265,642 @@ async fn advance_id_sequence() -> Result<(), sqlx::Error> {
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM evidence),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM case_channels),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM messages),
-             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM audit_log)
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM audit_log),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM organizations),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM case_contacts),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM funding),
+             -- `contacts` is deliberately absent: the migration backfills ids as
+             -- `ct-u-<hex>`, whose second segment is not a number.
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0)
+                FROM contacts WHERE split_part(id, '-', 2) ~ '^[0-9]+$')
          ) + 1, false)",
     )
     .execute(pool())
     .await?;
+    Ok(())
+}
+
+/// Seed the CRM: partner and funder organizations, people who have no account,
+/// custom properties, case involvement, and grants with their funding.
+///
+/// The account-linked contacts already exist — migration 0019 backfills one per
+/// user — so this only adds what an account cannot represent.
+async fn seed_crm_fixtures() -> Result<(), sqlx::Error> {
+    let pool = pool();
+
+    // One contact per seeded account. Migration 0019 does this for a database
+    // that already had users, but on a fresh database the migration runs before
+    // any user exists — and `reseed` truncates contacts — so the seed has to do
+    // it too, with the same `ct-<user id>` scheme.
+    sqlx::query(
+        "INSERT INTO contacts
+             (id, first_name, last_name, email, phone, address, user_id, types, source)
+         SELECT 'ct-' || u.id, u.first_name, u.last_name, u.email, u.phone,
+                u.home_address, u.id,
+                CASE u.role
+                    WHEN 'client' THEN ARRAY['client']
+                    WHEN 'volunteer' THEN ARRAY['volunteer']
+                    ELSE ARRAY['staff']
+                END,
+                'Account'
+         FROM users u
+         WHERE btrim(u.last_name) <> ''
+         ON CONFLICT DO NOTHING",
+    )
+    .execute(pool)
+    .await?;
+
+    // (id, name, kind, website, email, phone, description)
+    let organizations = [
+        (
+            "org-1",
+            "Harbor Community Foundation",
+            "funder",
+            "harborcf.org",
+            "grants@harborcf.org",
+            "(555) 010-2200",
+            "Local family foundation; funds our family-court advocacy work.",
+        ),
+        (
+            "org-2",
+            "State Office for Victims of Crime",
+            "government",
+            "ovc.state.gov",
+            "vocagrants@state.gov",
+            "(555) 010-4400",
+            "Administers the VOCA formula grant.",
+        ),
+        (
+            "org-3",
+            "Riverside Legal Aid",
+            "partner",
+            "riversidelegal.org",
+            "intake@riversidelegal.org",
+            "(555) 010-6600",
+            "Pro bono family-law representation for referred clients.",
+        ),
+        (
+            "org-4",
+            "Bayside Counseling Center",
+            "service_provider",
+            "baysidecounseling.org",
+            "referrals@baysidecounseling.org",
+            "(555) 010-7700",
+            "Trauma-informed counseling; accepts sliding-scale referrals.",
+        ),
+        (
+            "org-5",
+            "County Family Court",
+            "court",
+            "",
+            "clerk@countyfamilycourt.gov",
+            "(555) 010-8800",
+            "Family division; docket clerk handles our filings.",
+        ),
+        (
+            "org-6",
+            "Meridian Tech",
+            "employer",
+            "meridiantech.example",
+            "",
+            "",
+            "Corporate donor; matches employee giving.",
+        ),
+    ];
+    for (id, name, kind, website, email, phone, description) in organizations {
+        sqlx::query(
+            "INSERT INTO organizations (id, name, kind, website, email, phone, description)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(kind)
+        .bind(website)
+        .bind(email)
+        .bind(phone)
+        .bind(description)
+        .execute(pool)
+        .await?;
+    }
+
+    // People with no login: the reason a CRM needs contacts separate from users.
+    // (id, first, last, title, org, types, email, phone, source, description)
+    let contacts = [
+        (
+            "ct-101",
+            "Miriam",
+            "Alvarez",
+            "Program Officer",
+            Some("org-1"),
+            vec!["funder_contact"],
+            "malvarez@harborcf.org",
+            "(555) 010-2201",
+            "Grant application 2026",
+            "Primary contact for the Harbor family-advocacy grant.",
+        ),
+        (
+            "ct-102",
+            "Dennis",
+            "Whitfield",
+            "Grants Administrator",
+            Some("org-2"),
+            vec!["funder_contact", "government_agency"],
+            "dwhitfield@state.gov",
+            "(555) 010-4401",
+            "VOCA award",
+            "Handles VOCA reporting and reimbursement questions.",
+        ),
+        (
+            "ct-103",
+            "Sandra",
+            "Oyelaran",
+            "Staff Attorney",
+            Some("org-3"),
+            vec!["attorney", "partner"],
+            "soyelaran@riversidelegal.org",
+            "(555) 010-6601",
+            "Partner referral agreement",
+            "Takes our custody referrals; prefers email intake.",
+        ),
+        (
+            "ct-104",
+            "Peter",
+            "Grady",
+            "Licensed Counselor",
+            Some("org-4"),
+            vec!["service_provider"],
+            "pgrady@baysidecounseling.org",
+            "(555) 010-7701",
+            "Provider outreach",
+            "Six sliding-scale slots reserved for our clients each month.",
+        ),
+        (
+            "ct-105",
+            "Yvonne",
+            "Marsh",
+            "Docket Clerk",
+            Some("org-5"),
+            vec!["court_professional"],
+            "ymarsh@countyfamilycourt.gov",
+            "(555) 010-8801",
+            "Court liaison",
+            "Confirms hearing dates and filing receipts.",
+        ),
+        (
+            "ct-106",
+            "Aaron",
+            "Feldman",
+            "",
+            Some("org-6"),
+            vec!["donor"],
+            "aaron.feldman@meridiantech.example",
+            "(555) 010-9900",
+            "Annual appeal 2026",
+            "Recurring individual donor; employer matches gifts.",
+        ),
+        (
+            "ct-107",
+            "Grace",
+            "Adeyemi",
+            "Board Chair",
+            None,
+            vec!["board_member", "donor"],
+            "grace.adeyemi@example.com",
+            "(555) 010-1100",
+            "Founding board",
+            "Chairs the finance committee.",
+        ),
+        (
+            "ct-108",
+            "Teresa",
+            "Nguyen",
+            "",
+            None,
+            vec!["emergency_contact"],
+            "",
+            "(555) 010-3300",
+            "Client intake",
+            "Sister of a client; listed as their emergency contact.",
+        ),
+    ];
+    for (id, first, last, title, org, types, email, phone, source, description) in contacts {
+        sqlx::query(
+            "INSERT INTO contacts
+                 (id, first_name, last_name, job_title, organization_id, types,
+                  email, phone, source, description)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(id)
+        .bind(first)
+        .bind(last)
+        .bind(title)
+        .bind(org)
+        .bind(types.iter().map(|t| t.to_string()).collect::<Vec<_>>())
+        .bind(email)
+        .bind(phone)
+        .bind(source)
+        .bind(description)
+        .execute(pool)
+        .await?;
+    }
+
+    // Custom properties, showing the same section grouping cases use.
+    let properties = [
+        ("ct-101", 0, "Preferred contact", "Email", "Relationship"),
+        (
+            "ct-101",
+            1,
+            "Reporting portal",
+            "harborcf.org/grantee",
+            "Relationship",
+        ),
+        ("ct-101", 2, "Site visit", "", "Relationship"),
+        ("ct-103", 0, "Bar number", "SB-448120", "Professional"),
+        (
+            "ct-103",
+            1,
+            "Practice areas",
+            "Custody, protective orders",
+            "Professional",
+        ),
+        (
+            "ct-103",
+            2,
+            "Referral capacity",
+            "3 active matters",
+            "Professional",
+        ),
+        (
+            "ct-104",
+            0,
+            "Languages",
+            "English, Portuguese",
+            "Professional",
+        ),
+        (
+            "ct-104",
+            1,
+            "Sliding scale",
+            "Yes \u{2014} 6 slots per month",
+            "Professional",
+        ),
+        ("ct-107", 0, "Board term ends", "2027-06-30", "Governance"),
+        ("ct-107", 1, "Committee", "Finance (chair)", "Governance"),
+        (
+            "ct-107",
+            2,
+            "Conflict of interest form",
+            "Signed 2026-01-14",
+            "Governance",
+        ),
+    ];
+    for (contact_id, ord, key, value, section) in properties {
+        sqlx::query(
+            "INSERT INTO contact_properties (contact_id, ord, key, value, section)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(contact_id)
+        .bind(ord as i32)
+        .bind(key)
+        .bind(value)
+        .bind(section)
+        .execute(pool)
+        .await?;
+    }
+
+    // Who is involved in the first two seeded cases.
+    let case_contacts = [
+        (
+            "cc-1",
+            "c-1",
+            "ct-103",
+            "attorney",
+            "Representing the client in the custody matter.",
+            false,
+        ),
+        (
+            "cc-2",
+            "c-1",
+            "ct-108",
+            "emergency_contact",
+            "Call only outside work hours.",
+            false,
+        ),
+        (
+            "cc-3",
+            "c-1",
+            "ct-105",
+            "court_professional",
+            "Confirms hearing dates.",
+            false,
+        ),
+        (
+            "cc-4",
+            "c-2",
+            "ct-104",
+            "provider_contact",
+            "Counseling referral accepted.",
+            false,
+        ),
+    ];
+    for (id, case_id, contact_id, role, note, is_primary) in case_contacts {
+        sqlx::query(
+            "INSERT INTO case_contacts (id, case_id, contact_id, role, note, is_primary, added_by)
+             VALUES ($1, $2, $3, $4, $5, $6, 'Seed')",
+        )
+        .bind(id)
+        .bind(case_id)
+        .bind(contact_id)
+        .bind(role)
+        .bind(note)
+        .bind(is_primary)
+        .execute(pool)
+        .await?;
+    }
+
+    // Grants across the lifecycle, so every status is demoable. Amounts are
+    // cents. (id, name, status, funder, officer, requested, awarded, applied,
+    //  decided, start, end, cadence, purpose)
+    let grants: [(
+        &str,
+        &str,
+        &str,
+        &str,
+        Option<&str>,
+        Option<i64>,
+        Option<i64>,
+        Option<&str>,
+        Option<&str>,
+        Option<&str>,
+        Option<&str>,
+        &str,
+        &str,
+    ); 6] = [
+        (
+            "gr-1",
+            "Harbor Family Advocacy Grant",
+            "active",
+            "org-1",
+            Some("ct-101"),
+            Some(7_500_000),
+            Some(6_000_000),
+            Some("2025-09-15"),
+            Some("2025-11-01"),
+            Some("2026-01-01"),
+            Some("2026-12-31"),
+            "quarterly",
+            "Funds two part-time family-court advocates.",
+        ),
+        (
+            "gr-2",
+            "VOCA Victim Services Formula Grant",
+            "reporting",
+            "org-2",
+            Some("ct-102"),
+            Some(12_000_000),
+            Some(9_500_000),
+            Some("2025-06-02"),
+            Some("2025-08-20"),
+            Some("2025-10-01"),
+            Some("2026-09-30"),
+            "semiannual",
+            "Direct victim services, including safety planning and court accompaniment.",
+        ),
+        (
+            "gr-3",
+            "Harbor Capacity Building",
+            "applied",
+            "org-1",
+            Some("ct-101"),
+            Some(2_500_000),
+            None,
+            Some("2026-01-20"),
+            None,
+            None,
+            None,
+            "final_only",
+            "Case-management software and staff training.",
+        ),
+        (
+            "gr-4",
+            "Community Resilience Fund",
+            "prospect",
+            "org-1",
+            None,
+            Some(4_000_000),
+            None,
+            None,
+            None,
+            None,
+            None,
+            "none",
+            "Prospective renewal for outreach in the north county.",
+        ),
+        (
+            "gr-5",
+            "Emergency Housing Supplement",
+            "closed",
+            "org-2",
+            Some("ct-102"),
+            Some(3_000_000),
+            Some(3_000_000),
+            Some("2024-05-01"),
+            Some("2024-07-15"),
+            Some("2024-09-01"),
+            Some("2025-08-31"),
+            "annual",
+            "Short-term hotel placement for clients fleeing unsafe homes.",
+        ),
+        (
+            "gr-6",
+            "Statewide Legal Access Initiative",
+            "declined",
+            "org-2",
+            None,
+            Some(8_000_000),
+            None,
+            Some("2025-03-10"),
+            Some("2025-05-30"),
+            None,
+            None,
+            "none",
+            "Not funded; reapply in the next cycle.",
+        ),
+    ];
+    for (
+        id,
+        name,
+        status,
+        funder,
+        officer,
+        requested,
+        awarded,
+        applied,
+        decided,
+        start,
+        end,
+        cadence,
+        purpose,
+    ) in grants
+    {
+        sqlx::query(
+            "INSERT INTO grants
+                 (id, name, status, funder_organization_id, program_officer_contact_id,
+                  amount_requested_cents, amount_awarded_cents, application_date,
+                  decision_date, period_start, period_end, reporting_cadence, purpose)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::date, $9::date, $10::date, $11::date, $12, $13)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(status)
+        .bind(funder)
+        .bind(officer)
+        .bind(requested)
+        .bind(awarded)
+        .bind(applied)
+        .bind(decided)
+        .bind(start)
+        .bind(end)
+        .bind(cadence)
+        .bind(purpose)
+        .execute(pool)
+        .await?;
+    }
+
+    // Money in, including one voided record so the correction path is visible.
+    let funding: [(
+        &str,
+        &str,
+        i64,
+        &str,
+        Option<&str>,
+        Option<&str>,
+        Option<&str>,
+        &str,
+        bool,
+        &str,
+    ); 8] = [
+        (
+            "fn-1",
+            "grant_payment",
+            1_500_000,
+            "2026-01-15",
+            Some("gr-1"),
+            None,
+            None,
+            "ACH 88213",
+            false,
+            "",
+        ),
+        (
+            "fn-2",
+            "grant_payment",
+            1_500_000,
+            "2026-04-15",
+            Some("gr-1"),
+            None,
+            None,
+            "ACH 90114",
+            false,
+            "",
+        ),
+        (
+            "fn-3",
+            "grant_payment",
+            4_750_000,
+            "2025-10-10",
+            Some("gr-2"),
+            None,
+            None,
+            "Wire 5521",
+            false,
+            "",
+        ),
+        (
+            "fn-4",
+            "grant_payment",
+            3_000_000,
+            "2024-09-20",
+            Some("gr-5"),
+            None,
+            None,
+            "Cheque 3021",
+            false,
+            "",
+        ),
+        (
+            "fn-5",
+            "donation",
+            250_000,
+            "2026-02-02",
+            None,
+            Some("org-6"),
+            None,
+            "Matching gift",
+            false,
+            "",
+        ),
+        (
+            "fn-6",
+            "donation",
+            100_000,
+            "2026-02-11",
+            None,
+            None,
+            Some("ct-107"),
+            "Annual appeal",
+            false,
+            "",
+        ),
+        (
+            "fn-7",
+            "in_kind",
+            75_000,
+            "2026-01-30",
+            None,
+            Some("org-3"),
+            None,
+            "Pro bono hours",
+            false,
+            "",
+        ),
+        (
+            "fn-8",
+            "grant_payment",
+            1_500_000,
+            "2026-04-15",
+            Some("gr-1"),
+            None,
+            None,
+            "ACH 90114",
+            true,
+            "Duplicate of ACH 90114; entered twice.",
+        ),
+    ];
+    for (id, kind, amount, received, grant, org, contact, reference, voided, reason) in funding {
+        sqlx::query(
+            "INSERT INTO funding
+                 (id, kind, amount_cents, received_on, grant_id, source_organization_id,
+                  source_contact_id, reference, recorded_by, voided, void_reason,
+                  voided_by, voided_at)
+             VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8, 'Seed', $9, $10,
+                     CASE WHEN $9 THEN 'Seed' ELSE '' END,
+                     CASE WHEN $9 THEN now() ELSE NULL END)",
+        )
+        .bind(id)
+        .bind(kind)
+        .bind(amount)
+        .bind(received)
+        .bind(grant)
+        .bind(org)
+        .bind(contact)
+        .bind(reference)
+        .bind(voided)
+        .bind(reason)
+        .execute(pool)
+        .await?;
+    }
+
     Ok(())
 }
 

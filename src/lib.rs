@@ -16,8 +16,11 @@ pub mod components {
     pub mod admin_requests;
     pub mod admin_user_card;
     pub mod admin_volunteers;
+    pub mod case_contacts;
     pub mod case_intake;
     pub mod change_log;
+    pub mod contact_form;
+    pub mod contact_properties;
     pub mod email_failures;
     pub mod guard;
     pub mod layout;
@@ -33,9 +36,12 @@ pub mod pages {
     pub mod case_signup;
     pub mod cases;
     pub mod forgot_password;
+    pub mod funding;
     pub mod inbox;
     pub mod login;
     pub mod mfa;
+    pub mod organizations;
+    pub mod people;
     pub mod profile;
     pub mod register;
     pub mod reset_password;

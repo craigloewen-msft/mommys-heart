@@ -12,9 +12,12 @@ use crate::pages::{
     case_signup::{CaseSignupDetailsPage, CaseSignupTermsPage},
     cases::{CaseHomePage, NewCasePage},
     forgot_password::ForgotPasswordPage,
+    funding::{AdminFundingPage, AdminGrantDetailPage},
     inbox::InboxPage,
     login::LoginPage,
     mfa::MfaVerifyPage,
+    organizations::{OrganizationDetailPage, OrganizationsPage},
+    people::{PeoplePage, PersonDetailPage},
     profile::ProfilePage,
     register::RegisterPage,
     reset_password::ResetPasswordPage,
@@ -128,6 +131,10 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/cases/:case_id/notes/new") view=NewCaseNotePage />
                 <Route path=path!("/cases/:case_id/notes/:note_id") view=CaseNoteDetailPage />
                 <Route path=path!("/inbox") view=InboxPage />
+                <Route path=path!("/people") view=PeoplePage />
+                <Route path=path!("/people/:id") view=PersonDetailPage />
+                <Route path=path!("/organizations") view=OrganizationsPage />
+                <Route path=path!("/organizations/:id") view=OrganizationDetailPage />
                 <Route path=path!("/settings") view=SettingsPage />
                 <Route path=path!("/profile") view=ProfilePage />
                 <Route path=path!("/volunteer-agreement") view=VolunteerAgreementPage />
@@ -137,6 +144,8 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/admin/cases/:id") view=AdminCaseDetailPage />
                 <Route path=path!("/admin/users") view=AdminUsersPage />
                 <Route path=path!("/admin/users/:id") view=AdminUserDetailPage />
+                <Route path=path!("/admin/funding") view=AdminFundingPage />
+                <Route path=path!("/admin/funding/:id") view=AdminGrantDetailPage />
             </Routes>
         </Router>
     }

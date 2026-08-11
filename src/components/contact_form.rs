@@ -1,0 +1,211 @@
+//! The create/edit form for a contact, shared by the directory and the person
+//! page so both write a person the same way.
+
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+
+use crate::server_fns::contacts::{
+    create_contact, update_contact, Contact, ContactInput, ContactType,
+};
+use crate::server_fns::err_text;
+
+const INPUT: &str =
+    "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-primary-500 focus:outline-none";
+const LABEL: &str = "text-xs font-medium text-slate-400";
+
+/// Edits `contact` when given, otherwise creates a new person. `on_saved`
+/// receives the contact id so the caller can close the form and refresh.
+#[component]
+pub fn ContactForm(
+    contact: Option<Contact>,
+    organizations: RwSignal<Vec<(String, String)>>,
+    on_saved: Callback<String>,
+) -> impl IntoView {
+    let existing_id = contact.as_ref().map(|c| c.id.clone());
+    let editing = StoredValue::new(existing_id.clone());
+
+    let seed = contact.unwrap_or_default();
+    let first_name = RwSignal::new(seed.first_name.clone());
+    let last_name = RwSignal::new(seed.last_name.clone());
+    let preferred_name = RwSignal::new(seed.preferred_name.clone());
+    let email = RwSignal::new(seed.email.clone());
+    let phone = RwSignal::new(seed.phone.clone());
+    let mobile = RwSignal::new(seed.mobile.clone());
+    let address = RwSignal::new(seed.address.clone());
+    let job_title = RwSignal::new(seed.job_title.clone());
+    let organization_id = RwSignal::new(seed.organization_id.clone());
+    let source = RwSignal::new(seed.source.clone());
+    let description = RwSignal::new(seed.description.clone());
+    let do_not_contact = RwSignal::new(seed.do_not_contact);
+    let types = RwSignal::new(seed.types.clone());
+
+    let error = RwSignal::new(String::new());
+    let busy = RwSignal::new(false);
+
+    let toggle_type = move |t: ContactType| {
+        types.update(|list| {
+            if let Some(index) = list.iter().position(|item| *item == t) {
+                list.remove(index);
+            } else {
+                list.push(t);
+            }
+        });
+    };
+
+    let submit = move |_| {
+        if busy.get_untracked() {
+            return;
+        }
+        let input = ContactInput {
+            first_name: first_name.get_untracked(),
+            last_name: last_name.get_untracked(),
+            preferred_name: preferred_name.get_untracked(),
+            email: email.get_untracked(),
+            phone: phone.get_untracked(),
+            mobile: mobile.get_untracked(),
+            address: address.get_untracked(),
+            job_title: job_title.get_untracked(),
+            organization_id: organization_id.get_untracked(),
+            types: types.get_untracked(),
+            source: source.get_untracked(),
+            description: description.get_untracked(),
+            do_not_contact: do_not_contact.get_untracked(),
+        };
+        // Fail locally first so an obvious mistake does not need a round trip.
+        if let Err(message) = input.validate() {
+            error.set(message);
+            return;
+        }
+        busy.set(true);
+        error.set(String::new());
+        spawn_local(async move {
+            let result = match editing.get_value() {
+                Some(id) => update_contact(id.clone(), input).await.map(|()| id),
+                None => create_contact(input).await,
+            };
+            match result {
+                Ok(id) => on_saved.run(id),
+                Err(e) => error.set(err_text(e)),
+            }
+            busy.set(false);
+        });
+    };
+
+    let text_field =
+        move |label: &'static str, signal: RwSignal<String>, placeholder: &'static str| {
+            view! {
+                <label class="block">
+                    <span class=LABEL>{label}</span>
+                    <input
+                        class=INPUT
+                        placeholder=placeholder
+                        prop:value=move || signal.get()
+                        on:input=move |e| signal.set(event_target_value(&e))
+                    />
+                </label>
+            }
+        };
+
+    view! {
+        <div class="space-y-4">
+            <div class="grid gap-3 sm:grid-cols-2">
+                {text_field("First name", first_name, "")}
+                {text_field("Last name", last_name, "Required unless an organization is set")}
+                {text_field("Preferred name", preferred_name, "")}
+                {text_field("Job title", job_title, "")}
+                {text_field("Email", email, "")}
+                {text_field("Phone", phone, "")}
+                {text_field("Mobile", mobile, "")}
+                {text_field("Source", source, "How we met them")}
+            </div>
+
+            <label class="block">
+                <span class=LABEL>"Organization"</span>
+                <select
+                    class=INPUT
+                    prop:value=move || organization_id.get()
+                    on:change=move |e| organization_id.set(event_target_value(&e))
+                >
+                    <option value="">"No organization"</option>
+                    {move || organizations
+                        .get()
+                        .into_iter()
+                        .map(|(id, name)| view! { <option value=id>{name}</option> })
+                        .collect_view()}
+                </select>
+            </label>
+
+            {text_field("Address", address, "")}
+
+            <div>
+                <span class=LABEL>"Contact types"</span>
+                <div class="mt-2 flex flex-wrap gap-2">
+                    {ContactType::ALL
+                        .iter()
+                        .map(|t| {
+                            let t = *t;
+                            let selected = move || types.get().contains(&t);
+                            view! {
+                                <button
+                                    type="button"
+                                    on:click=move |_| toggle_type(t)
+                                    aria-pressed=move || selected().to_string()
+                                    class=move || {
+                                        if selected() {
+                                            "rounded-full border border-primary-500/40 bg-primary-500/15 px-3 py-1 text-xs font-medium text-primary-200"
+                                        } else {
+                                            "rounded-full border border-slate-700 px-3 py-1 text-xs font-medium text-slate-400 hover:bg-slate-800"
+                                        }
+                                    }
+                                >
+                                    {t.label()}
+                                </button>
+                            }
+                        })
+                        .collect_view()}
+                </div>
+            </div>
+
+            <label class="block">
+                <span class=LABEL>"Notes"</span>
+                <textarea
+                    class=INPUT
+                    rows="3"
+                    prop:value=move || description.get()
+                    on:input=move |e| description.set(event_target_value(&e))
+                />
+            </label>
+
+            <label class="flex items-center gap-2 text-sm text-slate-300">
+                <input
+                    type="checkbox"
+                    class="h-4 w-4 rounded border-slate-700 bg-slate-950"
+                    prop:checked=move || do_not_contact.get()
+                    on:change=move |e| do_not_contact.set(event_target_checked(&e))
+                />
+                "Do not contact"
+            </label>
+
+            <Show when=move || !error.get().is_empty()>
+                <p class="text-sm text-rose-300" role="alert">{move || error.get()}</p>
+            </Show>
+
+            <button
+                type="button"
+                on:click=submit
+                prop:disabled=move || busy.get()
+                class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+            >
+                {move || {
+                    if busy.get() {
+                        "Saving\u{2026}"
+                    } else if existing_id.is_some() {
+                        "Save changes"
+                    } else {
+                        "Create contact"
+                    }
+                }}
+            </button>
+        </div>
+    }
+}

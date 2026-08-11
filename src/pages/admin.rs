@@ -15,6 +15,7 @@ use crate::state::AppState;
 enum AdminWorkspace {
     Cases,
     Users,
+    Funding,
 }
 
 /// `/admin` has one obvious starting place.
@@ -71,6 +72,8 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
         });
 
         let content = match workspace {
+            // Funding has its own route-level page, so it never reaches here.
+            AdminWorkspace::Funding => ().into_any(),
             AdminWorkspace::Cases => view! {
                 <ManageCases
                     is_site_admin=is_site_admin
@@ -94,10 +97,10 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
             <Layout title="Admin".to_string()>
                 <div class="mb-8">
                     <p class="text-sm text-slate-400">
-                        "Review pending work, inspect records, and manage access from two focused workspaces."
+                        "Review pending work, inspect records, and manage access from focused workspaces."
                     </p>
                     <nav
-                        class="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5 sm:inline-grid sm:min-w-[30rem]"
+                        class="mt-5 grid grid-cols-3 gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5 sm:inline-grid sm:min-w-[36rem]"
                         aria-label="Admin workspaces"
                     >
                         <WorkspaceLink
@@ -112,6 +115,12 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
                             selected=workspace == AdminWorkspace::Users
                             badge=user_attention
                         />
+                        <WorkspaceLink
+                            href="/admin/funding"
+                            label="Funding"
+                            selected=workspace == AdminWorkspace::Funding
+                            badge=Signal::derive(|| 0)
+                        />
                     </nav>
                 </div>
 
@@ -122,6 +131,44 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
         }
         .into_any()
     })
+}
+
+/// The workspace tabs, shared with the funding pages so every admin surface
+/// carries the same navigation.
+#[component]
+pub fn AdminWorkspaceNav(#[prop(into)] selected: String) -> impl IntoView {
+    let state = expect_context::<AppState>();
+    let case_attention = Signal::derive(move || {
+        state.cases_pending_review.get() + state.admin_case_request_pending.get()
+    });
+    let user_attention = Signal::derive(move || {
+        state.volunteer_requests_pending.get() + state.admin_role_request_pending.get()
+    });
+    view! {
+        <nav
+            class="mt-5 grid grid-cols-3 gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5 sm:inline-grid sm:min-w-[36rem]"
+            aria-label="Admin workspaces"
+        >
+            <WorkspaceLink
+                href="/admin/cases"
+                label="Manage cases"
+                selected=selected == "cases"
+                badge=case_attention
+            />
+            <WorkspaceLink
+                href="/admin/users"
+                label="Manage users"
+                selected=selected == "users"
+                badge=user_attention
+            />
+            <WorkspaceLink
+                href="/admin/funding"
+                label="Funding"
+                selected=selected == "funding"
+                badge=Signal::derive(|| 0)
+            />
+        </nav>
+    }
 }
 
 #[component]

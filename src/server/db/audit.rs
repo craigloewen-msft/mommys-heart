@@ -16,6 +16,9 @@ const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3
 pub enum Entity {
     User,
     Case,
+    Contact,
+    Organization,
+    Grant,
 }
 
 impl Entity {
@@ -23,6 +26,9 @@ impl Entity {
         match self {
             Entity::User => "user",
             Entity::Case => "case",
+            Entity::Contact => "contact",
+            Entity::Organization => "organization",
+            Entity::Grant => "grant",
         }
     }
 }

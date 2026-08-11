@@ -369,3 +369,51 @@ grants and the funding received against them — all invisible to clients, all
 audited, none of it hard-deletable. The seed data demonstrates every state, and
 the documentation states plainly what has been delivered and what remains, with
 the contact/user split and the documentation change each recorded as an ADR.
+
+## Outcome
+
+Delivered the CRM layer and restructured the documentation.
+
+**Schema** (`migrations/0019_crm_contacts_organizations_and_funding.sql`):
+`organizations`, `contacts`, `contact_properties`, `case_contacts`, and
+`funding` tables; the two-column `grants` stub extended in place; a backfill
+creating one contact per existing account. Invariants that must not depend on
+application code were verified directly against Postgres: awarded grants require
+an amount and period, decided grants require a decision date, grant payments
+require a grant, donations require a source, funding cannot be deleted (only
+voided, with a reason), one primary contact per case, one contact per account,
+and referenced contacts/organizations/grants cannot be deleted.
+
+**Code:** six new `server/db` repositories and six `server_fns` modules, a
+shared `server_fns/crm.rs` (integer-cents money, a `chrono`-free date check that
+also compiles to WASM), `audit::Entity` extended with Contact/Organization/Grant,
+and new pages for `/people`, `/organizations`, `/admin/funding`, plus a case
+people panel and a People nav entry.
+
+**Two bugs found and fixed during verification:**
+
+1. On a *fresh* database the migration's contact backfill ran before any user
+   existed, so no account-linked contacts were created (and `reseed` truncates
+   them). The seed now performs the same backfill; verified 9/9 accounts linked.
+2. The portfolio "outstanding" figure subtracted unrelated donations from grant
+   awards. `grants::totals` now counts only funding recorded against a grant.
+
+**Verified in the browser** as site-admin, volunteer, and client: server-side
+search, rollups reconciled against SQL ($185,000 awarded − $107,500 received =
+$77,500, voided record excluded), desktop and mobile layouts, and a clean
+console. Authorization was tested by calling the endpoints directly, not just
+through the UI: a client is refused every CRM endpoint including writes (and no
+row was created), and a volunteer reads contacts but is refused grants, funding,
+and archiving.
+
+**Note for reviewers:** the `wslc` container runtime on this machine could not
+bind ports for new containers, so `etc/dev.sh reset/run` could not complete.
+Verification used a Docker Postgres and `cargo leptos watch` against it. No
+repository script was changed; `etc/dev.sh` should work normally where `wslc`
+is healthy.
+
+**Documentation** now answers two questions: `delivered.md` (what has been
+built) and `roadmap.md` (what remains, with policy-blocked work separated). The
+per-feature `requirements.md`, `.allium`, `executive.md`, and future-brief files
+were removed; ADR-0005 records the contact/user split and ADR-0006 records the
+documentation change itself, since it supersedes part of ADR-0001.

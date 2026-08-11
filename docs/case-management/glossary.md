@@ -1,5 +1,59 @@
 # Glossary
 
+## User (account)
+
+A row in `users`: something that can **sign in**. It requires a unique email and
+a password hash, and it carries the account role that governs app-level access.
+
+## Contact (person)
+
+A row in `contacts`: a **person the organization has a relationship with**. Most
+contacts have no account and never will — donors, funder program officers,
+partner caseworkers, opposing attorneys, court clerks, board members, emergency
+contacts.
+
+A contact may link to at most one user. When it does, `users` stays the source of
+truth for identity, email, and role. The distinction is deliberate and is
+recorded in [ADR-0005](adr/ADR-0005-contacts-are-not-users.md).
+
+## Organization
+
+An outside body: a funder, partner agency, service provider, government agency,
+court, or employer. Contacts are filed under one; grants are awarded by one.
+
+## Contact property
+
+A custom key/value field on a person, grouped under a free-text section heading.
+The same shape as a case property, but with **no visibility axis** — clients
+cannot see contacts at all, so the case vocabulary would not mean the same thing
+here.
+
+## Case contact
+
+A link between a case and a contact, carrying that person's role on that case.
+At most one contact per case may be marked primary.
+
+## Grant
+
+An award sought or received from a funder, with a status from `Prospect` through
+`Closed` or `Declined`, an awarded amount, and a period.
+
+## Funding
+
+Money received: a grant payment, donation, in-kind gift, or other. Amounts are
+stored as integer minor units (cents), never floating point.
+
+## Voided
+
+A funding record corrected by marking it void with a reason, rather than deleting
+it. It stays visible on the ledger and drops out of every rollup. There is no
+delete path.
+
+## Archived
+
+A contact or organization retired from use. It disappears from pickers, but every
+existing reference to it keeps working. The counterpart of channel archival.
+
 ## Case management MVP
 
 The bounded product increment defined by the approved task. It adds secure

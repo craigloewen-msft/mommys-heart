@@ -3,6 +3,7 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 
+use crate::components::case_contacts::CaseContactsPanel;
 use crate::components::case_intake::{CaseIntakeFields, CaseIntakeState};
 use crate::components::change_log::ChangeLog;
 use crate::components::guard::require_login;
@@ -2061,6 +2062,16 @@ pub fn CaseDetail(
             {evidence_panel}
 
             {case_information}
+
+            // People on the case: staff-only, like Case Notes.
+            {if is_client {
+                ().into_any()
+            } else {
+                view! {
+                    <CaseContactsPanel case_id=case_sv.get_value() can_edit=can_edit />
+                }
+                .into_any()
+            }}
 
             // Notes: clients retain only legacy shared notes; staff get structured Case Notes.
             {if is_client {

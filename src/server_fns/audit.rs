@@ -33,6 +33,9 @@ pub struct ChangeLogEntry {
 pub enum AuditScope {
     User,
     Case,
+    Contact,
+    Organization,
+    Grant,
 }
 
 #[server(prefix = "/api")]
@@ -67,6 +70,20 @@ pub async fn list_audit_page(
             require_operations_admin(&user)?;
             require_case_view_or_admin_read(&user, &entity_id).await?;
             Entity::Case
+        }
+        // CRM history is back-office reading: operations admins and above, and
+        // never a client, who cannot see the underlying records at all.
+        AuditScope::Contact => {
+            require_operations_admin(&user)?;
+            Entity::Contact
+        }
+        AuditScope::Organization => {
+            require_operations_admin(&user)?;
+            Entity::Organization
+        }
+        AuditScope::Grant => {
+            require_operations_admin(&user)?;
+            Entity::Grant
         }
     };
 
