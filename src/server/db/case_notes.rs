@@ -434,32 +434,6 @@ pub async fn get_visible(
     Ok(Some(detail))
 }
 
-pub async fn create_draft(
-    case_id: &str,
-    author: &User,
-    draft: &CaseNoteDraftInput,
-) -> Result<CaseNoteDetail, sqlx::Error> {
-    let mut tx = pool().begin().await?;
-    lock_writable_case(&mut tx, case_id).await?;
-    let note_id = ids::next(&mut *tx, "n").await?;
-    let now = now_stamp();
-    write_insert(&mut tx, &note_id, case_id, author, draft, &now).await?;
-    record_audit(
-        &mut tx,
-        &note_id,
-        case_id,
-        "",
-        author,
-        CaseNoteAuditAction::CreateDraft,
-        json!({ "state": CaseNoteState::Draft.slug() }).to_string(),
-    )
-    .await?;
-    tx.commit().await?;
-    detail(&note_id)
-        .await?
-        .ok_or_else(|| domain_error("Created note was not found."))
-}
-
 // REQ-CN-001..011: direct finalization is one official, audited transaction.
 pub async fn create_finalized(
     case_id: &str,

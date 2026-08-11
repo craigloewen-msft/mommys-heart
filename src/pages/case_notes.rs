@@ -8,13 +8,12 @@ use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::server_fns::case_notes::{
     add_case_note_addendum, admin_inspect_case_note_draft, case_note_access,
-    create_and_finalize_case_note, create_case_note_draft, discard_case_note_draft,
-    finalize_case_note_draft, list_case_notes, load_case_note, AddendumCategory,
-    CaseNoteAddendumInput, CaseNoteDetail, CaseNoteDraftInput, CaseNoteInteractionType,
-    CaseNoteListFilters, CaseNoteListItem, CaseNoteState, CaseNoteValidationError,
-    CompletionOutcome, ContactCategory, ContactDirection, InformationSource, ServiceArea,
-    UrgencyLevel, MAX_LONG_TEXT_CHARS, MAX_MEDIUM_TEXT_CHARS, MAX_MULTISELECT_CHOICES,
-    MAX_NARRATIVE_CHARS, MAX_SHORT_TEXT_CHARS, SAFETY_WARNING,
+    create_and_finalize_case_note, discard_case_note_draft, finalize_case_note_draft,
+    list_case_notes, load_case_note, AddendumCategory, CaseNoteAddendumInput, CaseNoteDetail,
+    CaseNoteDraftInput, CaseNoteInteractionType, CaseNoteListFilters, CaseNoteListItem,
+    CaseNoteState, CaseNoteValidationError, CompletionOutcome, ContactCategory, ContactDirection,
+    InformationSource, ServiceArea, UrgencyLevel, MAX_LONG_TEXT_CHARS, MAX_MEDIUM_TEXT_CHARS,
+    MAX_MULTISELECT_CHOICES, MAX_NARRATIVE_CHARS, MAX_SHORT_TEXT_CHARS, SAFETY_WARNING,
 };
 use crate::server_fns::err_text;
 use crate::state::{now_stamp, today, AppState};
@@ -76,13 +75,9 @@ fn char_count(value: &str, max: usize) -> String {
     format!("{} / {max} characters", value.chars().count())
 }
 
-fn local_date_time() -> (String, String) {
+fn local_date() -> String {
     let stamp = now_stamp();
-    if stamp.len() >= 16 {
-        (stamp[0..10].to_string(), stamp[11..16].to_string())
-    } else {
-        (String::new(), String::new())
-    }
+    stamp.get(0..10).unwrap_or_default().to_string()
 }
 
 fn empty_addendum(signature_name: String) -> CaseNoteAddendumInput {
@@ -1135,37 +1130,6 @@ pub fn NewCaseNotePage() -> impl IntoView {
         });
     });
 
-    let save = Callback::new({
-        let navigate = navigate.clone();
-        move |_: ()| {
-            if busy.get_untracked() {
-                return;
-            }
-            let case_id = case_id.get_value();
-            let input = draft.get_untracked();
-            match input.validate_draft() {
-                Ok(()) => errors.set(Vec::new()),
-                Err(errs) => {
-                    errors.set(errs);
-                    return;
-                }
-            }
-            busy.set(true);
-            message.set(None);
-            let navigate = navigate.clone();
-            spawn_local(async move {
-                match create_case_note_draft(case_id.clone(), input).await {
-                    Ok(note) => navigate(
-                        &format!("/cases/{case_id}/notes/{}", note.id),
-                        Default::default(),
-                    ),
-                    Err(err) => message.set(Some(err_text(err))),
-                }
-                busy.set(false);
-            });
-        }
-    });
-
     let finalize = Callback::new({
         let navigate = navigate.clone();
         move |_: ()| {
@@ -1176,7 +1140,7 @@ pub fn NewCaseNotePage() -> impl IntoView {
             let input = draft.get_untracked();
             let signature_value = signature.get_untracked();
             let mut client_errors = Vec::new();
-            let (today, current_time) = local_date_time();
+            let today = local_date();
             let current_name = state
                 .current_user_summary
                 .get_untracked()
@@ -1184,7 +1148,6 @@ pub fn NewCaseNotePage() -> impl IntoView {
                 .unwrap_or_default();
             if let Err(errs) = input.validate_for_finalization(
                 &today,
-                &current_time,
                 &signature_value,
                 &current_name,
                 accuracy_confirmed.get_untracked(),
@@ -1237,10 +1200,9 @@ pub fn NewCaseNotePage() -> impl IntoView {
                             <h1 class="mt-2 text-2xl font-semibold text-slate-100">"New structured case note"</h1>
                             <p class="text-sm text-slate-500">"Case " {case_id.get_value()}</p>
                         </div>
-                        <div class="flex flex-wrap gap-2">
-                            <button type="button" prop:disabled=move || busy.get() on:click=move |_| save.run(()) class="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50">"Save draft"</button>
-                            <button type="button" prop:disabled=move || busy.get() on:click=move |_| finalize.run(()) class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50">"Finalize"</button>
-                        </div>
+                        <button type="button" prop:disabled=move || busy.get() on:click=move |_| finalize.run(()) class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50">
+                            {move || if busy.get() { "Creating…" } else { "Create case note" }}
+                        </button>
                     </div>
                     <SafetyWarning />
                     <DraftForm draft=draft errors=errors />
@@ -1387,7 +1349,7 @@ pub fn CaseNoteDetailPage() -> impl IntoView {
         let input = draft.get_untracked();
         let signature_value = signature.get_untracked();
         let mut client_errors = Vec::new();
-        let (today, current_time) = local_date_time();
+        let today = local_date();
         let current_name = state
             .current_user_summary
             .get_untracked()
@@ -1395,7 +1357,6 @@ pub fn CaseNoteDetailPage() -> impl IntoView {
             .unwrap_or_default();
         if let Err(errs) = input.validate_for_finalization(
             &today,
-            &current_time,
             &signature_value,
             &current_name,
             accuracy_confirmed.get_untracked(),

@@ -385,7 +385,6 @@ impl CaseNoteDraftInput {
     pub fn validate_for_finalization(
         &self,
         today: &str,
-        current_time: &str,
         typed_signature_name: &str,
         current_full_name: &str,
         accuracy_confirmed: bool,
@@ -421,21 +420,6 @@ impl CaseNoteDraftInput {
                 0
             }
         };
-        if input.activity_date == today {
-            if let (Some(end), Some(now)) = (
-                parse_time_minutes(&input.end_time),
-                parse_time_minutes(current_time),
-            ) {
-                if end > now {
-                    push_error(
-                        &mut errors,
-                        "end_time",
-                        "Activity end time cannot be in the future.",
-                    );
-                }
-            }
-        }
-
         if input.activity_date != today && input.delayed_entry_reason.is_empty() {
             push_error(
                 &mut errors,
@@ -839,25 +823,6 @@ pub async fn load_case_note(note_id: String) -> Result<Option<CaseNoteDetail>, S
 }
 
 #[server(prefix = "/api")]
-pub async fn create_case_note_draft(
-    case_id: String,
-    draft: CaseNoteDraftInput,
-) -> Result<CaseNoteDetail, ServerFnError> {
-    use crate::server::db::case_notes;
-    use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::capabilities::CaseCapability;
-
-    let user = require_user().await?;
-    require_staff(&user)?;
-    require_cap(&user, &case_id, CaseCapability::AddNotes).await?;
-    let draft = draft.normalized();
-    draft.validate_draft().map_err(validation_text)?;
-    case_notes::create_draft(&case_id, &user, &draft)
-        .await
-        .map_err(ServerFnError::new)
-}
-
-#[server(prefix = "/api")]
 pub async fn create_and_finalize_case_note(
     case_id: String,
     draft: CaseNoteDraftInput,
@@ -871,11 +836,10 @@ pub async fn create_and_finalize_case_note(
     let user = require_user().await?;
     require_staff(&user)?;
     require_cap(&user, &case_id, CaseCapability::AddNotes).await?;
-    let (today, current_time) = now_local_date_time();
+    let today = today_local();
     let finalization = draft
         .validate_for_finalization(
             &today,
-            &current_time,
             &signature_name,
             &user.full_name(),
             accuracy_confirmed,
@@ -919,11 +883,10 @@ pub async fn finalize_case_note_draft(
     let user = require_user().await?;
     require_staff(&user)?;
     let _case_id = authorized_note_case(&user, &note_id, CaseCapability::AddNotes).await?;
-    let (today, current_time) = now_local_date_time();
+    let today = today_local();
     let finalization = draft
         .validate_for_finalization(
             &today,
-            &current_time,
             &signature_name,
             &user.full_name(),
             accuracy_confirmed,
@@ -1023,12 +986,8 @@ async fn authorized_note_case(
 }
 
 #[cfg(feature = "ssr")]
-fn now_local_date_time() -> (String, String) {
-    let now = chrono::Local::now();
-    (
-        now.format("%Y-%m-%d").to_string(),
-        now.format("%H:%M").to_string(),
-    )
+fn today_local() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
 #[cfg(feature = "ssr")]
