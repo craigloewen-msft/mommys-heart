@@ -255,15 +255,15 @@ pub async fn reveal_volunteer_ssn(user_id: String) -> Result<String, ServerFnErr
     Ok(crate::helpers::volunteer_details::format_ssn(&ssn))
 }
 
-/// Every volunteer application waiting on a decision, oldest first. Site admins
-/// only, matching who may decide one.
+/// Every volunteer application waiting on a decision, oldest first. Operations
+/// admins may inspect the queue; only site admins may decide an application.
 #[server(prefix = "/api")]
 pub async fn list_pending_volunteer_applications() -> Result<Vec<Volunteer>, ServerFnError> {
     use crate::server::db::volunteers;
-    use crate::server::permissions::{require_site_admin, require_user};
+    use crate::server::permissions::{require_operations_admin, require_user};
 
     let actor = require_user().await?;
-    require_site_admin(&actor)?;
+    require_operations_admin(&actor)?;
     volunteers::list_pending().await.map_err(ServerFnError::new)
 }
 

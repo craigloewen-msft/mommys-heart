@@ -10,6 +10,8 @@ pub mod components {
     pub mod admin_case_access;
     pub mod admin_case_requests;
     pub mod admin_cases;
+    pub mod admin_manage_cases;
+    pub mod admin_manage_users;
     pub mod admin_request_center;
     pub mod admin_requests;
     pub mod admin_user_card;

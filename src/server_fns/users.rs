@@ -160,6 +160,40 @@ impl VolunteerListItem {
     }
 }
 
+/// Which exact account-role section of the grouped admin user directory to load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserDirectoryRoleGroup {
+    Volunteer,
+    Client,
+    Other,
+}
+
+/// One narrow row of the grouped admin user directory.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserDirectoryItem {
+    pub id: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    pub role: AccountRole,
+    /// Volunteer-agreement status for exact volunteer accounts only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agreement: Option<AgreementStatus>,
+    /// Distinct cases this user can access.
+    pub assignment_count: i64,
+    /// Concise human-readable summary of that access.
+    pub assignment_summary: String,
+}
+
+impl UserDirectoryItem {
+    pub fn full_name(&self) -> String {
+        format!("{} {}", self.first_name, self.last_name)
+            .trim()
+            .to_string()
+    }
+}
+
 /// An application user account
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct User {
@@ -269,6 +303,49 @@ pub async fn list_volunteers_page(
     .map_err(ServerFnError::new)
 }
 
+/// One grouped section of the admin user directory, using a narrow row DTO so
+/// contact details and full assignments are fetched only when needed.
+#[server(prefix = "/api")]
+pub async fn list_user_directory_page(
+    offset: i64,
+    limit: i64,
+    search: String,
+    role_group: UserDirectoryRoleGroup,
+) -> Result<Page<UserDirectoryItem>, ServerFnError> {
+    use crate::server::db::users;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let actor = require_user().await?;
+    require_operations_admin(&actor)?;
+    users::directory_page(
+        offset,
+        limit,
+        &search,
+        role_group,
+        crate::helpers::volunteer_terms::VOLUNTEER_AGREEMENT_VERSION,
+    )
+    .await
+    .map_err(ServerFnError::new)
+}
+
+/// Lazily load one full user record for the admin management view.
+#[server(prefix = "/api")]
+pub async fn load_admin_user(user_id: String) -> Result<User, ServerFnError> {
+    use crate::server::db::users;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let actor = require_user().await?;
+    require_operations_admin(&actor)?;
+    let user_id = user_id.trim().to_string();
+    if user_id.is_empty() {
+        return Err(ServerFnError::new("No user was requested."));
+    }
+    users::get(&user_id)
+        .await
+        .map_err(ServerFnError::new)?
+        .ok_or_else(|| ServerFnError::new("User not found."))
+}
+
 /// Change a user's account role.
 #[server(prefix = "/api")]
 pub async fn set_user_role(user_id: String, role: AccountRole) -> Result<(), ServerFnError> {
@@ -279,7 +356,14 @@ pub async fn set_user_role(user_id: String, role: AccountRole) -> Result<(), Ser
     require_site_admin(&actor)?;
     users::set_role(&user_id, role, &actor.full_name())
         .await
-        .map_err(ServerFnError::new)
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.contains("You cannot demote the final site admin.") {
+                ServerFnError::new("You cannot demote the final site admin.")
+            } else {
+                ServerFnError::new(error)
+            }
+        })
 }
 
 /// Assign a user to a case with an explicit set of capabilities.

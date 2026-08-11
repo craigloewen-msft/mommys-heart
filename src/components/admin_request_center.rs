@@ -1,19 +1,27 @@
-//! Admin dashboard tab: operations-admin approval requests.
+//! Admin dashboard tab: separate case-permission and role request queues.
 
 use leptos::prelude::*;
 
 use crate::components::admin_requests::AdminRequestCenter;
+use crate::server_fns::admin_requests::AdminRequestKind;
 
 #[component]
 pub fn RequestsTab(is_site_admin: bool, reload: RwSignal<u32>) -> impl IntoView {
     view! {
         <p class="mb-6 text-sm text-slate-400">
             {if is_site_admin {
-                "Review active operations-admin requests and browse past decisions."
+                "Review active case-permission and role requests, then browse each history separately."
             } else {
-                "Track active requests you submitted and browse their history."
+                "Track your active case-permission and role requests, then browse each history separately."
             }}
         </p>
-        <AdminRequestCenter is_site_admin=is_site_admin reload=reload />
+        <div class="space-y-10">
+            <AdminRequestCenter
+                kind=AdminRequestKind::CaseCapabilities
+                is_site_admin=is_site_admin
+                reload=reload
+            />
+            <AdminRequestCenter kind=AdminRequestKind::Role is_site_admin=is_site_admin reload=reload />
+        </div>
     }
 }

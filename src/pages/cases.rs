@@ -396,7 +396,7 @@ pub fn CaseHomePage() -> impl IntoView {
         Some(id) => {
             match cases.get().into_iter().find(|c| c.id == id) {
                 Some(c) => view! {
-                    <CaseDetail summary=c reload=reload open_folder=open_folder />
+                    <CaseDetail summary=c reload=reload open_folder=open_folder admin_read=false />
                 }
                 .into_any(),
                 None => view! {
@@ -593,12 +593,13 @@ pub fn NewCasePage() -> impl IntoView {
     })
 }
 
-/// The management panel for a single case.
+/// The case detail panel shared by the normal case page and the admin read view.
 #[component]
-fn CaseDetail(
+pub fn CaseDetail(
     summary: CaseSummary,
     reload: RwSignal<u32>,
     open_folder: RwSignal<Option<String>>,
+    admin_read: bool,
 ) -> impl IntoView {
     let state = expect_context::<AppState>();
     let case_id = summary.id.clone();
@@ -624,23 +625,35 @@ fn CaseDetail(
     let can_upload_evidence = caps.contains(&CaseCapability::UploadEvidence) && accepts_changes;
     let can_delete_evidence = caps.contains(&CaseCapability::DeleteEvidence) && accepts_changes;
     let can_manage_case_information = can_edit || can_upload_evidence || can_delete_evidence;
+    let has_stored_write_capability = caps.iter().any(|cap| cap.is_write());
+    let can_read_case_material = admin_read || can_view_evidence;
 
     // The full case behind the summary — the heavy sub-resources are pulled on
     // demand only for the open case, keeping the list load lightweight.
     let case_sv = StoredValue::new(case_id.clone());
     let detail = RwSignal::new(None::<Case>);
+    let detail_generation = RwSignal::new(0u64);
     // Tracks the in-flight fetch of the full case so the view can show a loading
     // state instead of a premature "empty" one while the request is pending.
     let detail_loading = RwSignal::new(true);
     {
         let case_id = case_id.clone();
         Effect::new(move |_| {
+            reload.track();
             let case_id = case_id.clone();
             detail_loading.set(true);
+            detail_generation.update(|generation| *generation += 1);
+            let generation = detail_generation.get_untracked();
             spawn_local(async move {
-                if let Ok(Some(c)) = cases::load_case(case_id).await {
-                    detail.set(Some(c));
+                let loaded = if admin_read {
+                    cases::load_admin_case(case_id).await
+                } else {
+                    cases::load_case(case_id).await
+                };
+                if detail_generation.get_untracked() != generation {
+                    return;
                 }
+                detail.set(loaded.ok().flatten());
                 detail_loading.set(false);
             });
         });
@@ -653,6 +666,10 @@ fn CaseDetail(
     let owner_label = RwSignal::new(String::new());
     let owner_results = RwSignal::new(Vec::<UserSummary>::new());
     let owner_picker_open = RwSignal::new(false);
+    let active_owner_result = RwSignal::new(None::<usize>);
+    let owner_search_generation = RwSignal::new(0u64);
+    let owner_search_id = StoredValue::new(format!("case-owner-search-{case_id}"));
+    let owner_results_id = StoredValue::new(format!("case-owner-results-{case_id}"));
 
     // Refetch matching users whenever the query changes while the picker is
     // open. An empty query returns a starting set. Only editors ever open it.
@@ -661,9 +678,16 @@ fn CaseDetail(
             return;
         }
         let q = owner_query.get();
+        owner_search_generation.update(|generation| *generation += 1);
+        let generation = owner_search_generation.get_untracked();
         spawn_local(async move {
-            if let Ok(list) = search_users(q).await {
+            let response = search_users(q).await;
+            if owner_search_generation.get_untracked() != generation {
+                return;
+            }
+            if let Ok(list) = response {
                 owner_results.set(list);
+                active_owner_result.set(None);
             }
         });
     });
@@ -681,6 +705,8 @@ fn CaseDetail(
     let edit_status = RwSignal::new(String::new());
     let edit_owner = RwSignal::new(String::new());
     let edit_error = RwSignal::new(String::new());
+    let case_name_input_id = StoredValue::new(format!("case-name-{case_id}"));
+    let case_status_input_id = StoredValue::new(format!("case-status-{case_id}"));
 
     let edit_props: RwSignal<Vec<PropRow>> = RwSignal::new(Vec::new());
     let props_error = RwSignal::new(String::new());
@@ -1465,7 +1491,7 @@ fn CaseDetail(
     // browser, so this renders only what they are allowed to know about. The
     // case's *files* are not here — they have their own folder tree below.
     let case_information = move || {
-        if !can_view_evidence {
+        if !can_read_case_material {
             return ().into_any();
         }
         let Some(c) = live_case() else {
@@ -1549,7 +1575,7 @@ fn CaseDetail(
     // somebody has to remember to change. A client simply never sees the
     // volunteer-only ones.
     let evidence_panel = move || {
-        if !can_view_evidence {
+        if !can_read_case_material {
             return ().into_any();
         }
         let Some(c) = live_case() else {
@@ -1681,6 +1707,7 @@ fn CaseDetail(
 
     let log_open = RwSignal::new(false);
     let log_case_id = StoredValue::new(case_id.clone());
+    let log_region_id = StoredValue::new(format!("case-change-log-{case_id}"));
     let audit_view = move || {
         if !log_open.get() {
             return ().into_any();
@@ -1780,11 +1807,23 @@ fn CaseDetail(
                         </div>
                     </div>
                     {client_banner}
-                    <Show when=move || !can_edit && !can_note && !can_upload_evidence>
-                        <p class="mt-2 text-xs text-slate-500">
-                            "You have view-only access to this case."
-                        </p>
-                    </Show>
+                    {if admin_read && !has_stored_write_capability {
+                        view! {
+                            <p class="mt-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-200">
+                                "Admin read-only view. You can inspect this case without assigning yourself, but stored case capabilities are still required for any changes."
+                            </p>
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            <Show when=move || !can_edit && !can_note && !can_upload_evidence>
+                                <p class="mt-2 text-xs text-slate-500">
+                                    "You have view-only access to this case."
+                                </p>
+                            </Show>
+                        }
+                            .into_any()
+                    }}
                 </div>
             }
             .into_any();
@@ -1799,7 +1838,11 @@ fn CaseDetail(
             let items = owner_results.get();
             if items.is_empty() {
                 return view! {
-                    <div class="absolute z-10 mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-500">
+                    <div
+                        id=owner_results_id.get_value()
+                        role="listbox"
+                        class="absolute z-10 mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-500"
+                    >
                         "No matching users."
                     </div>
                 }
@@ -1807,20 +1850,31 @@ fn CaseDetail(
             }
             let rows = items
                 .into_iter()
-                .map(|u| {
+                .enumerate()
+                .map(|(index, u)| {
                     let id = u.id.clone();
                     let name = u.full_name();
                     let label = format!("{} ({})", u.full_name(), u.id);
+                    let option_id = format!("{}-{index}", owner_results_id.get_value());
                     let select = move |_| {
                         edit_owner.set(id.clone());
                         owner_label.set(name.clone());
                         owner_picker_open.set(false);
+                        active_owner_result.set(None);
                     };
                     view! {
                         <button
+                            id=option_id
                             type="button"
+                            role="option"
+                            tabindex="-1"
+                            aria-selected=move || (active_owner_result.get() == Some(index)).to_string()
                             on:click=select
-                            class="block w-full truncate px-3 py-1.5 text-left text-sm text-slate-200 hover:bg-slate-800"
+                            class=move || if active_owner_result.get() == Some(index) {
+                                "block w-full truncate bg-slate-800 px-3 py-1.5 text-left text-sm text-slate-100"
+                            } else {
+                                "block w-full truncate px-3 py-1.5 text-left text-sm text-slate-200 hover:bg-slate-800"
+                            }
                         >
                             {label}
                         </button>
@@ -1829,7 +1883,11 @@ fn CaseDetail(
                 })
                 .collect_view();
             view! {
-                <div class="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-lg border border-slate-700 bg-slate-950">
+                <div
+                    id=owner_results_id.get_value()
+                    role="listbox"
+                    class="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-lg border border-slate-700 bg-slate-950"
+                >
                     {rows}
                 </div>
             }
@@ -1861,8 +1919,11 @@ fn CaseDetail(
                 </Show>
                 <div class="mt-4 space-y-4">
                     <div>
-                        <label class="text-xs font-medium text-slate-400">"Case name"</label>
+                        <label for=case_name_input_id.get_value() class="text-xs font-medium text-slate-400">
+                            "Case name"
+                        </label>
                         <input
+                            id=case_name_input_id.get_value()
                             class=input_class
                             prop:value=move || edit_name.get()
                             on:input=move |ev| edit_name.set(event_target_value(&ev))
@@ -1871,8 +1932,11 @@ fn CaseDetail(
                     <div class="grid gap-4 sm:grid-cols-2">
                         <Show when=move || state.is_volunteer_or_admin()>
                         <div>
-                            <label class="text-xs font-medium text-slate-400">"Status"</label>
+                            <label for=case_status_input_id.get_value() class="text-xs font-medium text-slate-400">
+                                "Status"
+                            </label>
                             <select
+                                id=case_status_input_id.get_value()
                                 class=input_class
                                 on:change=move |ev| edit_status.set(event_target_value(&ev))
                             >
@@ -1893,13 +1957,27 @@ fn CaseDetail(
                         </div>
                         </Show>
                         <div>
-                            <label class="text-xs font-medium text-slate-400">
+                            <label
+                                for=owner_search_id.get_value()
+                                class="text-xs font-medium text-slate-400"
+                            >
                                 "Owner (who filed it)"
                             </label>
                             {if is_site_admin {
                                 view! {
                                     <div class="relative">
                                         <input
+                                            id=owner_search_id.get_value()
+                                            type="search"
+                                            role="combobox"
+                                            aria-autocomplete="list"
+                                            aria-expanded=move || owner_picker_open.get().to_string()
+                                            aria-controls=owner_results_id.get_value()
+                                            aria-activedescendant=move || {
+                                                active_owner_result
+                                                    .get()
+                                                    .map(|index| format!("{}-{index}", owner_results_id.get_value()))
+                                            }
                                             class=input_class
                                             placeholder="Search users by name or email\u{2026}"
                                             prop:value=move || {
@@ -1912,10 +1990,50 @@ fn CaseDetail(
                                             on:focus=move |_| {
                                                 owner_query.set(String::new());
                                                 owner_picker_open.set(true);
+                                                active_owner_result.set(None);
                                             }
                                             on:input=move |ev| {
                                                 owner_picker_open.set(true);
+                                                active_owner_result.set(None);
                                                 owner_query.set(event_target_value(&ev));
+                                            }
+                                            on:keydown=move |event: leptos::ev::KeyboardEvent| {
+                                                let count = owner_results.with(Vec::len);
+                                                match event.key().as_str() {
+                                                    "ArrowDown" if count > 0 => {
+                                                        event.prevent_default();
+                                                        active_owner_result.update(|active| {
+                                                            *active = Some(active.map_or(0, |index| (index + 1).min(count - 1)));
+                                                        });
+                                                    }
+                                                    "ArrowUp" if count > 0 => {
+                                                        event.prevent_default();
+                                                        active_owner_result.update(|active| {
+                                                            *active = Some(active.map_or(count - 1, |index| index.saturating_sub(1)));
+                                                        });
+                                                    }
+                                                    "Enter" => {
+                                                        if let Some(index) = active_owner_result.get_untracked() {
+                                                            event.prevent_default();
+                                                            if let Some(user) = owner_results
+                                                                .get_untracked()
+                                                                .get(index)
+                                                                .cloned()
+                                                            {
+                                                                let name = user.full_name();
+                                                                edit_owner.set(user.id);
+                                                                owner_label.set(name);
+                                                                owner_picker_open.set(false);
+                                                                active_owner_result.set(None);
+                                                            }
+                                                        }
+                                                    }
+                                                    "Escape" => {
+                                                        owner_picker_open.set(false);
+                                                        active_owner_result.set(None);
+                                                    }
+                                                    _ => {}
+                                                }
                                             }
                                         />
                                         {owner_result_list}
@@ -1925,6 +2043,7 @@ fn CaseDetail(
                             } else {
                                 view! {
                                     <input
+                                        id=owner_search_id.get_value()
                                         class=input_class
                                         prop:value=move || owner_label.get()
                                         disabled=true
@@ -1993,13 +2112,16 @@ fn CaseDetail(
                         <div class="flex items-center justify-between">
                             <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
                             <button
+                                type="button"
                                 on:click=move |_| log_open.update(|o| *o = !*o)
+                                aria-expanded=move || log_open.get().to_string()
+                                aria-controls=log_region_id.get_value()
                                 class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
                             >
                                 {move || if log_open.get() { "Hide" } else { "Open change log" }}
                             </button>
                         </div>
-                        <div class="mt-3 space-y-1.5">{audit_view}</div>
+                        <div id=log_region_id.get_value() class="mt-3 space-y-1.5">{audit_view}</div>
                     </div>
                 }
                     .into_any()

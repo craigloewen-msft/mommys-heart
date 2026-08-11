@@ -2,6 +2,7 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use leptos_router::components::A;
 
 use crate::server_fns::cases::{
     list_pending_case_requests, set_case_review_decision, CaseStatus, CaseSummary,
@@ -15,6 +16,7 @@ pub fn CaseRequests(reload: RwSignal<u32>) -> impl IntoView {
     let items = RwSignal::new(Vec::<CaseSummary>::new());
     let loading = RwSignal::new(true);
     let load_error = RwSignal::new(None::<String>);
+    let request_generation = RwSignal::new(0u64);
 
     Effect::new(move |_| {
         reload.track();
@@ -22,8 +24,14 @@ pub fn CaseRequests(reload: RwSignal<u32>) -> impl IntoView {
             return;
         }
         loading.set(true);
+        request_generation.update(|generation| *generation += 1);
+        let generation = request_generation.get_untracked();
         spawn_local(async move {
-            match list_pending_case_requests().await {
+            let response = list_pending_case_requests().await;
+            if request_generation.get_untracked() != generation {
+                return;
+            }
+            match response {
                 Ok(list) => {
                     // Keep the badge honest against what is on screen.
                     state.cases_pending_review.set(list.len() as i64);
@@ -68,12 +76,16 @@ pub fn CaseRequests(reload: RwSignal<u32>) -> impl IntoView {
 /// One case awaiting a decision, with the context needed to make it.
 #[component]
 fn CaseRequestCard(case: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
+    let state = expect_context::<AppState>();
     let case_id = StoredValue::new(case.id.clone());
+    let detail_href = format!("/admin/cases/{}", case.id);
     let saving = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     // Declining reveals an inline reason field; the reason is part of the decision.
     let declining = RwSignal::new(false);
     let reason = RwSignal::new(String::new());
+
+    let decline_reason_id = format!("case-decline-reason-{}", case.id);
 
     let decide = move |accept: bool, reason_text: String| {
         saving.set(true);
@@ -83,6 +95,7 @@ fn CaseRequestCard(case: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
                 Ok(()) => {
                     // Reloading re-reads the list, which resets the badge with it.
                     reload.update(|r| *r += 1);
+                    state.refresh_badges();
                 }
                 Err(e) => {
                     error.set(Some(err_text(e)));
@@ -116,11 +129,19 @@ fn CaseRequestCard(case: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
             <p class="mt-2 text-xs text-slate-400">"Client: " {case.owner_full_name()}</p>
 
             {move || {
-                error.get().map(|msg| view! { <p class="mt-2 text-xs text-rose-300">{msg}</p> })
+                error.get().map(|msg| view! {
+                    <p class="mt-2 text-xs text-rose-300" role="alert">{msg}</p>
+                })
             }}
 
             <Show when=move || !declining.get()>
                 <div class="mt-3 flex flex-wrap items-center gap-2">
+                    <A
+                        href=detail_href.clone()
+                        attr:class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                    >
+                        "View details"
+                    </A>
                     <button
                         on:click=accept
                         prop:disabled=move || saving.get()
@@ -140,13 +161,15 @@ fn CaseRequestCard(case: CaseSummary, reload: RwSignal<u32>) -> impl IntoView {
 
             <Show when=move || declining.get()>
                 <div class="mt-3 space-y-2">
-                    <label class="block text-xs font-medium text-slate-300">
+                    <label for=decline_reason_id.clone() class="block text-xs font-medium text-slate-300">
                         "Reason (shown to the client)"
                     </label>
                     <textarea
+                        id=decline_reason_id.clone()
                         rows="2"
                         class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none"
                         placeholder="e.g. Outside our service area; referred to Lakeside Legal Aid."
+                        prop:disabled=move || saving.get()
                         prop:value=move || reason.get()
                         on:input=move |ev| reason.set(event_target_value(&ev))
                     ></textarea>

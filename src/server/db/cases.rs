@@ -125,7 +125,7 @@ pub async fn admin_page(
     search: &str,
     user_id: &str,
 ) -> Result<Page<CaseSummary>, sqlx::Error> {
-    let limit = limit.clamp(1, 100);
+    let limit = limit.clamp(1, 1_000);
     let offset = offset.max(0);
     let pattern = escaped_like_pattern(search);
 
@@ -262,6 +262,24 @@ pub async fn get_summaries_for_user(
         })
         .collect::<Vec<_>>();
     Ok(Page { items, total })
+}
+
+/// One admin directory summary by primary key, including the viewer's stored
+/// capabilities. This avoids resolving detail routes through fuzzy search.
+pub async fn admin_summary(
+    case_id: &str,
+    user_id: &str,
+) -> Result<Option<CaseSummary>, sqlx::Error> {
+    let row =
+        sqlx::query_as::<_, SummaryRow>(&format!("{} WHERE c.id = $1", summary_select("true")))
+            .bind(case_id)
+            .fetch_optional(pool())
+            .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let caps = capabilities::get_single_case(user_id, case_id).await?;
+    Ok(Some(row.into_summary(caps, &inactivity_threshold())))
 }
 
 /// Up to `limit` lightweight cases whose id or name matches `search`

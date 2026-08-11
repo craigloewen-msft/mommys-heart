@@ -4,7 +4,10 @@ use crate::server::db::{audit, clients, ids, pool};
 use crate::server_fns::capabilities::{CaseAssignment, CaseCapability};
 use crate::server_fns::pagination::Page;
 use crate::server_fns::profile::ProfileEdit;
-use crate::server_fns::users::{AccountRole, AgreementStatus, User, VolunteerListItem};
+use crate::server_fns::users::{
+    AccountRole, AgreementStatus, User, UserDirectoryItem, UserDirectoryRoleGroup,
+    VolunteerListItem,
+};
 use std::collections::BTreeMap;
 
 #[derive(sqlx::FromRow)]
@@ -30,6 +33,93 @@ impl UserRow {
             role: AccountRole::from_slug(&self.role).unwrap_or(AccountRole::Client),
             assigned_cases,
         }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct DirectoryRow {
+    id: String,
+    first_name: String,
+    last_name: String,
+    email: String,
+    role: String,
+    agreement_version: Option<String>,
+    assignment_count: i64,
+    assignment_capabilities: Option<Vec<String>>,
+}
+
+impl DirectoryRow {
+    fn into_item(self, current_version: &str) -> Result<UserDirectoryItem, sqlx::Error> {
+        let role = AccountRole::from_slug(&self.role).ok_or_else(|| {
+            sqlx::Error::Decode(format!("invalid account role slug: {:?}", self.role).into())
+        })?;
+        let assignment_count = self.assignment_count.max(0);
+        Ok(UserDirectoryItem {
+            id: self.id,
+            first_name: self.first_name,
+            last_name: self.last_name,
+            email: self.email,
+            role,
+            agreement: (role == AccountRole::Volunteer).then_some(
+                if self.agreement_version.as_deref() == Some(current_version) {
+                    AgreementStatus::Completed
+                } else {
+                    AgreementStatus::Outstanding
+                },
+            ),
+            assignment_count,
+            assignment_summary: assignment_summary(
+                assignment_count,
+                self.assignment_capabilities.as_deref().unwrap_or(&[]),
+            ),
+        })
+    }
+}
+
+fn escaped_like_pattern(search: &str) -> Option<String> {
+    let term = search.trim();
+    if term.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            term.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        ))
+    }
+}
+
+fn assignment_summary(assignment_count: i64, capability_slugs: &[String]) -> String {
+    if assignment_count <= 0 {
+        return "No case access".to_string();
+    }
+
+    let mut labels = capability_slugs
+        .iter()
+        .filter_map(|slug| CaseCapability::from_slug(slug))
+        .map(CaseCapability::label)
+        .collect::<Vec<_>>();
+    labels.sort_unstable();
+    labels.dedup();
+
+    let case_word = if assignment_count == 1 {
+        "case"
+    } else {
+        "cases"
+    };
+    if labels.is_empty() {
+        format!("{assignment_count} {case_word}")
+    } else {
+        format!("{assignment_count} {case_word} · {}", labels.join(", "))
+    }
+}
+
+fn directory_role_filter(group: UserDirectoryRoleGroup) -> &'static str {
+    match group {
+        UserDirectoryRoleGroup::Volunteer => "u.role = 'volunteer'",
+        UserDirectoryRoleGroup::Client => "u.role = 'client'",
+        UserDirectoryRoleGroup::Other => "u.role IN ('operations_admin', 'site_admin')",
     }
 }
 
@@ -173,17 +263,7 @@ pub async fn search_user_summaries(
 
     let limit = limit.clamp(1, 50);
 
-    let term = query.trim();
-    let pattern = if term.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "%{}%",
-            term.replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        ))
-    };
+    let pattern = escaped_like_pattern(query);
 
     let rows: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
         "SELECT id, first_name, last_name, role
@@ -243,6 +323,19 @@ async fn lock_capability_target(
     Ok(())
 }
 
+/// Serialize role changes before callers lock any role-dependent rows. Callers
+/// that already hold another row lock must acquire this first to avoid deadlocks.
+pub async fn lock_role_changes_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), sqlx::Error> {
+    const ROLE_CHANGE_LOCK: i64 = 6_109_425_781;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(ROLE_CHANGE_LOCK)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// Change a user's role inside the caller's transaction, keeping the subtype
 /// tables in step. This is the only code that may change `users.role`.
 ///
@@ -255,6 +348,9 @@ pub async fn set_role_in(
     role: AccountRole,
     actor: &str,
 ) -> Result<(), sqlx::Error> {
+    // Two concurrent demotions must not both observe a second site admin.
+    lock_role_changes_in(tx).await?;
+
     let current: Option<String> =
         sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
             .bind(user_id)
@@ -267,6 +363,22 @@ pub async fn set_role_in(
         return Ok(());
     }
 
+    let current_role = AccountRole::from_slug(&current).ok_or_else(|| {
+        sqlx::Error::Decode(format!("invalid account role slug: {current:?}").into())
+    })?;
+    if current_role == AccountRole::SiteAdmin && role != AccountRole::SiteAdmin {
+        let site_admin_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE role = $1")
+                .bind(AccountRole::SiteAdmin.slug())
+                .fetch_one(&mut **tx)
+                .await?;
+        if site_admin_count <= 1 {
+            return Err(sqlx::Error::Protocol(
+                "You cannot demote the final site admin.".to_string(),
+            ));
+        }
+    }
+
     sqlx::query("UPDATE users SET role = $1 WHERE id = $2")
         .bind(role.slug())
         .bind(user_id)
@@ -274,7 +386,7 @@ pub async fn set_role_in(
         .await?;
 
     // Reconcile the volunteer record with the new role.
-    let was_volunteer = AccountRole::from_slug(&current) == Some(AccountRole::Volunteer);
+    let was_volunteer = current_role == AccountRole::Volunteer;
     match role {
         AccountRole::Volunteer => {
             sqlx::query(
@@ -696,17 +808,7 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
     let limit = limit.clamp(1, 100);
     let offset = offset.max(0);
 
-    let term = search.trim();
-    let pattern = if term.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "%{}%",
-            term.replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        ))
-    };
+    let pattern = escaped_like_pattern(search);
 
     // The same predicate drives the count and the page fetch. A NULL pattern
     // (no search term) matches every row.
@@ -761,6 +863,58 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
     Ok(Page { items, total })
 }
 
+/// One grouped page of the admin user directory, filtered by exact role buckets.
+pub async fn directory_page(
+    offset: i64,
+    limit: i64,
+    search: &str,
+    role_group: UserDirectoryRoleGroup,
+    current_version: &str,
+) -> Result<Page<UserDirectoryItem>, sqlx::Error> {
+    let limit = limit.clamp(1, 1_000);
+    let offset = offset.max(0);
+    let pattern = escaped_like_pattern(search);
+    let role_filter = directory_role_filter(role_group);
+
+    const SEARCH: &str = "($1::text IS NULL
+               OR u.id ILIKE $1
+               OR u.first_name ILIKE $1
+               OR u.last_name ILIKE $1
+               OR (u.first_name || ' ' || u.last_name) ILIKE $1
+               OR u.email ILIKE $1)";
+
+    let count_sql = format!("SELECT count(*) FROM users u WHERE {role_filter} AND {SEARCH}");
+    let page_sql = format!(
+        "SELECT u.id, u.first_name, u.last_name, u.email, u.role,
+                v.agreement_version,
+                COUNT(DISTINCT ca.case_id)::bigint AS assignment_count,
+                array_agg(DISTINCT ca.capability) FILTER (WHERE ca.capability IS NOT NULL) AS assignment_capabilities
+         FROM users u
+         LEFT JOIN volunteers v ON v.user_id = u.id
+         LEFT JOIN case_assignments ca ON ca.user_id = u.id
+         WHERE {role_filter} AND {SEARCH}
+         GROUP BY u.id, u.first_name, u.last_name, u.email, u.role, v.agreement_version
+         ORDER BY u.last_name, u.first_name, u.id
+         LIMIT $2 OFFSET $3"
+    );
+
+    let total_fut = sqlx::query_scalar::<_, i64>(&count_sql)
+        .bind(&pattern)
+        .fetch_one(pool());
+    let rows_fut = sqlx::query_as::<_, DirectoryRow>(&page_sql)
+        .bind(&pattern)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool());
+    let (total, rows) = tokio::try_join!(total_fut, rows_fut)?;
+
+    let items = rows
+        .into_iter()
+        .map(|row| row.into_item(current_version))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Page { items, total })
+}
+
 /// One page of volunteer accounts for the admin "Volunteers" tab: the
 /// `volunteer` role only, with the same optional search as [`page`]. Case
 /// assignments are not fetched — the list does not show them.
@@ -777,17 +931,7 @@ pub async fn volunteers_page(
     let limit = limit.clamp(1, 100);
     let offset = offset.max(0);
 
-    let term = search.trim();
-    let pattern = if term.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "%{}%",
-            term.replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        ))
-    };
+    let pattern = escaped_like_pattern(search);
 
     // A NULL pattern (no search term) matches every volunteer.
     const FILTER: &str = "WHERE u.role = 'volunteer'

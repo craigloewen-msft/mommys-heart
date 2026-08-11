@@ -132,46 +132,64 @@ pub fn VolunteersTab(
     });
 
     view! {
-        {is_site_admin.then(|| view! {
-            <PendingApplications active=active reload=reload />
-        })}
+        <PendingApplications active=active reload=reload is_site_admin=is_site_admin />
         <p class="mb-4 text-sm text-slate-400">
             "Everyone with a volunteer account, and whether they have completed the volunteer agreement. Click a name to open their profile."
         </p>
-        <input
-            class="mb-4 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40"
-            placeholder="Search volunteers by name or email"
-            prop:value=move || query.get()
-            on:input=move |ev| {
-                let val = event_target_value(&ev);
-                query.set(val.clone());
-                on_search(val);
-            }
-        />
+        <div class="mb-4">
+            <label for="admin-volunteer-search" class="block text-sm font-medium text-slate-200">
+                "Search volunteers"
+            </label>
+            <input
+                id="admin-volunteer-search"
+                type="search"
+                class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40"
+                placeholder="Name or email"
+                prop:value=move || query.get()
+                on:input=move |ev| {
+                    let val = event_target_value(&ev);
+                    query.set(val.clone());
+                    on_search(val);
+                }
+            />
+        </div>
         <div class="rounded-xl border border-slate-800 bg-slate-900">{rows}</div>
         {footer}
     }
 }
 
-/// The volunteer applications waiting on a decision, for site admins only.
-/// Hidden entirely when the queue is empty, so the tab stays quiet when there is
-/// nothing to do.
+/// The volunteer applications waiting on a decision. Operations admins may
+/// inspect the queue read-only; site admins may also approve or deny each one.
 #[component]
-fn PendingApplications(#[prop(into)] active: Signal<bool>, reload: RwSignal<u32>) -> impl IntoView {
+pub fn PendingApplications(
+    #[prop(into)] active: Signal<bool>,
+    reload: RwSignal<u32>,
+    is_site_admin: bool,
+    #[prop(optional, default = false)] show_empty: bool,
+) -> impl IntoView {
     let state = expect_context::<AppState>();
     let items = RwSignal::new(Vec::<Volunteer>::new());
     let load_error = RwSignal::new(None::<String>);
+    let loading = RwSignal::new(false);
+    let request_generation = RwSignal::new(0u64);
 
     Effect::new(move |_| {
         if !active.get() {
             return;
         }
         reload.track();
-        if !state.is_site_admin() {
+        if !state.has_operations_admin_permissions() {
             return;
         }
+        loading.set(true);
+        request_generation.update(|generation| *generation += 1);
+        let generation = request_generation.get_untracked();
         spawn_local(async move {
-            match list_pending_volunteer_applications().await {
+            let response = list_pending_volunteer_applications().await;
+            if request_generation.get_untracked() != generation {
+                return;
+            }
+            match response {
                 Ok(list) => {
                     // Keep the badge honest against what is on screen.
                     state.volunteer_requests_pending.set(list.len() as i64);
@@ -180,47 +198,64 @@ fn PendingApplications(#[prop(into)] active: Signal<bool>, reload: RwSignal<u32>
                 }
                 Err(e) => load_error.set(Some(err_text(e))),
             }
+            loading.set(false);
         });
     });
 
     move || {
-        if let Some(message) = load_error.get() {
-            return view! {
-                <p class="mb-4 text-sm text-rose-300">
+        let pending = items.get();
+        let count = pending.len();
+        let should_render = show_empty || loading.get() || load_error.get().is_some() || count > 0;
+        if !should_render {
+            return ().into_any();
+        }
+
+        let body = if let Some(message) = load_error.get() {
+            view! {
+                <p class="text-sm text-rose-300" role="alert">
                     "Could not load volunteer applications: " {message}
                 </p>
             }
-            .into_any();
-        }
-        let pending = items.get();
-        if pending.is_empty() {
-            return ().into_any();
-        }
-        let count = pending.len();
-        let cards = pending
-            .into_iter()
-            .map(|volunteer| {
-                view! {
-                    <ApplicationCard volunteer=volunteer reload=reload />
-                }
-                .into_any()
-            })
-            .collect_view();
+            .into_any()
+        } else if loading.get() && count == 0 {
+            view! { <p class="text-sm text-slate-500" aria-live="polite">"Loading…"</p> }.into_any()
+        } else if pending.is_empty() {
+            view! {
+                <p class="text-sm text-slate-500" aria-live="polite">
+                    "No volunteer applications are waiting for review."
+                </p>
+            }
+            .into_any()
+        } else {
+            let cards = pending
+                .into_iter()
+                .map(|volunteer| {
+                    view! {
+                        <ApplicationCard volunteer=volunteer reload=reload is_site_admin=is_site_admin />
+                    }
+                    .into_any()
+                })
+                .collect_view();
+            view! { <div class="space-y-3">{cards}</div> }.into_any()
+        };
+
         view! {
-            <div class="mb-6 rounded-xl border border-slate-800 bg-slate-900 p-5">
+            <section class="rounded-xl border border-slate-800 bg-slate-900 p-5">
                 <div class="mb-3 flex items-center gap-2">
-                    <h2 class="text-base font-semibold text-slate-100">
-                        "Pending volunteer requests"
-                    </h2>
+                    <h2 class="text-base font-semibold text-slate-100">"Volunteer applications"</h2>
                     <span class="inline-flex min-w-5 items-center justify-center rounded-full bg-primary-500 px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-white">
                         {count}
                     </span>
                 </div>
                 <p class="mb-4 text-xs text-slate-500">
-                    "People who accepted the volunteer agreement and are waiting to be approved. Approving grants them the Volunteer role; either decision emails them."
+                    {if is_site_admin {
+                        "People who accepted the volunteer agreement and are waiting for a role decision. Approving grants the Volunteer role and either decision emails the applicant."
+                    } else {
+                        "People who accepted the volunteer agreement and are waiting for a site-admin decision. Operations admins can inspect this queue read-only."
+                    }}
                 </p>
-                <div class="space-y-3">{cards}</div>
-            </div>
+                {body}
+            </section>
         }
         .into_any()
     }
@@ -228,7 +263,11 @@ fn PendingApplications(#[prop(into)] active: Signal<bool>, reload: RwSignal<u32>
 
 /// One pending application, with its approve/deny controls.
 #[component]
-fn ApplicationCard(volunteer: Volunteer, reload: RwSignal<u32>) -> impl IntoView {
+fn ApplicationCard(
+    volunteer: Volunteer,
+    reload: RwSignal<u32>,
+    is_site_admin: bool,
+) -> impl IntoView {
     let state = expect_context::<AppState>();
     let user_id = StoredValue::new(volunteer.id.clone());
     let name = volunteer.full_name();
@@ -238,6 +277,8 @@ fn ApplicationCard(volunteer: Volunteer, reload: RwSignal<u32>) -> impl IntoView
     let note = RwSignal::new(String::new());
     let deciding = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
+    let note_id = StoredValue::new(format!("volunteer-application-note-{}", volunteer.id));
+    let contact_href = format!("mailto:{email}");
 
     let decide = move |approve: bool| {
         if deciding.get_untracked() {
@@ -265,7 +306,12 @@ fn ApplicationCard(volunteer: Volunteer, reload: RwSignal<u32>) -> impl IntoView
             <div class="flex flex-wrap items-start justify-between gap-3">
                 <div class="min-w-0">
                     <ProfileLink user_id=volunteer.id name=name />
-                    <p class="truncate text-xs text-slate-500">{email}</p>
+                    <a
+                        href=contact_href
+                        class="mt-1 inline-flex max-w-full truncate text-xs font-medium text-primary-300 underline decoration-dotted underline-offset-2 hover:text-primary-200 hover:decoration-solid"
+                    >
+                        {email.clone()}
+                    </a>
                     <p class="mt-1 text-xs text-slate-500">"Agreement accepted " {agreed_at}</p>
                 </div>
                 <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/30">
@@ -274,7 +320,10 @@ fn ApplicationCard(volunteer: Volunteer, reload: RwSignal<u32>) -> impl IntoView
             </div>
 
             <Show when=move || error.get().is_some()>
-                <p class="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+                <p
+                    class="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+                    role="alert"
+                >
                     {move || error.get().unwrap_or_default()}
                 </p>
             </Show>
@@ -295,29 +344,52 @@ fn ApplicationCard(volunteer: Volunteer, reload: RwSignal<u32>) -> impl IntoView
                     }
                 })}
 
-            <div class="mt-3 flex flex-wrap items-center gap-2">
-                    <input
-                        class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500"
-                        placeholder="Decision note (optional, included in the email)"
-                        maxlength="1000"
-                        prop:value=move || note.get()
-                        on:input=move |event| note.set(event_target_value(&event))
-                    />
-                    <button
-                        on:click=move |_| decide(true)
-                        prop:disabled=move || deciding.get()
-                        class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
-                    >
-                        "Approve"
-                    </button>
-                    <button
-                        on:click=move |_| decide(false)
-                        prop:disabled=move || deciding.get()
-                        class="rounded-lg border border-rose-500/40 px-3 py-1.5 text-sm font-medium text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
-                    >
-                    "Deny"
-                </button>
-            </div>
+            <Show
+                when=move || is_site_admin
+                fallback=|| view! {
+                    <p class="mt-3 text-xs text-slate-500">
+                        "Only site admins can approve or deny volunteer applications."
+                    </p>
+                }
+            >
+                <div class="mt-3 space-y-3">
+                    <div>
+                        <label
+                            class="mb-1 block text-xs font-medium text-slate-300"
+                            for=note_id.get_value()
+                        >
+                            "Decision note"
+                        </label>
+                        <input
+                            id=note_id.get_value()
+                            class="min-w-0 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500"
+                            placeholder="Optional context included in the email"
+                            maxlength="1000"
+                            prop:disabled=move || deciding.get()
+                            prop:value=move || note.get()
+                            on:input=move |event| note.set(event_target_value(&event))
+                        />
+                    </div>
+                    <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <button
+                            type="button"
+                            on:click=move |_| decide(true)
+                            prop:disabled=move || deciding.get()
+                            class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                        >
+                            "Approve"
+                        </button>
+                        <button
+                            type="button"
+                            on:click=move |_| decide(false)
+                            prop:disabled=move || deciding.get()
+                            class="rounded-lg border border-rose-500/40 px-3 py-1.5 text-sm font-medium text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
+                        >
+                            "Deny"
+                        </button>
+                    </div>
+                </div>
+            </Show>
         </div>
     }
 }

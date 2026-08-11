@@ -4,7 +4,10 @@ use leptos_router::components::{Redirect, Route, Router, Routes, A};
 use leptos_router::path;
 
 use crate::pages::{
-    admin::AdminDashboardPage,
+    admin::{
+        AdminCaseDetailPage, AdminCasesPage, AdminDashboardPage, AdminUserDetailPage,
+        AdminUsersPage,
+    },
     case_signup::{CaseSignupDetailsPage, CaseSignupTermsPage},
     cases::{CaseHomePage, NewCasePage},
     forgot_password::ForgotPasswordPage,
@@ -127,6 +130,10 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/volunteer-agreement") view=VolunteerAgreementPage />
                 <Route path=path!("/profile/:id") view=ProfilePage />
                 <Route path=path!("/admin") view=AdminDashboardPage />
+                <Route path=path!("/admin/cases") view=AdminCasesPage />
+                <Route path=path!("/admin/cases/:id") view=AdminCaseDetailPage />
+                <Route path=path!("/admin/users") view=AdminUsersPage />
+                <Route path=path!("/admin/users/:id") view=AdminUserDetailPage />
             </Routes>
         </Router>
     }

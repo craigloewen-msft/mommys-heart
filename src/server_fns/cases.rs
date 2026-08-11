@@ -280,6 +280,19 @@ pub async fn admin_cases_by_ids(ids: Vec<String>) -> Result<Vec<CaseSummary>, Se
         .map_err(ServerFnError::new)
 }
 
+/// One case summary for an admin detail route, resolved by primary key.
+#[server(prefix = "/api")]
+pub async fn admin_case_summary(case_id: String) -> Result<Option<CaseSummary>, ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+    cases::admin_summary(case_id.trim(), &user.id)
+        .await
+        .map_err(ServerFnError::new)
+}
+
 /// One page of all cases for the admin directory, with accurate totals and a
 /// search over case id, case name, and owner name.
 #[server(prefix = "/api")]

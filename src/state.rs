@@ -21,7 +21,8 @@ use crate::server_fns::{auth, err_text};
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppBadges {
     pub unread: Vec<ChannelUnread>,
-    pub admin_requests_pending: i64,
+    pub admin_case_requests_pending: i64,
+    pub admin_role_requests_pending: i64,
     pub cases_pending_review: i64,
     pub volunteer_requests_pending: i64,
 }
@@ -38,10 +39,25 @@ pub async fn load_app_badges() -> Result<AppBadges, ServerFnError> {
     let unread = channel_notifications::unread_for_user(&user.id)
         .await
         .map_err(ServerFnError::new)?;
-    let admin_requests_pending = if user.role.is_site_admin() {
-        admin_requests::pending_count()
-            .await
-            .map_err(ServerFnError::new)?
+    let admin_case_requests_pending = if user.role.has_operations_admin_permissions() {
+        admin_requests::active_count_by_kind(
+            &user.id,
+            user.role.is_site_admin(),
+            crate::server_fns::admin_requests::AdminRequestKind::CaseCapabilities,
+        )
+        .await
+        .map_err(ServerFnError::new)?
+    } else {
+        0
+    };
+    let admin_role_requests_pending = if user.role.has_operations_admin_permissions() {
+        admin_requests::active_count_by_kind(
+            &user.id,
+            user.role.is_site_admin(),
+            crate::server_fns::admin_requests::AdminRequestKind::Role,
+        )
+        .await
+        .map_err(ServerFnError::new)?
     } else {
         0
     };
@@ -54,8 +70,8 @@ pub async fn load_app_badges() -> Result<AppBadges, ServerFnError> {
         0
     };
 
-    // Site admins only, matching who may see and decide the applications.
-    let volunteer_requests_pending = if user.role.is_site_admin() {
+    // Every admin can inspect the queue; only site admins may decide it.
+    let volunteer_requests_pending = if user.role.has_operations_admin_permissions() {
         volunteers::pending_count()
             .await
             .map_err(ServerFnError::new)?
@@ -65,7 +81,8 @@ pub async fn load_app_badges() -> Result<AppBadges, ServerFnError> {
 
     Ok(AppBadges {
         unread,
-        admin_requests_pending,
+        admin_case_requests_pending,
+        admin_role_requests_pending,
         cases_pending_review,
         volunteer_requests_pending,
     })
@@ -105,7 +122,8 @@ pub struct AppState {
     pub current_user_summary: RwSignal<Option<UserSummary>>,
     pub auth_resolved: RwSignal<bool>,
     pub unread: RwSignal<Vec<ChannelUnread>>,
-    pub admin_request_pending: RwSignal<i64>,
+    pub admin_case_request_pending: RwSignal<i64>,
+    pub admin_role_request_pending: RwSignal<i64>,
     /// Cases waiting for an admin accept/decline; drives the count badges.
     pub cases_pending_review: RwSignal<i64>,
     /// Volunteer applications waiting on a decision.
@@ -124,7 +142,8 @@ impl AppState {
             current_user_summary: RwSignal::new(None),
             auth_resolved: RwSignal::new(false),
             unread: RwSignal::new(Vec::new()),
-            admin_request_pending: RwSignal::new(0),
+            admin_case_request_pending: RwSignal::new(0),
+            admin_role_request_pending: RwSignal::new(0),
             cases_pending_review: RwSignal::new(0),
             volunteer_requests_pending: RwSignal::new(0),
         }
@@ -180,8 +199,10 @@ impl AppState {
         spawn_local(async move {
             if let Ok(badges) = load_app_badges().await {
                 self.unread.set(badges.unread);
-                self.admin_request_pending
-                    .set(badges.admin_requests_pending);
+                self.admin_case_request_pending
+                    .set(badges.admin_case_requests_pending);
+                self.admin_role_request_pending
+                    .set(badges.admin_role_requests_pending);
                 self.cases_pending_review.set(badges.cases_pending_review);
                 self.volunteer_requests_pending
                     .set(badges.volunteer_requests_pending);
@@ -285,7 +306,8 @@ impl AppState {
     pub fn logout(self) {
         self.current_user_summary.set(None);
         self.unread.set(Vec::new());
-        self.admin_request_pending.set(0);
+        self.admin_case_request_pending.set(0);
+        self.admin_role_request_pending.set(0);
         self.cases_pending_review.set(0);
         self.volunteer_requests_pending.set(0);
         spawn_local(async move {

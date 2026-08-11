@@ -427,6 +427,8 @@ pub async fn decide(
     note: &str,
 ) -> Result<(), Error> {
     let mut tx = pool().begin().await?;
+    // Role changes take this lock before any user/volunteer row lock.
+    users::lock_role_changes_in(&mut tx).await?;
 
     let status: Option<String> =
         sqlx::query_scalar("SELECT status FROM volunteers WHERE user_id = $1 FOR UPDATE")

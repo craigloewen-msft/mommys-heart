@@ -10,7 +10,7 @@ use crate::server_fns::pagination::Page;
 use crate::server_fns::users::AccountRole;
 
 #[cfg(feature = "ssr")]
-const MAX_HISTORY_PAGE: i64 = 20;
+const MAX_HISTORY_PAGE: i64 = 1_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -20,11 +20,24 @@ pub enum AdminRequestKind {
 }
 
 impl AdminRequestKind {
+    pub const ALL: [Self; 2] = [Self::Role, Self::CaseCapabilities];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Role => "Role change",
             Self::CaseCapabilities => "Case permissions",
         }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Role => "role",
+            Self::CaseCapabilities => "case_capabilities",
+        }
+    }
+
+    pub fn from_slug(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.slug() == value)
     }
 }
 
@@ -116,6 +129,23 @@ pub async fn list_active_admin_requests() -> Result<Vec<AdminRequest>, ServerFnE
         .map_err(ServerFnError::new)
 }
 
+/// List pending requests of the requested kind visible to the caller. Site
+/// admins see the approval queue; operations admins see only requests they
+/// filed.
+#[server(prefix = "/api")]
+pub async fn list_active_admin_requests_by_kind(
+    kind: AdminRequestKind,
+) -> Result<Vec<AdminRequest>, ServerFnError> {
+    use crate::server::db::admin_requests;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let actor = require_user().await?;
+    require_operations_admin(&actor)?;
+    admin_requests::list_active_by_kind(&actor.id, actor.role.is_site_admin(), kind)
+        .await
+        .map_err(ServerFnError::new)
+}
+
 /// List resolved requests visible to the caller using the shared pagination
 /// envelope. Site admins see all history; operations admins see their own.
 #[server(prefix = "/api")]
@@ -138,6 +168,31 @@ pub async fn list_admin_request_history(
     .map_err(ServerFnError::new)
 }
 
+/// List resolved requests of the requested kind visible to the caller using
+/// the shared pagination envelope. Site admins see all history; operations
+/// admins see their own.
+#[server(prefix = "/api")]
+pub async fn list_admin_request_history_by_kind(
+    kind: AdminRequestKind,
+    offset: i64,
+    limit: i64,
+) -> Result<Page<AdminRequest>, ServerFnError> {
+    use crate::server::db::admin_requests;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let actor = require_user().await?;
+    require_operations_admin(&actor)?;
+    admin_requests::history_page_by_kind(
+        &actor.id,
+        actor.role.is_site_admin(),
+        kind,
+        offset.max(0),
+        limit.clamp(1, MAX_HISTORY_PAGE),
+    )
+    .await
+    .map_err(ServerFnError::new)
+}
+
 /// Number of requests currently waiting for site-admin review.
 #[server(prefix = "/api")]
 pub async fn pending_admin_request_count() -> Result<i64, ServerFnError> {
@@ -147,6 +202,21 @@ pub async fn pending_admin_request_count() -> Result<i64, ServerFnError> {
     let actor = require_user().await?;
     require_site_admin(&actor)?;
     admin_requests::pending_count()
+        .await
+        .map_err(ServerFnError::new)
+}
+
+/// Number of requests of one kind currently waiting for site-admin review.
+#[server(prefix = "/api")]
+pub async fn pending_admin_request_count_by_kind(
+    kind: AdminRequestKind,
+) -> Result<i64, ServerFnError> {
+    use crate::server::db::admin_requests;
+    use crate::server::permissions::{require_site_admin, require_user};
+
+    let actor = require_user().await?;
+    require_site_admin(&actor)?;
+    admin_requests::pending_count_by_kind(kind)
         .await
         .map_err(ServerFnError::new)
 }

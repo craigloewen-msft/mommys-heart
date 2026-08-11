@@ -53,15 +53,9 @@ impl TryFrom<RequestRow> for AdminRequest {
     fn try_from(row: RequestRow) -> Result<Self, Self::Error> {
         Ok(Self {
             id: row.id,
-            kind: match row.kind.as_str() {
-                "role" => AdminRequestKind::Role,
-                "case_capabilities" => AdminRequestKind::CaseCapabilities,
-                other => {
-                    return Err(Error::InvalidData(format!(
-                        "unknown request kind {other:?}"
-                    )))
-                }
-            },
+            kind: AdminRequestKind::from_slug(&row.kind).ok_or_else(|| {
+                Error::InvalidData(format!("unknown request kind {:?}", row.kind))
+            })?,
             status: match row.status.as_str() {
                 "pending" => AdminRequestStatus::Pending,
                 "approved" => AdminRequestStatus::Approved,
@@ -69,7 +63,7 @@ impl TryFrom<RequestRow> for AdminRequest {
                 other => {
                     return Err(Error::InvalidData(format!(
                         "unknown request status {other:?}"
-                    )))
+                    )));
                 }
             },
             requested_by_id: row.requested_by,
@@ -113,9 +107,18 @@ impl fmt::Display for Error {
             Self::Database(error) => write!(formatter, "{error}"),
             Self::NotFound => write!(formatter, "Request or target not found."),
             Self::AlreadyResolved => write!(formatter, "This request has already been decided."),
-            Self::DuplicatePending => write!(formatter, "A pending request already exists for this change."),
-            Self::NoChange => write!(formatter, "The requested value already matches the current value."),
-            Self::Stale => write!(formatter, "The target changed after this request was filed. Deny it and submit a fresh request."),
+            Self::DuplicatePending => write!(
+                formatter,
+                "A pending request already exists for this change."
+            ),
+            Self::NoChange => write!(
+                formatter,
+                "The requested value already matches the current value."
+            ),
+            Self::Stale => write!(
+                formatter,
+                "The target changed after this request was filed. Deny it and submit a fresh request."
+            ),
             Self::InvalidData(message) => formatter.write_str(message),
         }
     }
@@ -147,6 +150,27 @@ pub async fn list_active(
     sqlx::query_as::<_, RequestRow>(&sql)
         .bind(is_site_admin)
         .bind(requester_id)
+        .fetch_all(pool())
+        .await?
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect()
+}
+
+pub async fn list_active_by_kind(
+    requester_id: &str,
+    is_site_admin: bool,
+    kind: AdminRequestKind,
+) -> Result<Vec<AdminRequest>, Error> {
+    let sql = format!(
+        "{SELECT_REQUEST}
+         WHERE r.status = 'pending' AND r.kind = $3 AND ($1 OR r.requested_by = $2)
+         ORDER BY r.seq DESC"
+    );
+    sqlx::query_as::<_, RequestRow>(&sql)
+        .bind(is_site_admin)
+        .bind(requester_id)
+        .bind(kind.slug())
         .fetch_all(pool())
         .await?
         .into_iter()
@@ -187,12 +211,75 @@ pub async fn history_page(
     Ok(Page { items, total })
 }
 
+pub async fn history_page_by_kind(
+    requester_id: &str,
+    is_site_admin: bool,
+    kind: AdminRequestKind,
+    offset: i64,
+    limit: i64,
+) -> Result<Page<AdminRequest>, Error> {
+    let total = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM admin_requests
+         WHERE status <> 'pending' AND kind = $3 AND ($1 OR requested_by = $2)",
+    )
+    .bind(is_site_admin)
+    .bind(requester_id)
+    .bind(kind.slug())
+    .fetch_one(pool())
+    .await?;
+    let sql = format!(
+        "{SELECT_REQUEST}
+         WHERE r.status <> 'pending' AND r.kind = $3 AND ($1 OR r.requested_by = $2)
+         ORDER BY r.seq DESC
+         LIMIT $4 OFFSET $5"
+    );
+    let items = sqlx::query_as::<_, RequestRow>(&sql)
+        .bind(is_site_admin)
+        .bind(requester_id)
+        .bind(kind.slug())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool())
+        .await?
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Page { items, total })
+}
+
 pub async fn pending_count() -> Result<i64, Error> {
     Ok(
         sqlx::query_scalar("SELECT COUNT(*) FROM admin_requests WHERE status = 'pending'")
             .fetch_one(pool())
             .await?,
     )
+}
+
+pub async fn pending_count_by_kind(kind: AdminRequestKind) -> Result<i64, Error> {
+    Ok(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM admin_requests WHERE status = 'pending' AND kind = $1",
+    )
+    .bind(kind.slug())
+    .fetch_one(pool())
+    .await?)
+}
+
+/// Pending requests of one kind visible to an admin. Site admins see every
+/// request; operations admins see only requests they filed.
+pub async fn active_count_by_kind(
+    requester_id: &str,
+    is_site_admin: bool,
+    kind: AdminRequestKind,
+) -> Result<i64, Error> {
+    Ok(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM admin_requests
+         WHERE status = 'pending' AND kind = $3 AND ($1 OR requested_by = $2)",
+    )
+    .bind(is_site_admin)
+    .bind(requester_id)
+    .bind(kind.slug())
+    .fetch_one(pool())
+    .await?)
 }
 
 pub async fn create_role(
@@ -314,12 +401,15 @@ pub async fn decide(
     note: &str,
 ) -> Result<DecisionOutcome, Error> {
     let mut tx = pool().begin().await?;
-    let target_id: Option<String> =
-        sqlx::query_scalar("SELECT target_user_id FROM admin_requests WHERE id = $1")
+    let target: Option<(String, String)> =
+        sqlx::query_as("SELECT target_user_id, kind FROM admin_requests WHERE id = $1")
             .bind(request_id)
             .fetch_optional(&mut *tx)
             .await?;
-    let target_id = target_id.ok_or(Error::NotFound)?;
+    let (target_id, initial_kind) = target.ok_or(Error::NotFound)?;
+    if initial_kind == AdminRequestKind::Role.slug() {
+        users::lock_role_changes_in(&mut tx).await?;
+    }
     let target_exists: Option<i32> =
         sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
             .bind(&target_id)
@@ -434,7 +524,7 @@ pub async fn decide(
             other => {
                 return Err(Error::InvalidData(format!(
                     "unknown request kind {other:?}"
-                )))
+                )));
             }
         }
     }
