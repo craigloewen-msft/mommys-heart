@@ -1,5 +1,6 @@
 //! The unified append-only audit log shared by users and cases.
 
+use crate::helpers::visibility::Visibility;
 use crate::server::db::{ids, now_stamp, pool};
 use crate::server_fns::audit::ChangeLogEntry;
 use crate::server_fns::pagination::Page;
@@ -49,6 +50,8 @@ impl From<AuditRow> for ChangeLogEntry {
     }
 }
 
+// REQ-AUD-001..004: callers choose whether restricted metadata is visible;
+// substantive message and note content never belongs in this table.
 pub async fn page(
     entity: Entity,
     entity_id: &str,
@@ -56,6 +59,7 @@ pub async fn page(
     end: &str,
     offset: i64,
     limit: i64,
+    include_restricted: bool,
 ) -> Result<Page<ChangeLogEntry>, sqlx::Error> {
     let pool = pool();
 
@@ -64,12 +68,15 @@ pub async fn page(
          FROM audit_log
          WHERE entity_type = $1 AND entity_id = $2
            AND ($3 = '' OR left(at, 10) >= $3)
-           AND ($4 = '' OR left(at, 10) <= $4)",
+           AND ($4 = '' OR left(at, 10) <= $4)
+           AND ($5 OR visibility <> $6)",
     )
     .bind(entity.as_str())
     .bind(entity_id)
     .bind(start)
     .bind(end)
+    .bind(include_restricted)
+    .bind(Visibility::VolunteerOnly.slug())
     .fetch_one(pool)
     .await?;
 
@@ -79,13 +86,16 @@ pub async fn page(
          WHERE entity_type = $1 AND entity_id = $2
            AND ($3 = '' OR left(at, 10) >= $3)
            AND ($4 = '' OR left(at, 10) <= $4)
+           AND ($5 OR visibility <> $6)
          ORDER BY seq DESC
-         LIMIT $5 OFFSET $6",
+         LIMIT $7 OFFSET $8",
     )
     .bind(entity.as_str())
     .bind(entity_id)
     .bind(start)
     .bind(end)
+    .bind(include_restricted)
+    .bind(Visibility::VolunteerOnly.slug())
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)
@@ -108,6 +118,30 @@ pub async fn record(
     old_value: &str,
     new_value: &str,
 ) -> Result<(), sqlx::Error> {
+    record_with_visibility(
+        pool,
+        entity,
+        entity_id,
+        actor,
+        field,
+        old_value,
+        new_value,
+        Visibility::Shared,
+    )
+    .await
+}
+
+/// Append an audit entry with explicit audience visibility.
+pub async fn record_with_visibility(
+    pool: &sqlx::PgPool,
+    entity: Entity,
+    entity_id: &str,
+    actor: &str,
+    field: &str,
+    old_value: &str,
+    new_value: &str,
+    visibility: Visibility,
+) -> Result<(), sqlx::Error> {
     let mut connection = pool.acquire().await?;
     record_with_connection(
         &mut connection,
@@ -117,6 +151,7 @@ pub async fn record(
         field,
         old_value,
         new_value,
+        visibility,
     )
     .await
 }
@@ -132,6 +167,30 @@ pub async fn record_in_transaction(
     old_value: &str,
     new_value: &str,
 ) -> Result<(), sqlx::Error> {
+    record_in_transaction_with_visibility(
+        transaction,
+        entity,
+        entity_id,
+        actor,
+        field,
+        old_value,
+        new_value,
+        Visibility::Shared,
+    )
+    .await
+}
+
+/// Append an explicitly visible audit entry inside an existing transaction.
+pub async fn record_in_transaction_with_visibility(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entity: Entity,
+    entity_id: &str,
+    actor: &str,
+    field: &str,
+    old_value: &str,
+    new_value: &str,
+    visibility: Visibility,
+) -> Result<(), sqlx::Error> {
     record_with_connection(
         &mut **transaction,
         entity,
@@ -140,6 +199,7 @@ pub async fn record_in_transaction(
         field,
         old_value,
         new_value,
+        visibility,
     )
     .await
 }
@@ -152,11 +212,13 @@ async fn record_with_connection(
     field: &str,
     old_value: &str,
     new_value: &str,
+    visibility: Visibility,
 ) -> Result<(), sqlx::Error> {
     let id = ids::next(&mut *connection, "cl").await?;
     sqlx::query(
-        "INSERT INTO audit_log (id, entity_type, entity_id, actor, field, old_value, new_value, at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "INSERT INTO audit_log
+            (id, entity_type, entity_id, actor, field, old_value, new_value, at, visibility)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&id)
     .bind(entity.as_str())
@@ -166,6 +228,7 @@ async fn record_with_connection(
     .bind(old_value)
     .bind(new_value)
     .bind(now_stamp())
+    .bind(visibility.slug())
     .execute(connection)
     .await?;
     Ok(())

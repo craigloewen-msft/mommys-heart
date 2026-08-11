@@ -1,12 +1,12 @@
 //! Cases, sub properties of evidence and case_properties are their own files
 
 use crate::server::db::{
-    audit, capabilities, case_folders, case_properties, channels, evidence, ids, now_stamp, pool,
-    terms_acceptances, users,
+    audit, capabilities, case_folders, case_notes, case_properties, channels, evidence, ids,
+    now_stamp, pool, terms_acceptances, users,
 };
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
-use crate::server_fns::cases::{Case, CaseNote, CaseStatus, CaseSummary};
+use crate::server_fns::cases::{Case, CaseStatus, CaseSummary};
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::pagination::Page;
 use crate::server_fns::users::AccountRole;
@@ -18,14 +18,6 @@ struct CaseRow {
     status: String,
     review_reason: String,
     owner_id: String,
-}
-
-#[derive(sqlx::FromRow)]
-struct NoteRow {
-    id: String,
-    author: String,
-    body: String,
-    created_at: String,
 }
 
 /// Flat row shape for the sparse [`CaseSummary`] projection (header fields plus
@@ -370,26 +362,9 @@ pub async fn get(
         return Ok(None);
     };
 
-    // Newest 10 notes: fetched newest-first (so only the 10 most recent are
-    // kept), then reversed to oldest-first so they render chronologically with
-    // the most recent last.
-    let note_rows = sqlx::query_as::<_, NoteRow>(
-        "SELECT id, author, body, created_at FROM case_notes
-         WHERE case_id = $1 ORDER BY seq DESC LIMIT 10",
-    )
-    .bind(id)
-    .fetch_all(pool())
-    .await?;
-    let notes = note_rows
-        .into_iter()
-        .rev()
-        .map(|r| CaseNote {
-            id: r.id,
-            author: r.author,
-            body: r.body,
-            created_at: r.created_at,
-        })
-        .collect();
+    // Keep the legacy case-detail field limited to migrated shared free-text
+    // notes. Structured staff-only notes are loaded through `case_notes` APIs.
+    let notes = case_notes::legacy_notes_for_case(id).await?;
 
     let evidence = evidence::get_case_evidence(id, has_volunteer_access).await?;
     let folders = case_folders::list(id, has_volunteer_access).await?;
@@ -421,16 +396,14 @@ pub async fn get(
     }))
 }
 
-/// Create a case owned by `owner_id` with an initial status, cleaned property
-/// set, and an optional first note. Grants the owner full capabilities. Returns
-/// the new case id.
+/// Create a case owned by `owner_id` with an initial status and cleaned property
+/// set. Grants the owner full capabilities and returns the new case id.
 pub async fn create(
     owner_id: &str,
     owner_name: &str,
     name: &str,
     status: CaseStatus,
     initial_properties: Vec<CaseProperty>,
-    first_note: Option<String>,
 ) -> Result<String, sqlx::Error> {
     let id = ids::next(pool(), "c").await?;
 
@@ -457,23 +430,6 @@ pub async fn create(
     case_properties::add_for_new_case(&mut tx, &id, case_properties::clean(initial_properties))
         .await?;
 
-    if let Some(body) = first_note {
-        let body = body.trim().to_string();
-        if !body.is_empty() {
-            let note_id = ids::next(&mut *tx, "n").await?;
-            sqlx::query(
-                "INSERT INTO case_notes (id, case_id, author, body, created_at)
-                 VALUES ($1, $2, $3, $4, $5)",
-            )
-            .bind(&note_id)
-            .bind(&id)
-            .bind(owner_name)
-            .bind(&body)
-            .bind(now_stamp())
-            .execute(&mut *tx)
-            .await?;
-        }
-    }
     users::assign_capabilities_in(&mut tx, owner_id, &id, &CaseCapability::ALL, owner_name).await?;
     tx.commit().await?;
     Ok(id)
@@ -656,20 +612,4 @@ async fn user_name(user_id: &str) -> Result<String, sqlx::Error> {
     Ok(row
         .map(|(f, l)| format!("{f} {l}").trim().to_string())
         .unwrap_or_else(|| user_id.to_string()))
-}
-
-/// Append a note to a case.
-pub async fn add_note(case_id: &str, author: &str, body: &str) -> Result<(), sqlx::Error> {
-    let id = ids::next(pool(), "n").await?;
-    sqlx::query(
-        "INSERT INTO case_notes (id, case_id, author, body, created_at) VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(&id)
-    .bind(case_id)
-    .bind(author)
-    .bind(body)
-    .bind(now_stamp())
-    .execute(pool())
-    .await?;
-    Ok(())
 }

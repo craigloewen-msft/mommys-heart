@@ -115,6 +115,38 @@ pub fn case_event(
     }
 }
 
+/// Build the content-free notice for secure case messaging.
+pub fn secure_message_notice(brand: &Brand) -> RenderedEmail {
+    let theme = theme(NotificationKind::NewMessage);
+    let subject = format!("[{}] New secure message", brand.name);
+    let callout = "A new secure message is waiting for you in the application.";
+    let cta_href = cta_url(brand, "/inbox");
+    let footer = notification_footer(brand);
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: "A new secure message is waiting for you.",
+            eyebrow: "Secure message",
+            heading: "New secure message",
+            callout_html: callout,
+            cta: cta_href.as_deref().map(|u| (u, "Sign in")),
+            body_note: &format!("Sign in to {} to read and reply securely.", brand.name),
+            footer_html: &footer,
+        },
+    );
+    let plain = plain(
+        brand,
+        "A new secure message is waiting for you in the application.",
+        "/inbox",
+    );
+    RenderedEmail {
+        subject,
+        html,
+        plain_text: plain,
+    }
+}
+
 /// Build the email telling a client their case was accepted or declined.
 pub fn case_decision(
     brand: &Brand,
@@ -896,7 +928,9 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
         .filter(|kind| {
             !matches!(
                 **kind,
-                NotificationKind::Assigned | NotificationKind::AdminRequests
+                NotificationKind::NewMessage
+                    | NotificationKind::Assigned
+                    | NotificationKind::AdminRequests
             )
         })
         .map(|kind| {
@@ -909,6 +943,11 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
         })
         .collect();
 
+    samples.push(Sample {
+        key: NotificationKind::NewMessage.slug().to_string(),
+        label: NotificationKind::NewMessage.label().to_string(),
+        email: secure_message_notice(brand),
+    });
     samples.push(Sample {
         key: NotificationKind::Assigned.slug().to_string(),
         label: NotificationKind::Assigned.label().to_string(),
@@ -967,9 +1006,7 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
 /// preview/test samples.
 fn sample_detail(kind: NotificationKind) -> &'static str {
     match kind {
-        NotificationKind::NewMessage => {
-            "posted a new message: \u{201C}I've uploaded the latest court filing\u{2026}\u{201D}"
-        }
+        NotificationKind::NewMessage => "posted a new secure message",
         NotificationKind::CaseData => "changed the status to \u{201C}In review\u{201D}",
         NotificationKind::NoteAdded => "added a note",
         NotificationKind::EvidenceChanged => "added evidence \u{201C}hearing-notes.pdf\u{201D}",

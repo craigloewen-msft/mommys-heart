@@ -12,6 +12,7 @@ use crate::components::profile_link::ProfileLink;
 use crate::helpers::format::human_size;
 use crate::helpers::sections;
 use crate::helpers::visibility::Visibility;
+use crate::pages::case_notes::CaseNotesPanel;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_folders::{self, CaseFolder};
@@ -471,7 +472,6 @@ pub fn NewCasePage() -> impl IntoView {
     let name = RwSignal::new(String::new());
     let status = RwSignal::new(CaseStatus::Open.slug().to_string());
     let intake = CaseIntakeState::new();
-    let first_note = RwSignal::new(String::new());
     let error = RwSignal::new(String::new());
 
     let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
@@ -489,15 +489,9 @@ pub fn NewCasePage() -> impl IntoView {
                     error.set(message);
                     return;
                 }
-                let note = first_note.get_untracked();
-                let note = if note.trim().is_empty() {
-                    None
-                } else {
-                    Some(note)
-                };
                 let name_val = name.get_untracked();
                 spawn_local(async move {
-                    match cases::create_case(name_val, status, intake, note).await {
+                    match cases::create_case(name_val, status, intake).await {
                         Ok(_) => navigate("/cases", Default::default()),
                         Err(e) => error.set(err_text(e)),
                     }
@@ -557,16 +551,6 @@ pub fn NewCasePage() -> impl IntoView {
                             <p class="mt-1 text-sm text-slate-400">"Fields marked with * are required."</p>
                         </div>
                         <CaseIntakeFields state=intake />
-                    </div>
-                    <div>
-                        <label class=label_class>"Initial note"</label>
-                        <textarea
-                            class=format!("mt-1 {input_class}")
-                            rows="3"
-                            placeholder="Intake summary, next steps, etc."
-                            prop:value=move || first_note.get()
-                            on:input=move |ev| first_note.set(event_target_value(&ev))
-                        ></textarea>
                     </div>
                     <Show when=move || !error.get().is_empty()>
                         <p class="text-sm text-rose-300">{move || error.get()}</p>
@@ -842,22 +826,6 @@ pub fn CaseDetail(
         });
     };
 
-    // --- note form ---
-    let note_body = RwSignal::new(String::new());
-    let add_note = {
-        let case_id = case_id.clone();
-        move |_| {
-            let case_id = case_id.clone();
-            let body = note_body.get_untracked();
-            spawn_local(async move {
-                if cases::add_case_note(case_id, body).await.is_ok() {
-                    note_body.set(String::new());
-                    reload.update(|n| *n += 1);
-                }
-            });
-        }
-    };
-
     let notes_view = {
         move || {
             let notes = live_case().map(|c| c.notes).unwrap_or_default();
@@ -869,10 +837,26 @@ pub fn CaseDetail(
                 .map(|n| {
                     view! {
                         <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                            <div class="mb-2 flex flex-wrap gap-2">
+                                <span class="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-300 ring-1 ring-sky-500/30">"Legacy"</span>
+                                <span class="rounded-full bg-slate-700/50 px-2 py-0.5 text-xs text-slate-300">"Shared historical note"</span>
+                            </div>
                             <p class="text-sm text-slate-200">{n.body}</p>
                             <p class="mt-1 text-xs text-slate-500">
                                 {n.author} " · " {n.created_at}
                             </p>
+                            {n.addenda.into_iter().map(|addendum| view! {
+                                <div class="mt-3 border-l-2 border-sky-500/40 pl-3">
+                                    <p class="text-xs font-semibold uppercase tracking-wide text-sky-300">"Signed addendum"</p>
+                                    <p class="mt-1 text-sm text-slate-200">{addendum.information}</p>
+                                    <p class="mt-1 text-xs text-slate-500">
+                                        "Reason: " {addendum.reason} " · " {addendum.author} " · " {addendum.signed_at}
+                                    </p>
+                                    {(!addendum.follow_up.is_empty()).then(|| view! {
+                                        <p class="mt-1 text-xs text-slate-400">"Follow-up: " {addendum.follow_up}</p>
+                                    })}
+                                </div>
+                            }).collect_view()}
                         </div>
                     }
                     .into_any()
@@ -2078,32 +2062,18 @@ pub fn CaseDetail(
 
             {case_information}
 
-            // Notes
-            <div class=panel>
-                <h3 class="text-sm font-semibold text-slate-200">"Notes"</h3>
-                <div class="mt-3 space-y-2">{notes_view}</div>
-                {if can_note {
-                    view! {
-                        <div class="mt-3 flex gap-2">
-                            <input
-                                class=input_class
-                                placeholder="Add a note"
-                                prop:value=move || note_body.get()
-                                on:input=move |ev| note_body.set(event_target_value(&ev))
-                            />
-                            <button
-                                on:click=add_note
-                                class="shrink-0 rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600"
-                            >
-                                "Add"
-                            </button>
-                        </div>
-                    }
-                        .into_any()
-                } else {
-                    ().into_any()
-                }}
-            </div>
+            // Notes: clients retain only legacy shared notes; staff get structured Case Notes.
+            {if is_client {
+                view! {
+                    <div class=panel>
+                        <h3 class="text-sm font-semibold text-slate-200">"Notes"</h3>
+                        <div class="mt-3 space-y-2">{notes_view}</div>
+                    </div>
+                }
+                    .into_any()
+            } else {
+                view! { <CaseNotesPanel case_id=case_sv.get_value() can_add=can_note /> }.into_any()
+            }}
 
             // Audit log
             {if has_operations_admin_permissions {

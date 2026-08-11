@@ -29,6 +29,7 @@ pub mod components {
 
 pub mod pages {
     pub mod admin;
+    pub mod case_notes;
     pub mod case_signup;
     pub mod cases;
     pub mod forgot_password;

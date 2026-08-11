@@ -3,6 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Maximum length accepted by both the chat UI and server validation.
+pub const MAX_MESSAGE_BODY_CHARS: usize = 4_000;
+
 /// A message posted in one of a case's chat channels. Which users may read it
 /// is decided entirely by its channel: standard channels are shared with
 /// everyone who can view the case, while the volunteer-only channel is
@@ -21,4 +24,11 @@ pub struct Message {
     pub body: String,
     /// Human-readable timestamp (mock).
     pub sent_at: String,
+}
+
+/// A CSV transcript returned by the authorized export server function.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MessageTranscriptExport {
+    pub filename: String,
+    pub csv: String,
 }

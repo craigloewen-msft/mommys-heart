@@ -399,3 +399,29 @@ behavior agree; historical data is preserved; audience boundaries withstand
 direct-call testing; messaging and official records cannot be silently erased;
 and the documentation clearly distinguishes delivered capability from future
 roadmap work.
+
+## Outcome
+
+Implemented the bounded case-management MVP as planned:
+
+- Case Chat now preserves immutable message history, archives channels instead of
+  deleting them, records atomic recipient/audit metadata and write-once first
+  reads, sends content-free email notices, throttles and length-limits sends, and
+  provides an audited operations-admin CSV transcript export.
+- Structured internal Case Notes now support incomplete drafts, server-validated
+  atomic finalization, authenticated typed-name attestation, discarded
+  tombstones, immutable signed addenda, legacy shared-note preservation, and
+  case-scoped pagination and filters.
+- Client and volunteer-only audiences are enforced on the server and in
+  repository queries. Clients cannot discover structured notes or the private
+  team channel, while shared legacy notes and their inherited addenda remain
+  visible as historical records.
+- `docs/case-management/` now holds the normative requirements, Allium lifecycle
+  specifications, shared ADRs, executive status, a complete 19-section roadmap,
+  and seven future-feature briefs.
+
+Verification completed with fresh PostgreSQL migration application, direct
+immutability/addendum-trigger checks, Allium validation, SSR and hydration
+compilation, a full `etc/dev.sh build`, desktop/mobile browser checks, client and
+administrator authorization scenarios, secure message persistence/audit
+inspection, and browser console review.

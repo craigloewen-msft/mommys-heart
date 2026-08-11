@@ -20,6 +20,7 @@ pub mod audit;
 pub mod auth;
 pub mod capabilities;
 pub mod case_folders;
+pub mod case_notes;
 pub mod case_properties;
 pub mod cases;
 pub mod channel_notifications;

@@ -13,6 +13,7 @@ pub mod chat;
 pub mod cors;
 pub mod docs;
 pub mod health;
+pub mod message_transcripts;
 pub mod version;
 
 pub use cors::cors_layer;

@@ -1,7 +1,7 @@
 //! Per-case chat **channels**: the named threads a case's chat is split into.
 //!
 //! Every case owns exactly one `volunteer_only` channel (the private staff
-//! back-channel, created with the case and never deletable) plus one or more
+//! back-channel, created with the case and never archivable) plus one or more
 //! `standard` channels, starting with "General".
 //!
 //! Visibility is enforced here as well as in the server-function layer: the
@@ -9,6 +9,7 @@
 //! volunteer-only channel out for client accounts, so a repository call can
 //! never accidentally hand a client the private thread.
 
+use crate::helpers::visibility::Visibility;
 use crate::server::db::{audit, ids, pool};
 use crate::server_fns::channels::{
     Channel, ChannelKind, DEFAULT_CHANNEL_NAME, VOLUNTEER_CHANNEL_NAME,
@@ -21,6 +22,7 @@ struct ChannelRow {
     name: String,
     kind: String,
     message_count: i64,
+    archived: bool,
 }
 
 impl From<ChannelRow> for Channel {
@@ -31,6 +33,7 @@ impl From<ChannelRow> for Channel {
             name: r.name,
             kind: ChannelKind::from_slug(&r.kind).unwrap_or(ChannelKind::Standard),
             message_count: r.message_count.max(0) as usize,
+            archived: r.archived,
         }
     }
 }
@@ -38,7 +41,8 @@ impl From<ChannelRow> for Channel {
 /// The `SELECT` list projecting a `case_channels` row (aliased `ch`) with its
 /// message count. Callers append their own `WHERE`/`ORDER`.
 const CHANNEL_SELECT: &str = "SELECT ch.id, ch.case_id, ch.name, ch.kind,
-        (SELECT COUNT(*) FROM messages m WHERE m.channel_id = ch.id) AS message_count
+        (SELECT COUNT(*) FROM messages m WHERE m.channel_id = ch.id) AS message_count,
+        (ch.state = 'archived') AS archived
  FROM case_channels ch";
 
 /// A single channel by id, or `None` when it does not exist. Deliberately
@@ -96,7 +100,7 @@ pub async fn create(case_id: &str, name: &str, actor: &str) -> Result<Channel, s
     .bind(ChannelKind::Standard.slug())
     .execute(pool())
     .await?;
-    audit::record(
+    audit::record_with_visibility(
         pool(),
         audit::Entity::Case,
         case_id,
@@ -104,6 +108,7 @@ pub async fn create(case_id: &str, name: &str, actor: &str) -> Result<Channel, s
         "message channel",
         "",
         &format!("created \"{name}\""),
+        Visibility::Shared,
     )
     .await?;
     Ok(Channel {
@@ -112,32 +117,49 @@ pub async fn create(case_id: &str, name: &str, actor: &str) -> Result<Channel, s
         name: name.to_string(),
         kind: ChannelKind::Standard,
         message_count: 0,
+        archived: false,
     })
 }
 
-/// Delete a channel (and, via `ON DELETE CASCADE`, its messages), auditing the
-/// change. The volunteer-only channel is protected by the `WHERE kind <> ...`
-/// clause as a second line of defense behind the server-function check.
-pub async fn delete(channel_id: &str, case_id: &str, actor: &str) -> Result<(), sqlx::Error> {
-    let deleted: Option<String> = sqlx::query_scalar(&format!(
-        "DELETE FROM case_channels WHERE id = $1 AND kind <> '{restricted}' RETURNING name",
+/// Archive a standard channel while preserving all messages. The database
+/// trigger refuses archiving the last active shared channel on a live case.
+pub async fn archive(channel_id: &str, case_id: &str, actor: &str) -> Result<(), sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    // Serialize sibling archives so two requests cannot both remove the last active channel.
+    sqlx::query(
+        "SELECT id FROM case_channels
+         WHERE case_id = $1 AND kind = 'standard'
+         ORDER BY id FOR UPDATE",
+    )
+    .bind(case_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let archived: Option<String> = sqlx::query_scalar(&format!(
+        "UPDATE case_channels
+            SET state = 'archived', archived_at = now(), archived_by = $3
+          WHERE id = $1 AND case_id = $2 AND kind <> '{restricted}' AND state = 'active'
+          RETURNING name",
         restricted = ChannelKind::VolunteerOnly.slug()
     ))
     .bind(channel_id)
-    .fetch_optional(pool())
+    .bind(case_id)
+    .bind(actor)
+    .fetch_optional(&mut *tx)
     .await?;
-    if let Some(name) = deleted {
-        audit::record(
-            pool(),
+    if let Some(name) = archived {
+        audit::record_in_transaction_with_visibility(
+            &mut tx,
             audit::Entity::Case,
             case_id,
             actor,
             "message channel",
             &format!("\"{name}\""),
-            "deleted",
+            "archived",
+            Visibility::Shared,
         )
         .await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -155,13 +177,15 @@ pub async fn create_defaults(
     ] {
         let id = ids::next(&mut *conn, "ch").await?;
         sqlx::query(
-            "INSERT INTO case_channels (id, case_id, name, kind, ord) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO case_channels (id, case_id, name, kind, ord, is_permanent)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(&id)
         .bind(case_id)
         .bind(name)
         .bind(kind.slug())
         .bind(ord)
+        .bind(kind == ChannelKind::VolunteerOnly)
         .execute(&mut *conn)
         .await?;
     }

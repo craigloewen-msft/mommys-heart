@@ -29,7 +29,8 @@ pub async fn reseed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // resets the audit_log sequence so ids are reproducible across reseeds.
     sqlx::query(
         "TRUNCATE users, sessions, grants, cases, case_properties, case_notes,
-                  evidence, case_folders, case_channels, messages, case_assignments, audit_log
+                  case_note_addenda, case_note_audit_log, evidence, case_folders,
+                  case_channels, messages, case_assignments, audit_log
          RESTART IDENTITY CASCADE",
     )
     .execute(pool())
@@ -143,8 +144,8 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         for n in &c.notes {
             sqlx::query(
-                "INSERT INTO case_notes (id, case_id, author, body, created_at)
-                 VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO case_notes (id, case_id, author, body, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $5)",
             )
             .bind(&n.id)
             .bind(&c.id)
@@ -252,6 +253,10 @@ async fn advance_id_sequence() -> Result<(), sqlx::Error> {
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM grants),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM cases),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM case_notes),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM case_note_addenda),
+             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0)
+                FROM case_note_audit_log
+                WHERE split_part(id, '-', 2) ~ '^[0-9]+$'),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM evidence),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM case_channels),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM messages),

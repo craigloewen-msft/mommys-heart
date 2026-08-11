@@ -56,6 +56,23 @@ pub async fn record_for_channel_message(
     author_id: &str,
     kind: ChannelKind,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    record_for_channel_message_in(&mut tx, case_id, channel_id, message_id, author_id, kind)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Transactional variant used by message send so unread rows commit atomically
+/// with the message and audit metadata.
+pub async fn record_for_channel_message_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    case_id: &str,
+    channel_id: &str,
+    message_id: &str,
+    author_id: &str,
+    kind: ChannelKind,
+) -> Result<(), sqlx::Error> {
     sqlx::query(&format!(
         "INSERT INTO channel_notifications (user_id, channel_id, case_id, message_id)
          SELECT a.user_id, $2, $1, $3
@@ -73,13 +90,13 @@ pub async fn record_for_channel_message(
     .bind(message_id)
     .bind(author_id)
     .bind(kind == ChannelKind::VolunteerOnly)
-    .execute(pool())
+    .execute(&mut **tx)
     .await?;
     Ok(())
 }
 
-/// Clear a user's unread notifications for a single channel — called when they
-/// open it. Returns the number of rows removed.
+/// Clear a user's unread notifications for a channel. First-read evidence is
+/// written only by the message query that actually serves content.
 pub async fn mark_channel_read(user_id: &str, channel_id: &str) -> Result<u64, sqlx::Error> {
     let result =
         sqlx::query("DELETE FROM channel_notifications WHERE user_id = $1 AND channel_id = $2")
@@ -95,10 +112,19 @@ pub async fn mark_channel_read(user_id: &str, channel_id: &str) -> Result<u64, s
 /// per-channel dots in the case list.
 pub async fn unread_for_user(user_id: &str) -> Result<Vec<ChannelUnread>, sqlx::Error> {
     let rows = sqlx::query_as::<_, UnreadRow>(
-        "SELECT case_id, channel_id, COUNT(*) AS count
-         FROM channel_notifications
-         WHERE user_id = $1
-         GROUP BY case_id, channel_id",
+        "SELECT n.case_id, n.channel_id, COUNT(*) AS count
+         FROM channel_notifications n
+         JOIN case_channels ch ON ch.id = n.channel_id AND ch.case_id = n.case_id
+         JOIN users u ON u.id = n.user_id
+         WHERE n.user_id = $1
+           AND EXISTS (
+               SELECT 1 FROM case_assignments a
+               WHERE a.user_id = n.user_id
+                 AND a.case_id = n.case_id
+                 AND a.capability = 'view_case'
+           )
+           AND (u.role <> 'client' OR ch.kind <> 'volunteer_only')
+         GROUP BY n.case_id, n.channel_id",
     )
     .bind(user_id)
     .fetch_all(pool())

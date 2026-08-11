@@ -8,14 +8,14 @@ use crate::components::profile_link::ProfileLink;
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::cases::{load_case_summaries_for_user, CaseSummary};
 use crate::server_fns::channels::{
-    create_channel, delete_channel, list_channels, normalize_channel_name, Channel,
+    archive_channel, create_channel, list_channels, normalize_channel_name, Channel,
 };
 use crate::server_fns::err_text;
-use crate::server_fns::message::Message;
+use crate::server_fns::message::{Message, MAX_MESSAGE_BODY_CHARS};
 use crate::state::AppState;
 
-/// Case Chat: one chat thread per case. Reading and posting both require the
-/// `SendMessages` capability on the case.
+/// Case Chat: one chat thread per case. Reading requires `ViewCase`; posting
+/// requires `SendMessages` and an active channel.
 #[component]
 pub fn InboxPage() -> impl IntoView {
     let state = expect_context::<AppState>();
@@ -44,10 +44,10 @@ pub fn InboxPage() -> impl IntoView {
     let channel_error = RwSignal::new(String::new());
     // Bumped after saving channel edits to refetch the list.
     let reload = RwSignal::new(0u32);
-    // Edit mode: staged additions/removals that only hit the server on "Save".
+    // Edit mode: staged additions/archives that only hit the server on "Save".
     let editing = RwSignal::new(false);
     let pending_adds = RwSignal::new(Vec::<String>::new());
-    let pending_deletes = RwSignal::new(Vec::<String>::new());
+    let pending_archives = RwSignal::new(Vec::<String>::new());
     let draft = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
 
@@ -83,7 +83,7 @@ pub fn InboxPage() -> impl IntoView {
         if case_changed {
             editing.set(false);
             pending_adds.set(Vec::new());
-            pending_deletes.set(Vec::new());
+            pending_archives.set(Vec::new());
             draft.set(String::new());
             channel_error.set(String::new());
             // Drop the previous case's channels so its list never shows up
@@ -228,7 +228,7 @@ pub fn InboxPage() -> impl IntoView {
                                 error=channel_error
                                 editing=editing
                                 pending_adds=pending_adds
-                                pending_deletes=pending_deletes
+                                pending_archives=pending_archives
                                 draft=draft
                                 busy=busy
                                 reload=reload
@@ -365,7 +365,7 @@ fn ChannelNav(
     error: RwSignal<String>,
     editing: RwSignal<bool>,
     pending_adds: RwSignal<Vec<String>>,
-    pending_deletes: RwSignal<Vec<String>>,
+    pending_archives: RwSignal<Vec<String>>,
     draft: RwSignal<String>,
     busy: RwSignal<bool>,
     reload: RwSignal<u32>,
@@ -375,10 +375,10 @@ fn ChannelNav(
     let case_id = StoredValue::new(case_id);
     let state = expect_context::<AppState>();
 
-    let is_staged_delete = move |id: &str| pending_deletes.get().iter().any(|d| d == id);
+    let is_staged_archive = move |id: &str| pending_archives.get().iter().any(|d| d == id);
 
-    let toggle_delete = move |id: String| {
-        pending_deletes.update(|list| {
+    let toggle_archive = move |id: String| {
+        pending_archives.update(|list| {
             if let Some(pos) = list.iter().position(|d| d == &id) {
                 list.remove(pos);
             } else {
@@ -420,7 +420,7 @@ fn ChannelNav(
     let cancel = move |_| {
         editing.set(false);
         pending_adds.set(Vec::new());
-        pending_deletes.set(Vec::new());
+        pending_archives.set(Vec::new());
         draft.set(String::new());
         error.set(String::new());
     };
@@ -434,8 +434,8 @@ fn ChannelNav(
         }
         let case_id = case_id.get_value();
         let adds = pending_adds.get_untracked();
-        let deletes = pending_deletes.get_untracked();
-        if adds.is_empty() && deletes.is_empty() {
+        let archives = pending_archives.get_untracked();
+        if adds.is_empty() && archives.is_empty() {
             editing.set(false);
             error.set(String::new());
             return;
@@ -443,7 +443,7 @@ fn ChannelNav(
         busy.set(true);
         spawn_local(async move {
             let mut failed_adds = Vec::new();
-            let mut failed_deletes = Vec::new();
+            let mut failed_archives = Vec::new();
             let mut first_error = None::<String>;
 
             for name in adds {
@@ -452,19 +452,15 @@ fn ChannelNav(
                     failed_adds.push(name);
                 }
             }
-            for id in deletes {
-                if let Err(e) = delete_channel(id.clone()).await {
+            for id in archives {
+                if let Err(e) = archive_channel(id.clone()).await {
                     first_error.get_or_insert_with(|| err_text(e));
-                    failed_deletes.push(id);
-                } else if active.get_untracked().as_deref() == Some(id.as_str()) {
-                    // Drop the selection so the refetch falls back to the first
-                    // remaining channel.
-                    active.set(None);
+                    failed_archives.push(id);
                 }
             }
 
             pending_adds.set(failed_adds);
-            pending_deletes.set(failed_deletes);
+            pending_archives.set(failed_archives);
             match first_error {
                 Some(msg) => error.set(msg),
                 None => {
@@ -492,7 +488,7 @@ fn ChannelNav(
                 let id = StoredValue::new(c.id.clone());
                 let is_active =
                     move || id.with_value(|id| active.get().as_deref() == Some(id.as_str()));
-                let staged = move || id.with_value(|id| is_staged_delete(id));
+                let staged = move || id.with_value(|id| is_staged_archive(id));
                 // Unread messages for this channel, from the app-wide badge state.
                 let unread = move || {
                     id.with_value(|id| {
@@ -510,16 +506,15 @@ fn ChannelNav(
                     active.set(Some(id.get_value()));
                     viewing.set(true);
                 };
-                // The volunteer-only channel is permanent, so its remove control
-                // is never rendered (the server refuses it either way).
-                let remove = if c.is_deletable() {
+                // The volunteer-only channel is permanent, so it has no archive control.
+                let archive = if c.is_archivable() {
                     view! {
                         <Show when=move || editing.get()>
                             <button
-                                on:click=move |_| toggle_delete(id.get_value())
+                                on:click=move |_| toggle_archive(id.get_value())
                                 prop:disabled=move || busy.get()
                                 title=move || {
-                                    if staged() { "Keep channel" } else { "Remove channel" }
+                                    if staged() { "Keep channel active" } else { "Archive channel" }
                                 }
                                 class="shrink-0 rounded px-1.5 text-xs font-semibold text-slate-500 hover:text-rose-400 disabled:opacity-50"
                             >
@@ -554,6 +549,11 @@ fn ChannelNav(
                                 {if restricted { "\u{1f512}" } else { "#" }}
                             </span>
                             <span class="min-w-0 truncate">{name}</span>
+                            {c.archived.then(|| view! {
+                                <span class="rounded bg-slate-700 px-1 text-[0.6rem] uppercase text-slate-300">
+                                    "Archived"
+                                </span>
+                            })}
                             {move || {
                                 let n = unread();
                                 if n > 0 {
@@ -573,7 +573,7 @@ fn ChannelNav(
                                 }
                             }}
                         </button>
-                        {remove}
+                        {archive}
                     </div>
                 }
                 .into_any()
@@ -732,12 +732,14 @@ fn CaseChat(
     let thread = move || match active_channel() {
         Some(c) => {
             let restricted = c.kind.is_restricted();
+            let is_active = c.is_active();
             view! {
                 <ChannelThread
                     channel_id=c.id
                     channel_name=c.name
                     restricted=restricted
-                    can_send=can_send
+                    archived=c.archived
+                    can_send=can_send && is_active
                     input_class=input_class
                 />
             }
@@ -781,15 +783,19 @@ fn ChannelThread(
     /// Whether this is the volunteer-only channel, which gets a visible banner
     /// so staff always know clients cannot read what they post here.
     restricted: bool,
+    archived: bool,
     can_send: bool,
     input_class: &'static str,
 ) -> impl IntoView {
     let state = expect_context::<AppState>();
-    let me = state
-        .current_user_summary
-        .get_untracked()
-        .map(|u| u.id)
+    let current_user = state.current_user_summary.get_untracked();
+    let me = current_user
+        .as_ref()
+        .map(|user| user.id.clone())
         .unwrap_or_default();
+    let can_export = current_user
+        .as_ref()
+        .is_some_and(|user| user.role.has_operations_admin_permissions());
 
     // This channel's messages live here — loaded on demand for the open channel.
     let messages = RwSignal::new(Vec::<Message>::new());
@@ -827,33 +833,9 @@ fn ChannelThread(
                 {
                     messages.set(page.items);
                     total.set(page.total);
-                }
-                loading.set(false);
-            });
-        });
-    }
-
-    // Opening a channel clears its unread notifications for this user. The badge
-    // clears optimistically, then the authoritative count is refetched once the
-    // server confirms the delete.
-    {
-        let channel_id = channel_id.clone();
-        Effect::new(move |_| {
-            let channel_id = channel_id.clone();
-            let is_unread = state
-                .unread
-                .with_untracked(|list| list.iter().any(|item| item.channel_id == channel_id));
-            if !is_unread {
-                return;
-            }
-            state.clear_channel_unread(&channel_id);
-            spawn_local(async move {
-                if crate::server_fns::channel_notifications::mark_channel_read(channel_id)
-                    .await
-                    .is_ok()
-                {
                     state.refresh_unread();
                 }
+                loading.set(false);
             });
         });
     }
@@ -869,12 +851,21 @@ fn ChannelThread(
 
     let body = RwSignal::new(String::new());
     let error = RwSignal::new(String::new());
+    let sending = RwSignal::new(false);
 
     let send = {
         let channel_id = channel_id.clone();
         move |_| {
-            let channel_id = channel_id.clone();
+            if sending.get_untracked() {
+                return;
+            }
             let body_val = body.get_untracked();
+            if body_val.trim().is_empty() {
+                error.set("Enter a message first.".to_string());
+                return;
+            }
+            let channel_id = channel_id.clone();
+            sending.set(true);
             spawn_local(async move {
                 match crate::server_fns::cases::send_message(channel_id, body_val).await {
                     Ok(msg) => {
@@ -886,6 +877,7 @@ fn ChannelThread(
                     }
                     Err(e) => error.set(err_text(e)),
                 }
+                sending.set(false);
             });
         }
     };
@@ -963,7 +955,14 @@ fn ChannelThread(
         }
     };
 
-    let banner = if restricted {
+    let banner = if archived {
+        view! {
+            <p class="border-b border-slate-700 bg-slate-800 px-4 py-2 text-xs font-medium text-slate-300">
+                "Archived channel — its preserved history is read-only."
+            </p>
+        }
+        .into_any()
+    } else if restricted {
         view! {
             <p class="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs font-medium text-amber-300">
                 "\u{1f512} Private channel \u{2014} only volunteers and admins on this case can see these messages."
@@ -975,10 +974,21 @@ fn ChannelThread(
     };
 
     let placeholder = format!("Message {channel_name}");
+    let export_href = format!("/api/channels/{channel_id}/transcript.csv");
 
     view! {
         <div class="flex min-h-0 flex-1 flex-col">
             {banner}
+            {can_export.then(|| view! {
+                <div class="border-b border-slate-800 px-4 py-2 text-right">
+                    <a
+                        href=export_href
+                        class="text-xs font-medium text-primary-300 hover:text-primary-200"
+                    >
+                        "Download audited CSV transcript"
+                    </a>
+                </div>
+            })}
             <div node_ref=scroll_ref class="flex-1 space-y-3 overflow-y-auto p-4">
                 {messages_view}
             </div>
@@ -993,14 +1003,17 @@ fn ChannelThread(
                                 <input
                                     class=input_class
                                     placeholder=placeholder
+                                    maxlength=MAX_MESSAGE_BODY_CHARS
                                     prop:value=move || body.get()
+                                    prop:disabled=move || sending.get()
                                     on:input=move |ev| body.set(event_target_value(&ev))
                                 />
                                 <button
                                     on:click=send
-                                    class="shrink-0 rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600"
+                                    prop:disabled=move || sending.get() || body.get().trim().is_empty()
+                                    class="shrink-0 rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
                                 >
-                                    "Send"
+                                    {move || if sending.get() { "Sending…" } else { "Send" }}
                                 </button>
                             </div>
                         </div>
@@ -1023,7 +1036,11 @@ fn ChannelThread(
                                 </button>
                             </div>
                             <p class="text-xs text-slate-500">
-                                "You have read-only access to this chat."
+                                {if archived {
+                                    "This archived channel is read-only."
+                                } else {
+                                    "You have read-only access to this chat."
+                                }}
                             </p>
                         </div>
                     }

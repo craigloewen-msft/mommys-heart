@@ -518,6 +518,7 @@ pub fn cases() -> Vec<Case> {
                         author: (*author).into(),
                         body: (*body).into(),
                         created_at: (*created_at).into(),
+                        addenda: Vec::new(),
                     }
                 })
                 .collect();

@@ -58,6 +58,10 @@ pub fn notify_case(
     detail: String,
     audience: Audience,
 ) {
+    if kind == NotificationKind::NewMessage {
+        notify_secure_message(case_id, actor_id, audience);
+        return;
+    }
     let Some(cfg) = configured_email() else {
         return;
     };
@@ -78,6 +82,31 @@ pub fn notify_case(
         let case = case_name(&case_id).await;
         let email = templates::case_event(&Brand::from_env(), kind, &case, &actor_name, &detail);
         dispatch(&cfg, recipients, &email, "Case notification").await;
+    });
+}
+
+/// Fire a best-effort content-free secure-message notice.
+pub fn notify_secure_message(case_id: String, actor_id: String, audience: Audience) {
+    let Some(cfg) = configured_email() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let staff_only = audience == Audience::StaffOnly;
+        let mut recipients = match settings::recipients_for_case(&case_id, &actor_id, staff_only)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("notify_secure_message: recipient lookup failed for {case_id}: {e}");
+                return;
+            }
+        };
+        recipients.retain(|recipient| recipient.settings.wants(NotificationKind::NewMessage));
+        if recipients.is_empty() {
+            return;
+        }
+        let email = templates::secure_message_notice(&Brand::from_env());
+        dispatch(&cfg, recipients, &email, "Secure message notification").await;
     });
 }
 

@@ -9,7 +9,7 @@ use crate::state::AppState;
 fn NavLink(
     #[prop(into)] href: String,
     label: &'static str,
-    #[prop(optional, into)] badge: Option<Signal<i64>>,
+    #[prop(optional)] badge: Option<RwSignal<i64>>,
 ) -> impl IntoView {
     let location = use_location();
     let match_on = href.clone();
@@ -21,7 +21,7 @@ fn NavLink(
             path.starts_with(&match_on)
         }
     };
-    let unread = move || badge.map(|b| b.get()).unwrap_or(0);
+    let unread = move || badge.map(|value| value.get()).unwrap_or(0);
 
     view! {
         <A
@@ -88,14 +88,18 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let close_menu = move |_| menu_open.set(false);
     let has_operations_admin_permissions = role.has_operations_admin_permissions();
 
-    // Reactive unread total driving the "Case Chat" badge.
-    let unread_total = Signal::derive(move || state.total_unread());
-    // Everything on the Admin page that is waiting on someone, as one nav badge.
-    let pending_requests = Signal::derive(move || {
-        state.admin_case_request_pending.get()
-            + state.admin_role_request_pending.get()
-            + state.cases_pending_review.get()
-            + state.volunteer_requests_pending.get()
+    // Store badge values in this layout owner; forwarding derived signals to child
+    // components can outlive their original reactive owner during route changes.
+    let unread_total = RwSignal::new(0i64);
+    let pending_requests = RwSignal::new(0i64);
+    Effect::new(move |_| unread_total.set(state.total_unread()));
+    Effect::new(move |_| {
+        pending_requests.set(
+            state.admin_case_request_pending.get()
+                + state.admin_role_request_pending.get()
+                + state.cases_pending_review.get()
+                + state.volunteer_requests_pending.get(),
+        );
     });
 
     view! {

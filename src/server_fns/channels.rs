@@ -72,14 +72,20 @@ pub struct Channel {
     /// Number of messages in this channel (shown beside its name in the list).
     #[serde(default)]
     pub message_count: usize,
+    /// Whether this channel has been archived and is now read-only.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 impl Channel {
-    /// Whether this channel may be deleted. The volunteer-only back-channel is
-    /// permanent — the UI hides its delete control and the server refuses the
-    /// request regardless.
-    pub fn is_deletable(&self) -> bool {
-        self.kind != ChannelKind::VolunteerOnly
+    /// Whether this channel may be archived. The volunteer-only back-channel is
+    /// permanent — the UI hides its archive control and the server refuses it.
+    pub fn is_archivable(&self) -> bool {
+        self.kind != ChannelKind::VolunteerOnly && !self.archived
+    }
+
+    pub fn is_active(&self) -> bool {
+        !self.archived
     }
 }
 
@@ -151,36 +157,35 @@ pub async fn create_channel(case_id: String, name: String) -> Result<Channel, Se
     Ok(channel)
 }
 
-/// Delete a channel and every message in it. Requires the `ManageChannels`
-/// capability on the channel's case; the volunteer-only channel is rejected.
+/// Archive a channel while preserving its complete message history. Requires the
+/// `ManageChannels` capability on the channel's case.
 #[server(prefix = "/api")]
-pub async fn delete_channel(channel_id: String) -> Result<(), ServerFnError> {
+pub async fn archive_channel(channel_id: String) -> Result<(), ServerFnError> {
     use crate::server::db::channels;
-    use crate::server::permissions::{require_cap, require_user};
+    use crate::server::permissions::{require_channel, require_user};
     use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
-    // Resolve the channel first so the capability is checked against the case it
-    // actually belongs to, never a case id supplied by the caller.
-    let channel = channels::get(&channel_id)
-        .await
-        .map_err(ServerFnError::new)?
-        .ok_or_else(|| ServerFnError::new("Channel not found."))?;
-    require_cap(&user, &channel.case_id, CaseCapability::ManageChannels).await?;
-    if !channel.is_deletable() {
-        return Err(ServerFnError::new(
-            "The volunteer-only channel cannot be deleted.",
-        ));
+    // The shared resolver collapses hidden, missing, and unauthorized channels.
+    let channel = require_channel(&user, &channel_id, CaseCapability::ManageChannels).await?;
+    if !channel.is_archivable() {
+        return Err(ServerFnError::new("This channel cannot be archived."));
     }
-    channels::delete(&channel_id, &channel.case_id, &user.full_name())
+    channels::archive(&channel_id, &channel.case_id, &user.full_name())
         .await
-        .map_err(ServerFnError::new)?;
+        .map_err(|error| {
+            if error.to_string().contains("last active shared channel") {
+                ServerFnError::new("A case must keep at least one active shared channel.")
+            } else {
+                ServerFnError::new(error)
+            }
+        })?;
     crate::server::notifications::notify_case(
         channel.case_id,
         user.id.clone(),
         user.full_name(),
         crate::server_fns::settings::NotificationKind::CaseData,
-        format!("deleted the \"{}\" message channel", channel.name),
+        format!("archived the \"{}\" message channel", channel.name),
         crate::server::notifications::Audience::Everyone,
     );
     Ok(())

@@ -12,7 +12,7 @@ use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_folders::CaseFolder;
 use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::evidence::Evidence;
-use crate::server_fns::message::Message;
+use crate::server_fns::message::{Message, MessageTranscriptExport};
 use crate::server_fns::pagination::Page;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +108,16 @@ impl CaseStatus {
     }
 }
 
+/// A signed addendum on a shared legacy note.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LegacyCaseNoteAddendum {
+    pub author: String,
+    pub reason: String,
+    pub information: String,
+    pub follow_up: String,
+    pub signed_at: String,
+}
+
 /// A free-text note recorded against a case.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CaseNote {
@@ -115,6 +125,8 @@ pub struct CaseNote {
     pub author: String,
     pub body: String,
     pub created_at: String,
+    #[serde(default)]
+    pub addenda: Vec<LegacyCaseNoteAddendum>,
 }
 
 /// A support case tracked by the organization.
@@ -317,7 +329,6 @@ pub async fn create_case(
     name: String,
     status: CaseStatus,
     intake: CaseIntake,
-    first_note: Option<String>,
 ) -> Result<String, ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::{has_volunteer_access, require_user, require_visibility};
@@ -338,16 +349,9 @@ pub async fn create_case(
     } else {
         CaseStatus::PendingReview
     };
-    cases::create(
-        &user.id,
-        &user.full_name(),
-        &name,
-        status,
-        properties,
-        first_note,
-    )
-    .await
-    .map_err(ServerFnError::new)
+    cases::create(&user.id, &user.full_name(), &name, status, properties)
+        .await
+        .map_err(ServerFnError::new)
 }
 
 /// The cases waiting for an admin decision. Header fields only, never contents.
@@ -537,33 +541,6 @@ pub async fn set_case_owner(case_id: String, owner_id: String) -> Result<(), Ser
     Ok(())
 }
 
-/// Add a note to a case (requires the `AddNotes` capability).
-#[server(prefix = "/api")]
-pub async fn add_case_note(case_id: String, body: String) -> Result<(), ServerFnError> {
-    use crate::server::db::cases;
-    use crate::server::permissions::{require_cap, require_user};
-    use crate::server_fns::capabilities::CaseCapability;
-
-    let user = require_user().await?;
-    let body = body.trim().to_string();
-    if body.is_empty() {
-        return Err(ServerFnError::new("Note cannot be empty."));
-    }
-    require_cap(&user, &case_id, CaseCapability::AddNotes).await?;
-    cases::add_note(&case_id, &user.full_name(), &body)
-        .await
-        .map_err(ServerFnError::new)?;
-    crate::server::notifications::notify_case(
-        case_id,
-        user.id.clone(),
-        user.full_name(),
-        crate::server_fns::settings::NotificationKind::NoteAdded,
-        "added a note".to_string(),
-        crate::server::notifications::Audience::Everyone,
-    );
-    Ok(())
-}
-
 /// One page of a chat **channel**: the most recent `limit` messages
 /// (oldest-first) plus the channel's total message count. Backs the chat's
 /// "Load more" pagination.
@@ -577,9 +554,15 @@ pub async fn list_messages_page(
 
     let user = require_user().await?;
     require_channel(&user, &channel_id, CaseCapability::ViewCase).await?;
-    messages::page(&channel_id, limit)
+    messages::page(&channel_id, limit, &user.id)
         .await
         .map_err(ServerFnError::new)
+}
+
+/// The maximum chat message length the browser should enforce.
+#[server(prefix = "/api")]
+pub async fn message_max_len() -> Result<usize, ServerFnError> {
+    Ok(crate::server_fns::message::MAX_MESSAGE_BODY_CHARS)
 }
 
 /// Post a message to a chat channel as the signed-in user
@@ -591,41 +574,27 @@ pub async fn send_message(channel_id: String, body: String) -> Result<Message, S
     use crate::server_fns::channels::ChannelKind;
 
     let user = require_user().await?;
-    let body = body.trim().to_string();
-    if body.is_empty() {
-        return Err(ServerFnError::new("Message cannot be empty."));
-    }
+    let body = messages::normalize_body(&body).map_err(ServerFnError::new)?;
     let channel = require_channel(&user, &channel_id, CaseCapability::SendMessages).await?;
-    let message = messages::create(
-        &channel.case_id,
-        &channel.id,
-        &user.id,
-        &user.full_name(),
-        &body,
-    )
-    .await
-    .map_err(ServerFnError::new)?;
-
-    if let Err(e) = crate::server::db::channel_notifications::record_for_channel_message(
-        &channel.case_id,
-        &channel.id,
-        &message.id,
-        &user.id,
-        channel.kind,
-    )
-    .await
-    {
-        tracing::warn!(
-            "failed to record chat notifications for channel {}: {e}",
-            channel.id
-        );
+    if !channel.is_active() {
+        return Err(ServerFnError::new(
+            "This channel has been archived and is read-only.",
+        ));
     }
-    let preview: String = body.chars().take(80).collect();
-    let ellipsis = if body.chars().count() > 80 { "…" } else { "" };
-    let detail = format!(
-        "posted a new message in \"{}\": \"{preview}{ellipsis}\"",
-        channel.name
-    );
+    let message = messages::create(&channel, &user.id, &user.full_name(), &body)
+        .await
+        .map_err(|error| {
+            let text = error.to_string();
+            if text.contains("wait a moment") || text.contains("Too many messages") {
+                ServerFnError::new(text.trim_start_matches("protocol error: ").to_string())
+            } else if matches!(error, sqlx::Error::RowNotFound) {
+                ServerFnError::new("This channel has been archived and is read-only.")
+            } else {
+                ServerFnError::new(error)
+            }
+        })?;
+
+    let detail = "posted a new secure message".to_string();
     // A volunteer-only message must never be summarized into a client's inbox,
     // so the notification audience is narrowed to the same people who can read
     // the channel.
@@ -643,4 +612,20 @@ pub async fn send_message(channel_id: String, body: String) -> Result<Message, S
         audience,
     );
     Ok(message)
+}
+
+/// Export an authorized channel transcript as UTF-8 CSV.
+#[server(prefix = "/api")]
+pub async fn export_message_transcript(
+    channel_id: String,
+) -> Result<MessageTranscriptExport, ServerFnError> {
+    use crate::server::db::messages;
+    use crate::server::permissions::{require_channel, require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+    let channel = require_channel(&user, &channel_id, CaseCapability::ViewCase).await?;
+    messages::export_channel(&channel, &user.full_name())
+        .await
+        .map_err(ServerFnError::new)
 }

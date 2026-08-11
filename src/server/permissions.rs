@@ -193,8 +193,10 @@ pub async fn require_channel(
     let channel = channels::get(channel_id)
         .await
         .map_err(ServerFnError::new)?
-        .filter(|c| has_volunteer_access(user) || !c.kind.is_restricted())
+        .filter(|channel| has_volunteer_access(user) || !channel.kind.is_restricted())
         .ok_or_else(|| ServerFnError::new("Channel not found."))?;
-    require_cap(user, &channel.case_id, cap).await?;
+    if require_cap(user, &channel.case_id, cap).await.is_err() {
+        return Err(ServerFnError::new("Channel not found."));
+    }
     Ok(channel)
 }

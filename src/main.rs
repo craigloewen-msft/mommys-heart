@@ -89,7 +89,8 @@ async fn main() {
         .merge(api::router::<LeptosOptions>().layer(api::cors_layer()));
 
     // Wire the evidence HTTP surface
-    let app = server_fns::evidence::install(app)
+    let app = server_fns::evidence::install(app);
+    let app = api::message_transcripts::install(app)
         .fallback(leptos_axum::file_and_error_handler(shell))
         // Log every incoming request (method, path, status, latency).
         .layer(TraceLayer::new_for_http())
