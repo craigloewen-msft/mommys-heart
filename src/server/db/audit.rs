@@ -69,7 +69,7 @@ pub async fn page(
          WHERE entity_type = $1 AND entity_id = $2
            AND ($3 = '' OR left(at, 10) >= $3)
            AND ($4 = '' OR left(at, 10) <= $4)
-           AND ($5 OR visibility <> $6)",
+           AND ($5 OR COALESCE(visibility, 'shared') <> $6)",
     )
     .bind(entity.as_str())
     .bind(entity_id)
@@ -86,7 +86,7 @@ pub async fn page(
          WHERE entity_type = $1 AND entity_id = $2
            AND ($3 = '' OR left(at, 10) >= $3)
            AND ($4 = '' OR left(at, 10) <= $4)
-           AND ($5 OR visibility <> $6)
+           AND ($5 OR COALESCE(visibility, 'shared') <> $6)
          ORDER BY seq DESC
          LIMIT $7 OFFSET $8",
     )

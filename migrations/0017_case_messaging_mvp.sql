@@ -21,7 +21,10 @@ ALTER TABLE case_channels
     ADD CONSTRAINT case_channels_state_check CHECK (state IN ('active', 'archived')),
     ADD CONSTRAINT case_channels_kind_state_check CHECK (kind IN ('standard', 'volunteer_only')),
     ADD CONSTRAINT case_channels_permanent_volunteer_check CHECK (kind <> 'volunteer_only' OR is_permanent),
-    ADD CONSTRAINT case_channels_archive_timestamp_check CHECK ((state = 'active' AND archived_at IS NULL) OR state = 'archived');
+    ADD CONSTRAINT case_channels_archive_timestamp_check CHECK (
+        (state = 'active' AND archived_at IS NULL AND archived_by = '')
+        OR (state = 'archived' AND archived_at IS NOT NULL AND archived_by <> '')
+    );
 
 CREATE INDEX case_channels_case_state_idx ON case_channels(case_id, kind, state);
 
@@ -33,6 +36,9 @@ ALTER TABLE case_channels
 CREATE OR REPLACE FUNCTION prevent_last_active_shared_channel()
 RETURNS trigger AS $$
 BEGIN
+    -- Serialize direct SQL updates per case as a database-level backstop.
+    PERFORM pg_advisory_xact_lock(hashtext(OLD.case_id));
+
     IF OLD.kind = 'standard'
        AND OLD.state = 'active'
        AND NEW.state <> 'active'
@@ -115,7 +121,7 @@ CREATE INDEX message_read_receipts_first_read_idx ON message_read_receipts(first
 INSERT INTO message_read_receipts (message_id, channel_id, case_id, user_id, created_at, first_read_at)
 SELECT n.message_id, n.channel_id, n.case_id, n.user_id, n.created_at, NULL
 FROM channel_notifications n
-ON CONFLICT DO NOTHING;
+ON CONFLICT (message_id, user_id) DO NOTHING;
 
 ALTER TABLE channel_notifications DROP CONSTRAINT IF EXISTS channel_notifications_channel_id_fkey;
 ALTER TABLE channel_notifications DROP CONSTRAINT IF EXISTS channel_notifications_message_id_fkey;

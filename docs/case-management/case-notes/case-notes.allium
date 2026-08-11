@@ -122,6 +122,12 @@ invariant AddendaInheritAudience {
 -- Rules
 ------------------------------------------------------------
 
+rule MigrateLegacyNote {
+    when: ExistingFreeTextNoteMigrated(note_id, case_id)
+
+    ensures: LegacyNotePreserved(note_id, case_id)
+}
+
 rule SaveDraft {
     when: UserSavesDraft(user_id, note_id)
 
@@ -189,6 +195,7 @@ rule AdministrativeDraftInspection {
     let n = note_of(note_id)
 
     requires: admin_may_inspect_draft(user_id, note_id)
+    requires: user_role(user_id) = operations_admin or user_role(user_id) = site_admin
     requires: n.state = draft
 
     ensures: DraftInspectionReturned(note_id)

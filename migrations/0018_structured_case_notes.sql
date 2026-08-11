@@ -162,6 +162,12 @@ BEGIN
     IF OLD.state IN ('finalized', 'legacy', 'discarded') THEN
         RAISE EXCEPTION 'case note % is immutable in state %', OLD.id, OLD.state;
     END IF;
+    IF OLD.state = 'draft' AND NEW.state NOT IN ('draft', 'finalized', 'discarded') THEN
+        RAISE EXCEPTION 'invalid case note state transition from % to %', OLD.state, NEW.state;
+    END IF;
+    IF NEW.audience <> OLD.audience THEN
+        RAISE EXCEPTION 'case note audience cannot change';
+    END IF;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

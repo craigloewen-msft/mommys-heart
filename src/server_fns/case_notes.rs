@@ -998,7 +998,7 @@ pub async fn list_case_note_audit(
     require_staff(&user)?;
     require_operations_admin(&user)?;
     require_cap(&user, &case_id, CaseCapability::ViewCase).await?;
-    case_notes::audit_page(&case_id, &note_id, offset, limit)
+    case_notes::audit_page(&case_id, &note_id, offset, limit, &user)
         .await
         .map_err(ServerFnError::new)
 }

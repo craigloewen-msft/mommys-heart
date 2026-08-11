@@ -344,10 +344,11 @@ pub async fn page(
         AND ($8 = '' OR n.state = $8)
         AND ($9 = '' OR n.urgency = $9)
         AND ($10 = '' OR n.author ILIKE '%' || $10 || '%'
-             OR to_tsvector('simple', concat_ws(' ', n.body, n.narrative, n.purpose,
-                    n.client_reported_info, n.verified_observed_info, n.actions_taken,
-                    n.outcome_response, n.progress_barriers, n.urgency_details, n.next_steps,
-                    n.participant_summary, n.location)) @@ plainto_tsquery('simple', $10))";
+             OR ((n.state IN ('finalized', 'legacy') OR n.author_user_id = $2)
+                 AND to_tsvector('simple', concat_ws(' ', n.body, n.narrative, n.purpose,
+                        n.client_reported_info, n.verified_observed_info, n.actions_taken,
+                        n.outcome_response, n.progress_barriers, n.urgency_details, n.next_steps,
+                        n.participant_summary, n.location)) @@ plainto_tsquery('simple', $10)))";
 
     let count_sql = format!("SELECT count(*) FROM case_notes n WHERE {WHERE}");
     let total: i64 = sqlx::query_scalar(&count_sql)
@@ -491,9 +492,10 @@ pub async fn save_draft(
     draft: &CaseNoteDraftInput,
 ) -> Result<CaseNoteDetail, sqlx::Error> {
     let mut tx = pool().begin().await?;
+    let case_id = note_case_id_unlocked(&mut tx, note_id).await?;
+    lock_writable_case(&mut tx, &case_id).await?;
     let locked = lock_note(&mut tx, note_id).await?;
     require_author_draft(&locked, author)?;
-    lock_writable_case(&mut tx, &locked.case_id).await?;
     let now = now_stamp();
     write_update(&mut tx, note_id, draft, None, &now).await?;
     record_audit(
@@ -518,9 +520,10 @@ pub async fn finalize_draft(
     finalization: &ValidatedCaseNoteFinalization,
 ) -> Result<CaseNoteDetail, sqlx::Error> {
     let mut tx = pool().begin().await?;
+    let case_id = note_case_id_unlocked(&mut tx, note_id).await?;
+    lock_writable_case(&mut tx, &case_id).await?;
     let locked = lock_note(&mut tx, note_id).await?;
     require_author_draft(&locked, author)?;
-    lock_writable_case(&mut tx, &locked.case_id).await?;
     let now = now_stamp();
     finalize_in(
         &mut tx,
@@ -539,9 +542,10 @@ pub async fn finalize_draft(
 
 pub async fn discard_draft(note_id: &str, author: &User) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    let case_id = note_case_id_unlocked(&mut tx, note_id).await?;
+    lock_writable_case(&mut tx, &case_id).await?;
     let locked = lock_note(&mut tx, note_id).await?;
     require_author_draft(&locked, author)?;
-    lock_writable_case(&mut tx, &locked.case_id).await?;
     let now = now_stamp();
     sqlx::query(
         "UPDATE case_notes
@@ -610,9 +614,10 @@ pub async fn add_addendum(
     input: &CaseNoteAddendumInput,
 ) -> Result<CaseNoteAddendum, sqlx::Error> {
     let mut tx = pool().begin().await?;
+    let case_id = note_case_id_unlocked(&mut tx, note_id).await?;
+    lock_writable_case(&mut tx, &case_id).await?;
     let locked = lock_note(&mut tx, note_id).await?;
     let state = CaseNoteState::from_slug(&locked.state).unwrap_or(CaseNoteState::Draft);
-    lock_writable_case(&mut tx, &locked.case_id).await?;
     if !matches!(state, CaseNoteState::Finalized | CaseNoteState::Legacy) {
         return Err(domain_error(
             "Addenda can be attached only to finalized or legacy notes.",
@@ -664,7 +669,27 @@ pub async fn audit_page(
     note_id: &str,
     offset: i64,
     limit: i64,
+    viewer: &User,
 ) -> Result<Page<CaseNoteAuditEntry>, sqlx::Error> {
+    if !viewer.role.has_operations_admin_permissions()
+        || !viewer
+            .capabilities_for(case_id)
+            .contains(&crate::server_fns::capabilities::CaseCapability::ViewCase)
+    {
+        return Err(domain_error("Case note audit access required."));
+    }
+    if !note_id.is_empty() {
+        let belongs: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM case_notes WHERE id = $1 AND case_id = $2)",
+        )
+        .bind(note_id)
+        .bind(case_id)
+        .fetch_one(pool())
+        .await?;
+        if !belongs {
+            return Err(domain_error("Note not found."));
+        }
+    }
     let limit = limit.clamp(1, 100);
     let offset = offset.max(0);
     let total: i64 = sqlx::query_scalar(
@@ -750,6 +775,17 @@ async fn lock_writable_case(
         Some(_) => Err(domain_error("This case no longer accepts changes.")),
         None => Err(domain_error("Case not found.")),
     }
+}
+
+async fn note_case_id_unlocked(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    note_id: &str,
+) -> Result<String, sqlx::Error> {
+    sqlx::query_scalar("SELECT case_id FROM case_notes WHERE id = $1")
+        .bind(note_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| domain_error("Note not found."))
 }
 
 async fn lock_note(

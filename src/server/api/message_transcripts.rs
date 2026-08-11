@@ -13,6 +13,21 @@ use crate::server::db::messages;
 use crate::server::permissions::{require_channel, require_operations_admin};
 use crate::server_fns::capabilities::CaseCapability;
 
+fn safe_filename(value: &str) -> String {
+    let name: String = value
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+        .take(180)
+        .collect();
+    if name.is_empty() {
+        "message-transcript.csv".to_string()
+    } else {
+        name
+    }
+}
+
 pub fn install<S>(router: Router<S>) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -36,7 +51,7 @@ async fn download(AuthUser(user): AuthUser, Path(channel_id): Path<String>) -> R
                     header::CONTENT_DISPOSITION,
                     format!(
                         "attachment; filename=\"{}\"",
-                        export.filename.replace('"', "")
+                        safe_filename(&export.filename)
                     ),
                 ),
                 (header::CACHE_CONTROL, "no-store".to_string()),
