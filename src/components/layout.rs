@@ -4,13 +4,20 @@ use leptos_router::hooks::{use_location, use_navigate};
 
 use crate::state::AppState;
 
+#[derive(Clone, Copy)]
+enum NavBadge {
+    UnreadMessages,
+    PendingAdminWork,
+}
+
 /// A top-navbar link that highlights when its route is active.
 #[component]
 fn NavLink(
     #[prop(into)] href: String,
     label: &'static str,
-    #[prop(optional)] badge: Option<RwSignal<i64>>,
+    #[prop(optional)] badge: Option<NavBadge>,
 ) -> impl IntoView {
+    let state = expect_context::<AppState>();
     let location = use_location();
     let match_on = href.clone();
     let active = move || {
@@ -21,7 +28,16 @@ fn NavLink(
             path.starts_with(&match_on)
         }
     };
-    let unread = move || badge.map(|value| value.get()).unwrap_or(0);
+    let unread = move || match badge {
+        Some(NavBadge::UnreadMessages) => state.total_unread(),
+        Some(NavBadge::PendingAdminWork) => {
+            state.admin_case_request_pending.get()
+                + state.admin_role_request_pending.get()
+                + state.cases_pending_review.get()
+                + state.volunteer_requests_pending.get()
+        }
+        None => 0,
+    };
 
     view! {
         <A
@@ -88,20 +104,6 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let close_menu = move |_| menu_open.set(false);
     let has_operations_admin_permissions = role.has_operations_admin_permissions();
 
-    // Store badge values in this layout owner; forwarding derived signals to child
-    // components can outlive their original reactive owner during route changes.
-    let unread_total = RwSignal::new(0i64);
-    let pending_requests = RwSignal::new(0i64);
-    Effect::new(move |_| unread_total.set(state.total_unread()));
-    Effect::new(move |_| {
-        pending_requests.set(
-            state.admin_case_request_pending.get()
-                + state.admin_role_request_pending.get()
-                + state.cases_pending_review.get()
-                + state.volunteer_requests_pending.get(),
-        );
-    });
-
     view! {
         <div class="min-h-screen bg-slate-950 text-slate-100">
             <header class="sticky top-0 z-20 border-b border-slate-800 bg-slate-900/80 backdrop-blur">
@@ -118,13 +120,13 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
 
                         <nav class="hidden md:flex items-center gap-1">
                             <NavLink href="/cases" label="Cases" />
-                            <NavLink href="/inbox" label="Case Chat" badge=unread_total />
+                            <NavLink href="/inbox" label="Case Chat" badge=NavBadge::UnreadMessages />
                             {if has_operations_admin_permissions {
                                 view! {
                                     <NavLink
                                         href="/admin"
                                         label="Admin"
-                                        badge=pending_requests
+                                        badge=NavBadge::PendingAdminWork
                                     />
                                 }
                                 .into_any()
@@ -168,13 +170,13 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                         on:click=close_menu
                     >
                         <NavLink href="/cases" label="Cases" />
-                        <NavLink href="/inbox" label="Case Chat" badge=unread_total />
+                        <NavLink href="/inbox" label="Case Chat" badge=NavBadge::UnreadMessages />
                         {if has_operations_admin_permissions {
                             view! {
                                 <NavLink
                                     href="/admin"
                                     label="Admin"
-                                    badge=pending_requests
+                                    badge=NavBadge::PendingAdminWork
                                 />
                             }
                             .into_any()
