@@ -97,7 +97,7 @@ pub async fn set_organization_properties(
     require_operations_admin(&user)?;
     let cleaned = clean(properties);
     validate(&cleaned).map_err(ServerFnError::new)?;
-    organization_properties::replace(&organization_id, cleaned, &user.full_name())
+    organization_properties::replace(&organization_id, cleaned, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }
@@ -112,7 +112,7 @@ pub async fn add_missing_organization_property_defaults(
 
     let user = require_user().await?;
     require_operations_admin(&user)?;
-    organization_properties::add_missing_defaults(&organization_id, &user.full_name())
+    organization_properties::add_missing_defaults(&organization_id, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }

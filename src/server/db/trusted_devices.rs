@@ -59,3 +59,15 @@ pub async fn delete(token: &str) -> Result<(), sqlx::Error> {
         .await?;
     Ok(())
 }
+
+/// Revoke every remembered browser inside a credential-change transaction.
+pub async fn delete_all_for_user_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM trusted_devices WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}

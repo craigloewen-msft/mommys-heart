@@ -221,15 +221,61 @@ pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnErro
 
     let sha256 = hex::encode(Sha256::digest(&bytes));
     let size_bytes = bytes.len() as i64;
-
-    // Reserve the id first so the blob is named before the row exists; on any
-    // failure after the blob is written we delete it, so a failed DB write never
-    // leaves an orphaned blob and a failed upload never leaves an orphaned row.
     let evidence_id = match &target {
         Some(existing) => existing.id.clone(),
         None => db::reserve_id().await.map_err(ServerFnError::new)?,
     };
     let case_id = folder.case_id.clone();
+
+    // REQ-SEC-005: bytes are scanned before storage and before a downloadable
+    // blob path is committed. Every rejection or scanner error remains audited.
+    let scan = match crate::server::malware::scan(&bytes).await {
+        Ok(result) => result,
+        Err(detail) => {
+            db::record_scan(
+                &evidence_id,
+                &case_id,
+                &user.id,
+                &user.full_name(),
+                &sha256,
+                "error",
+                &detail,
+            )
+            .await
+            .map_err(ServerFnError::new)?;
+            return Err(ServerFnError::new(
+                "The file could not be safety-scanned. Nothing was uploaded.",
+            ));
+        }
+    };
+    if !scan.clean {
+        db::record_scan(
+            &evidence_id,
+            &case_id,
+            &user.id,
+            &user.full_name(),
+            &sha256,
+            "rejected",
+            &scan.detail,
+        )
+        .await
+        .map_err(ServerFnError::new)?;
+        return Err(ServerFnError::new(
+            "The file failed the safety scan and was not uploaded.",
+        ));
+    }
+    db::record_scan(
+        &evidence_id,
+        &case_id,
+        &user.id,
+        &user.full_name(),
+        &sha256,
+        "clean",
+        &scan.detail,
+    )
+    .await
+    .map_err(ServerFnError::new)?;
+
     let blob_path = storage::blob_path(&case_id, &evidence_id);
 
     let mut metadata = HashMap::new();

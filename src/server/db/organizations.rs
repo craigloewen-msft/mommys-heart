@@ -165,8 +165,13 @@ pub async fn search_active(
 
 /// Create an organization and audit it in one transaction, so an unaudited row
 /// can never exist.
-pub async fn create(input: &OrganizationInput, actor: &str) -> Result<String, sqlx::Error> {
+pub async fn create(
+    input: &OrganizationInput,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<String, sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let id = ids::next(&mut *tx, "org").await?;
     sqlx::query(
         "INSERT INTO organizations
@@ -198,8 +203,14 @@ pub async fn create(input: &OrganizationInput, actor: &str) -> Result<String, sq
     Ok(id)
 }
 
-pub async fn update(id: &str, input: &OrganizationInput, actor: &str) -> Result<(), sqlx::Error> {
+pub async fn update(
+    id: &str,
+    input: &OrganizationInput,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let updated = sqlx::query(
         "UPDATE organizations
          SET name = $2, kind = $3, website = $4, phone = $5, email = $6,
@@ -232,8 +243,14 @@ pub async fn update(id: &str, input: &OrganizationInput, actor: &str) -> Result<
     tx.commit().await
 }
 
-pub async fn set_archived(id: &str, archived: bool, actor: &str) -> Result<(), sqlx::Error> {
+pub async fn set_archived(
+    id: &str,
+    archived: bool,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let updated =
         sqlx::query("UPDATE organizations SET archived = $2, updated_at = now() WHERE id = $1")
             .bind(id)

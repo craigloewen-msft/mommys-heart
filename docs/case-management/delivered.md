@@ -240,6 +240,32 @@ client-facing visibility of any CRM record. The
 `volunteers` emergency-contact columns still exist and were deliberately not
 migrated into contact records.
 
+### Production-readiness safeguards
+
+*Requirements: `REQ-CRM-044`–`REQ-CRM-048`, `REQ-SEC-001`–`REQ-SEC-005`.*
+
+- Standalone and grant-linked funding mutations have their own Change Log scope;
+  full funding details include notes and void attribution.
+- CRM collections expose totals/load-more or bounded server-side relationship
+  search rather than presenting a fixed first page as complete.
+- Linked account identity fields are projected from the account and read-only on
+  the CRM form; preserved disagreements are recorded for review.
+- New CRM audit and funding writes record both stable actor account ID and the
+  historical display-name snapshot.
+- Registration and password reset share one password policy. Password reset
+  consumes the token, changes the hash, and revokes sessions and trusted devices
+  in one transaction.
+- Production startup fails closed when MFA email, secure cookies, public origin,
+  or malware scanning is unconfigured. Browser security headers and same-origin
+  mutation checks apply to all app surfaces.
+- New evidence bytes pass content validation and malware scanning before storage
+  or download; rejected/error outcomes are audited without storing those bytes.
+
+**Operational limit:** these engineering safeguards do not approve retention,
+legal-hold, backup ownership, incident policy, accessibility targets, or an
+independent review. Production approval remains blocked on the release evidence
+listed in [`../operations/production-readiness.md`](../operations/production-readiness.md).
+
 ---
 
 ## How the invariants are enforced

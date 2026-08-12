@@ -34,6 +34,7 @@ struct ContactRow {
     user_id: Option<String>,
     linked_email: Option<String>,
     linked_role: Option<String>,
+    has_account_field_conflict: bool,
 }
 
 impl From<ContactRow> for Contact {
@@ -65,6 +66,7 @@ impl From<ContactRow> for Contact {
             user_id: row.user_id.unwrap_or_default(),
             linked_email: row.linked_email.unwrap_or_default(),
             linked_role: row.linked_role.as_deref().and_then(AccountRole::from_slug),
+            has_account_field_conflict: row.has_account_field_conflict,
         }
     }
 }
@@ -105,12 +107,20 @@ struct OrganizationRef {
 
 /// The `SELECT` list every read shares. The organization name and the account's
 /// email/role are joined in for display and stay owned by their own tables.
-const SELECT_COLUMNS: &str = "c.id, c.first_name, c.last_name, c.preferred_name, c.email,
-     c.phone, c.mobile, c.address, c.job_title, c.organization_id,
+const SELECT_COLUMNS: &str = "c.id,
+     CASE WHEN u.id IS NULL THEN c.first_name ELSE u.first_name END AS first_name,
+     CASE WHEN u.id IS NULL THEN c.last_name ELSE u.last_name END AS last_name,
+     c.preferred_name,
+     CASE WHEN u.id IS NULL THEN c.email ELSE u.email END AS email,
+     CASE WHEN u.id IS NULL THEN c.phone ELSE u.phone END AS phone,
+     c.mobile,
+     CASE WHEN u.id IS NULL THEN c.address ELSE u.home_address END AS address,
+     c.job_title, c.organization_id,
      o.name AS organization_name, c.types, o.archived AS organization_archived,
-     c.source, c.description,
-     c.do_not_contact, c.archived, c.user_id,
-     u.email AS linked_email, u.role AS linked_role";
+     c.source, c.description, c.do_not_contact, c.archived, c.user_id,
+     u.email AS linked_email, u.role AS linked_role,
+     EXISTS (SELECT 1 FROM contact_account_conflicts conflict
+             WHERE conflict.contact_id = c.id) AS has_account_field_conflict";
 
 const FROM_JOINS: &str = "FROM contacts c
      LEFT JOIN organizations o ON o.id = c.organization_id
@@ -368,8 +378,13 @@ async fn insert_in(
     Ok(())
 }
 
-pub async fn create(input: &ContactInput, actor: &str) -> Result<String, sqlx::Error> {
+pub async fn create(
+    input: &ContactInput,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<String, sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let id = ids::next(&mut *tx, "ct").await?;
     insert_in(&mut tx, &id, input, None, actor).await?;
     tx.commit().await?;
@@ -399,8 +414,14 @@ pub async fn create_linked_in(
     Ok(id)
 }
 
-pub async fn update(id: &str, input: &ContactInput, actor: &str) -> Result<(), sqlx::Error> {
+pub async fn update(
+    id: &str,
+    input: &ContactInput,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let current = sqlx::query_as::<_, ContactOrganizationState>(&format!(
         "SELECT c.last_name, c.organization_id, o.name AS organization_name,
                 coalesce({PERSON_NAME_SQL}, nullif(o.name, ''), c.id) AS display_name
@@ -417,8 +438,14 @@ pub async fn update(id: &str, input: &ContactInput, actor: &str) -> Result<(), s
     }
     let updated = sqlx::query(
         "UPDATE contacts
-         SET first_name = $2, last_name = $3, preferred_name = $4, email = $5,
-             phone = $6, mobile = $7, address = $8, job_title = $9,
+         SET first_name = CASE WHEN user_id IS NULL THEN $2 ELSE first_name END,
+             last_name = CASE WHEN user_id IS NULL THEN $3 ELSE last_name END,
+             preferred_name = $4,
+             email = CASE WHEN user_id IS NULL THEN $5 ELSE email END,
+             phone = CASE WHEN user_id IS NULL THEN $6 ELSE phone END,
+             mobile = $7,
+             address = CASE WHEN user_id IS NULL THEN $8 ELSE address END,
+             job_title = $9,
              organization_id = $10, types = $11, source = $12, description = $13,
              do_not_contact = $14, updated_at = now()
          WHERE id = $1",
@@ -503,8 +530,14 @@ pub async fn update(id: &str, input: &ContactInput, actor: &str) -> Result<(), s
     tx.commit().await
 }
 
-pub async fn set_archived(id: &str, archived: bool, actor: &str) -> Result<(), sqlx::Error> {
+pub async fn set_archived(
+    id: &str,
+    archived: bool,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let updated =
         sqlx::query("UPDATE contacts SET archived = $2, updated_at = now() WHERE id = $1")
             .bind(id)
@@ -547,8 +580,14 @@ pub async fn unlinked_accounts() -> Result<Vec<LinkableAccount>, sqlx::Error> {
 ///
 /// Only ever writes `contacts.user_id`: the account itself is untouched, so
 /// unlinking leaves the person able to sign in exactly as before.
-pub async fn set_account(id: &str, user_id: Option<&str>, actor: &str) -> Result<(), sqlx::Error> {
+pub async fn set_account(
+    id: &str,
+    user_id: Option<&str>,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let updated = sqlx::query("UPDATE contacts SET user_id = $2, updated_at = now() WHERE id = $1")
         .bind(id)
         .bind(user_id)
@@ -578,9 +617,11 @@ pub async fn set_account(id: &str, user_id: Option<&str>, actor: &str) -> Result
 pub async fn set_organization(
     contact_id: &str,
     organization_id: Option<&str>,
+    actor_user_id: &str,
     actor: &str,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let current = sqlx::query_as::<_, ContactOrganizationState>(&format!(
         "SELECT c.last_name, c.organization_id, o.name AS organization_name,
                     coalesce({PERSON_NAME_SQL}, nullif(o.name, ''), c.id) AS display_name

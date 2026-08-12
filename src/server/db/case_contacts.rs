@@ -227,9 +227,11 @@ pub async fn add(
     role: CaseContactRole,
     note: &str,
     is_primary: bool,
+    actor_user_id: &str,
     actor: &str,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     add_in(&mut tx, case_id, contact_id, role, note, is_primary, actor).await?;
     tx.commit().await
 }
@@ -240,9 +242,11 @@ pub async fn update(
     role: CaseContactRole,
     note: &str,
     is_primary: bool,
+    actor_user_id: &str,
     actor: &str,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let stored = sqlx::query_as::<_, StoredLink>(
         "SELECT cc.contact_id, cc.role, c.archived AS contact_archived
          FROM case_contacts cc JOIN contacts c ON c.id = cc.contact_id
@@ -292,8 +296,14 @@ pub async fn update(
     tx.commit().await
 }
 
-pub async fn remove(id: &str, case_id: &str, actor: &str) -> Result<(), sqlx::Error> {
+pub async fn remove(
+    id: &str,
+    case_id: &str,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let stored = sqlx::query_as::<_, StoredLink>(
         "SELECT cc.contact_id, cc.role, c.archived AS contact_archived
          FROM case_contacts cc JOIN contacts c ON c.id = cc.contact_id

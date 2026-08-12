@@ -278,6 +278,19 @@ pub async fn load_grant(id: String) -> Result<Option<Grant>, ServerFnError> {
     grants::get(&id).await.map_err(ServerFnError::new)
 }
 
+/// Bounded grant options independent of the directory's current filter/page.
+#[server(prefix = "/api")]
+pub async fn search_grant_options(query: String) -> Result<Vec<(String, String)>, ServerFnError> {
+    use crate::server::db::grants;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+    grants::search_options(&query, 10)
+        .await
+        .map_err(ServerFnError::new)
+}
+
 #[server(prefix = "/api")]
 pub async fn create_grant(input: GrantInput) -> Result<String, ServerFnError> {
     use crate::server::db::grants;
@@ -286,7 +299,7 @@ pub async fn create_grant(input: GrantInput) -> Result<String, ServerFnError> {
     let user = require_user().await?;
     require_operations_admin(&user)?;
     let validated = input.validate().map_err(ServerFnError::new)?;
-    grants::create(&validated, &user.full_name())
+    grants::create(&validated, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }
@@ -299,7 +312,7 @@ pub async fn update_grant(id: String, input: GrantInput) -> Result<(), ServerFnE
     let user = require_user().await?;
     require_operations_admin(&user)?;
     let validated = input.validate().map_err(ServerFnError::new)?;
-    grants::update(&id, &validated, &user.full_name())
+    grants::update(&id, &validated, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }

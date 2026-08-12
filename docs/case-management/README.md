@@ -10,6 +10,9 @@ case-management and CRM system.
   limits that genuinely apply.
 - **[`roadmap.md`](roadmap.md)** — what is **not** built, in ordered phases, with
   policy-blocked work separated from straightforward engineering.
+- **[`../operations/production-readiness.md`](../operations/production-readiness.md)** — the
+  operational release gate, including backup/restore, retention, incident,
+  accessibility, and security-review evidence that engineering cannot self-approve.
 
 If those two disagree with the application, the application is right and these
 files are a bug.
@@ -44,7 +47,10 @@ Stable IDs are still referenced from code comments and task files:
 - `REQ-MSG-001`–`009` — secure messaging
 - `REQ-CN-001`–`011` — structured Case Notes
 - `REQ-AUD-001`–`004` — audit visibility and retention
-- `REQ-CRM-001`–`043` — connected people, organizations, cases, grants, and funding
+- `REQ-CRM-001`–`048` — connected records plus CRM production-readiness corrections
+- `REQ-CRM-049`–`053` — specified future CRM workflow increments
+- `REQ-SEC-001`–`005` — authentication, browser-request, and evidence safeguards
+- `REQ-OPS-001`–`004` — operational approval and release evidence
 - `REQ-DOC-001`–`004` — documentation (see ADR-0006 for what changed)
 
 ## Documentation and RAG isolation

@@ -564,6 +564,12 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
     .await
     .map_err(ServerFnError::new)?;
 
+    // REQ-CRM-048: contact/case audit rows created below inherit the new
+    // account's stable identity while keeping the registration name snapshot.
+    crate::server::db::audit::set_actor_in_transaction(&mut tx, &id)
+        .await
+        .map_err(ServerFnError::new)?;
+
     // Every registration creates a client account, so it gets the client record
     // that `users` is the base of, in the same transaction.
     clients::insert_in(&mut tx, &id)
@@ -744,12 +750,14 @@ pub async fn request_password_reset(email: String) -> Result<(), ServerFnError> 
 #[server(prefix = "/api")]
 pub async fn reset_password(token: String, new_password: String) -> Result<(), ServerFnError> {
     use crate::server::auth::hash_password;
-    use crate::server::db::{password_reset, sessions, users};
+    use crate::server::db::{password_reset, pool, trusted_devices};
 
-    if new_password.trim().is_empty() {
-        return Err(ServerFnError::new("Please choose a new password."));
-    }
-    let user_id = password_reset::consume(&token)
+    // REQ-SEC-002/003: one password policy and one transaction for token,
+    // credential, sessions, and remembered devices.
+    validate_password(&new_password)?;
+    let password_hash = hash_password(&new_password).map_err(ServerFnError::new)?;
+    let mut tx = pool().begin().await.map_err(ServerFnError::new)?;
+    let user_id = password_reset::consume_in(&mut tx, &token)
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| {
@@ -757,15 +765,21 @@ pub async fn reset_password(token: String, new_password: String) -> Result<(), S
                 "This reset link is invalid or has expired. Please request a new one.",
             )
         })?;
-
-    let password_hash = hash_password(&new_password).map_err(ServerFnError::new)?;
-    users::set_password_hash(&user_id, &password_hash)
+    sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+        .bind(&password_hash)
+        .bind(&user_id)
+        .execute(&mut *tx)
         .await
         .map_err(ServerFnError::new)?;
-    // Best effort: sign out any other sessions after a credential change.
-    if let Err(e) = sessions::delete_all_for_user(&user_id).await {
-        tracing::warn!("failed to clear sessions after reset for {user_id}: {e}");
-    }
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(&user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(ServerFnError::new)?;
+    trusted_devices::delete_all_for_user_in(&mut tx, &user_id)
+        .await
+        .map_err(ServerFnError::new)?;
+    tx.commit().await.map_err(ServerFnError::new)?;
     Ok(())
 }
 

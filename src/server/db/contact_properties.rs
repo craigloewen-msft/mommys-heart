@@ -116,12 +116,14 @@ pub async fn add_defaults_for_new_contact(
 pub async fn replace(
     contact_id: &str,
     properties: Vec<ContactProperty>,
+    actor_user_id: &str,
     actor: &str,
 ) -> Result<(), sqlx::Error> {
     let existing = list(contact_id).await?;
     let changed = existing != properties;
 
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     sqlx::query("DELETE FROM contact_properties WHERE contact_id = $1")
         .bind(contact_id)
         .execute(&mut *tx)
@@ -145,8 +147,13 @@ pub async fn replace(
 }
 
 /// Add the missing defaults once, auditing only when rows were appended.
-pub async fn add_missing_defaults(contact_id: &str, actor: &str) -> Result<(), sqlx::Error> {
+pub async fn add_missing_defaults(
+    contact_id: &str,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let changed = ensure_defaults_in_transaction(&mut tx, contact_id).await?;
     if changed {
         audit::record_in_transaction(

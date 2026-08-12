@@ -15,7 +15,7 @@ use crate::components::loading::Loading;
 use crate::helpers::format::badge_pill;
 use crate::pages::admin::AdminWorkspaceNav;
 use crate::server_fns::audit::AuditScope;
-use crate::server_fns::contacts::{list_contacts, ContactFilters};
+use crate::server_fns::contacts::{search_active_contacts, ActiveContactSummary};
 use crate::server_fns::crm::format_cents;
 use crate::server_fns::err_text;
 use crate::server_fns::funding::{
@@ -23,10 +23,10 @@ use crate::server_fns::funding::{
     FundingRecord,
 };
 use crate::server_fns::grants::{
-    create_grant, list_grants, load_grant, load_grant_totals, update_grant, Grant, GrantFilters,
-    GrantInput, GrantStatus, GrantTotals, ReportingCadence,
+    create_grant, list_grants, load_grant, load_grant_totals, search_grant_options, update_grant,
+    Grant, GrantFilters, GrantInput, GrantStatus, GrantTotals, ReportingCadence,
 };
-use crate::server_fns::organizations::{list_organizations, OrganizationFilters};
+use crate::server_fns::organizations::{search_active_organizations, ActiveOrganizationSummary};
 use crate::state::AppState;
 
 const PANEL: &str = "rounded-xl border border-slate-800 bg-slate-900 p-5";
@@ -57,9 +57,11 @@ pub fn AdminFundingPage() -> impl IntoView {
 fn FundingWorkspace() -> impl IntoView {
     let totals = RwSignal::new(GrantTotals::default());
     let grants = RwSignal::new(Vec::<Grant>::new());
+    let grant_total = RwSignal::new(0i64);
+    let grant_window = RwSignal::new(50i64);
     let ledger = RwSignal::new(Vec::<FundingRecord>::new());
-    let organizations = RwSignal::new(Vec::<(String, String)>::new());
-    let contacts = RwSignal::new(Vec::<(String, String)>::new());
+    let ledger_total = RwSignal::new(0i64);
+    let ledger_window = RwSignal::new(50i64);
     let status_filter = RwSignal::new(String::new());
     let include_voided = RwSignal::new(false);
     let loading = RwSignal::new(true);
@@ -69,24 +71,10 @@ fn FundingWorkspace() -> impl IntoView {
     let recording = RwSignal::new(false);
 
     Effect::new(move |_| {
-        spawn_local(async move {
-            if let Ok(page) = list_organizations(OrganizationFilters::default(), 0, 200).await {
-                organizations.set(page.items.into_iter().map(|o| (o.id, o.name)).collect());
-            }
-            if let Ok(page) = list_contacts(ContactFilters::default(), 0, 200).await {
-                contacts.set(
-                    page.items
-                        .into_iter()
-                        .map(|c| (c.id.clone(), c.display_name()))
-                        .collect(),
-                );
-            }
-        });
-    });
-
-    Effect::new(move |_| {
         let status = GrantStatus::from_slug(&status_filter.get());
         let voided = include_voided.get();
+        let grant_limit = grant_window.get();
+        let ledger_limit = ledger_window.get();
         reload.track();
         loading.set(true);
         spawn_local(async move {
@@ -94,9 +82,10 @@ fn FundingWorkspace() -> impl IntoView {
                 status,
                 ..Default::default()
             };
-            match list_grants(filters, 0, 100).await {
+            match list_grants(filters, 0, grant_limit).await {
                 Ok(page) => {
                     grants.set(page.items);
+                    grant_total.set(page.total);
                     error.set(String::new());
                 }
                 Err(e) => error.set(err_text(e)),
@@ -108,8 +97,9 @@ fn FundingWorkspace() -> impl IntoView {
                 include_voided: voided,
                 ..Default::default()
             };
-            if let Ok(page) = list_funding(funding_filters, 0, 50).await {
+            if let Ok(page) = list_funding(funding_filters, 0, ledger_limit).await {
                 ledger.set(page.items);
+                ledger_total.set(page.total);
             }
             loading.set(false);
         });
@@ -205,8 +195,6 @@ fn FundingWorkspace() -> impl IntoView {
                     <div class="mt-4 border-t border-slate-800 pt-4">
                         <GrantForm
                             grant=None
-                            organizations=organizations
-                            contacts=contacts
                             on_saved=Callback::new(move |_id: String| {
                                 creating_grant.set(false);
                                 reload.update(|r| *r += 1);
@@ -220,7 +208,10 @@ fn FundingWorkspace() -> impl IntoView {
                     <select
                         class=INPUT
                         prop:value=move || status_filter.get()
-                        on:change=move |e| status_filter.set(event_target_value(&e))
+                        on:change=move |e| {
+                            grant_window.set(50);
+                            status_filter.set(event_target_value(&e));
+                        }
                     >
                         <option value="">"Any status"</option>
                         {GrantStatus::ALL
@@ -231,6 +222,15 @@ fn FundingWorkspace() -> impl IntoView {
                 </label>
 
                 <div class="mt-4 space-y-2">{grant_rows}</div>
+                <div class="mt-4 flex items-center justify-between text-xs text-slate-500">
+                    <span>"Showing " {move || grants.get().len()} " of " {move || grant_total.get()} " grants"</span>
+                    <Show when=move || (grants.get().len() as i64) < grant_total.get()>
+                        <button type="button" on:click=move |_| grant_window.update(|value| *value += 50)
+                            class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+                            "Load more grants"
+                        </button>
+                    </Show>
+                </div>
             </div>
 
             <div class=PANEL>
@@ -253,9 +253,6 @@ fn FundingWorkspace() -> impl IntoView {
                 <Show when=move || recording.get()>
                     <div class="mt-4 border-t border-slate-800 pt-4">
                         <FundingForm
-                            grants=grants
-                            organizations=organizations
-                            contacts=contacts
                             on_saved=Callback::new(move |_id: String| {
                                 recording.set(false);
                                 reload.update(|r| *r += 1);
@@ -269,13 +266,25 @@ fn FundingWorkspace() -> impl IntoView {
                         type="checkbox"
                         class="h-4 w-4 rounded border-slate-700 bg-slate-950"
                         prop:checked=move || include_voided.get()
-                        on:change=move |e| include_voided.set(event_target_checked(&e))
+                        on:change=move |e| {
+                            ledger_window.set(50);
+                            include_voided.set(event_target_checked(&e));
+                        }
                     />
                     "Show voided records"
                 </label>
 
                 <div class="mt-3 space-y-2">
                     <FundingList records=ledger on_changed=Callback::new(move |_: ()| reload.update(|r| *r += 1)) />
+                </div>
+                <div class="mt-4 flex items-center justify-between text-xs text-slate-500">
+                    <span>"Showing " {move || ledger.get().len()} " of " {move || ledger_total.get()} " funding records"</span>
+                    <Show when=move || (ledger.get().len() as i64) < ledger_total.get()>
+                        <button type="button" on:click=move |_| ledger_window.update(|value| *value += 50)
+                            class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+                            "Load more funding"
+                        </button>
+                    </Show>
                 </div>
             </div>
         </div>
@@ -327,7 +336,14 @@ fn FundingList(records: RwSignal<Vec<FundingRecord>>, on_changed: Callback<()>) 
                         let amount = format_cents(record.amount_cents);
                         let source = record.source_label();
                         let void_reason = record.void_reason.clone();
+                        let voided_by = record.voided_by.clone();
+                        let voided_at = record.voided_at.clone();
                         let reference = record.reference.clone();
+                        let notes = record.notes.clone();
+                        let grant_name = record.grant_name.clone();
+                        let created_at = record.created_at.clone();
+                        let recorded_by = record.recorded_by.clone();
+                        let audit_id = record.id.clone();
                         let being_voided = {
                             let id = id.clone();
                             move || voiding.get() == id
@@ -371,8 +387,23 @@ fn FundingList(records: RwSignal<Vec<FundingRecord>>, on_changed: Callback<()>) 
                                     {if reference.is_empty() { String::new() } else { format!(" \u{b7} ref {reference}") }}
                                 </p>
                                 <Show when=move || voided>
-                                    <p class="mt-1 text-xs text-rose-300">"Voided: " {void_reason.clone()}</p>
+                                    <p class="mt-1 text-xs text-rose-300">
+                                        "Voided " {voided_at.clone()} " by " {voided_by.clone()} ": " {void_reason.clone()}
+                                    </p>
                                 </Show>
+                                <details class="mt-2 rounded-lg border border-slate-800 px-3 py-2">
+                                    <summary class="cursor-pointer text-xs font-medium text-slate-300">"Full record and change log"</summary>
+                                    <dl class="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+                                        <div><dt class="text-slate-500">"Funding ID"</dt><dd class="text-slate-200">{id.clone()}</dd></div>
+                                        <div><dt class="text-slate-500">"Grant"</dt><dd class="text-slate-200">{if grant_name.is_empty() { "Not linked".to_string() } else { grant_name.clone() }}</dd></div>
+                                        <div><dt class="text-slate-500">"Recorded"</dt><dd class="text-slate-200">{created_at.clone()} " by " {recorded_by.clone()}</dd></div>
+                                        <div><dt class="text-slate-500">"Reference"</dt><dd class="text-slate-200">{if reference.is_empty() { "Not provided".to_string() } else { reference.clone() }}</dd></div>
+                                        <div class="sm:col-span-2"><dt class="text-slate-500">"Notes"</dt><dd class="whitespace-pre-wrap text-slate-200">{if notes.is_empty() { "Not provided".to_string() } else { notes.clone() }}</dd></div>
+                                    </dl>
+                                    <div class="mt-3 border-t border-slate-800 pt-3">
+                                        <ChangeLog scope=AuditScope::Funding entity_id=audit_id />
+                                    </div>
+                                </details>
                                 <Show when=being_voided.clone()>
                                     <div class="mt-2 flex flex-wrap gap-2">
                                         <input
@@ -428,28 +459,10 @@ fn GrantDetail(grant_id: String) -> impl IntoView {
     let id = StoredValue::new(grant_id);
     let grant = RwSignal::new(None::<Grant>);
     let ledger = RwSignal::new(Vec::<FundingRecord>::new());
-    let organizations = RwSignal::new(Vec::<(String, String)>::new());
-    let contacts = RwSignal::new(Vec::<(String, String)>::new());
     let loading = RwSignal::new(true);
     let error = RwSignal::new(String::new());
     let editing = RwSignal::new(false);
     let reload = RwSignal::new(0u32);
-
-    Effect::new(move |_| {
-        spawn_local(async move {
-            if let Ok(page) = list_organizations(OrganizationFilters::default(), 0, 200).await {
-                organizations.set(page.items.into_iter().map(|o| (o.id, o.name)).collect());
-            }
-            if let Ok(page) = list_contacts(ContactFilters::default(), 0, 200).await {
-                contacts.set(
-                    page.items
-                        .into_iter()
-                        .map(|c| (c.id.clone(), c.display_name()))
-                        .collect(),
-                );
-            }
-        });
-    });
 
     Effect::new(move |_| {
         reload.track();
@@ -561,8 +574,6 @@ fn GrantDetail(grant_id: String) -> impl IntoView {
                             <div class="mt-4 border-t border-slate-800 pt-4">
                                 <GrantForm
                                     grant=grant.get()
-                                    organizations=organizations
-                                    contacts=contacts
                                     on_saved=Callback::new(move |_id: String| {
                                         editing.set(false);
                                         reload.update(|r| *r += 1);
@@ -612,12 +623,7 @@ fn GrantRow(label: &'static str, value: String) -> impl IntoView {
 }
 
 #[component]
-fn GrantForm(
-    grant: Option<Grant>,
-    organizations: RwSignal<Vec<(String, String)>>,
-    contacts: RwSignal<Vec<(String, String)>>,
-    on_saved: Callback<String>,
-) -> impl IntoView {
+fn GrantForm(grant: Option<Grant>, on_saved: Callback<String>) -> impl IntoView {
     let existing_id = grant.as_ref().map(|g| g.id.clone());
     let editing = StoredValue::new(existing_id.clone());
     let seed = grant.unwrap_or_default();
@@ -716,36 +722,16 @@ fn GrantForm(
                             .collect_view()}
                     </select>
                 </label>
-                <label class="block">
-                    <span class=LABEL>"Funder"</span>
-                    <select
-                        class=INPUT
-                        prop:value=move || funder.get()
-                        on:change=move |e| funder.set(event_target_value(&e))
-                    >
-                        <option value="">"No funder set"</option>
-                        {move || organizations
-                            .get()
-                            .into_iter()
-                            .map(|(id, n)| view! { <option value=id>{n}</option> })
-                            .collect_view()}
-                    </select>
-                </label>
-                <label class="block">
-                    <span class=LABEL>"Program officer"</span>
-                    <select
-                        class=INPUT
-                        prop:value=move || officer.get()
-                        on:change=move |e| officer.set(event_target_value(&e))
-                    >
-                        <option value="">"None"</option>
-                        {move || contacts
-                            .get()
-                            .into_iter()
-                            .map(|(id, n)| view! { <option value=id>{n}</option> })
-                            .collect_view()}
-                    </select>
-                </label>
+                <OrganizationPicker
+                    label="Funder"
+                    selected=funder
+                    initial_label=seed.funder_name.clone()
+                />
+                <ContactPicker
+                    label="Program officer"
+                    selected=officer
+                    initial_label=seed.program_officer_name.clone()
+                />
                 {field("Amount requested", requested, "e.g. 25000")}
                 {field("Amount awarded", awarded, "Required once awarded")}
                 {field("Application date", application_date, "YYYY-MM-DD")}
@@ -808,12 +794,7 @@ fn GrantForm(
 }
 
 #[component]
-fn FundingForm(
-    grants: RwSignal<Vec<Grant>>,
-    organizations: RwSignal<Vec<(String, String)>>,
-    contacts: RwSignal<Vec<(String, String)>>,
-    on_saved: Callback<String>,
-) -> impl IntoView {
+fn FundingForm(on_saved: Callback<String>) -> impl IntoView {
     let kind = RwSignal::new(FundingKind::default().slug().to_string());
     let amount = RwSignal::new(String::new());
     let received_on = RwSignal::new(String::new());
@@ -893,51 +874,9 @@ fn FundingForm(
                         on:input=move |e| received_on.set(event_target_value(&e))
                     />
                 </label>
-                <label class="block">
-                    <span class=LABEL>"Against grant"</span>
-                    <select
-                        class=INPUT
-                        prop:value=move || grant_id.get()
-                        on:change=move |e| grant_id.set(event_target_value(&e))
-                    >
-                        <option value="">"Not against a grant"</option>
-                        {move || grants
-                            .get()
-                            .into_iter()
-                            .map(|g| view! { <option value=g.id.clone()>{g.name.clone()}</option> })
-                            .collect_view()}
-                    </select>
-                </label>
-                <label class="block">
-                    <span class=LABEL>"From organization"</span>
-                    <select
-                        class=INPUT
-                        prop:value=move || organization_id.get()
-                        on:change=move |e| organization_id.set(event_target_value(&e))
-                    >
-                        <option value="">"None"</option>
-                        {move || organizations
-                            .get()
-                            .into_iter()
-                            .map(|(id, n)| view! { <option value=id>{n}</option> })
-                            .collect_view()}
-                    </select>
-                </label>
-                <label class="block">
-                    <span class=LABEL>"From person"</span>
-                    <select
-                        class=INPUT
-                        prop:value=move || contact_id.get()
-                        on:change=move |e| contact_id.set(event_target_value(&e))
-                    >
-                        <option value="">"None"</option>
-                        {move || contacts
-                            .get()
-                            .into_iter()
-                            .map(|(id, n)| view! { <option value=id>{n}</option> })
-                            .collect_view()}
-                    </select>
-                </label>
+                <GrantPicker label="Against grant" selected=grant_id />
+                <OrganizationPicker label="From organization" selected=organization_id />
+                <ContactPicker label="From person" selected=contact_id />
             </div>
             <label class="block">
                 <span class=LABEL>"Reference"</span>
@@ -946,6 +885,15 @@ fn FundingForm(
                     placeholder="Cheque or transfer number"
                     prop:value=move || reference.get()
                     on:input=move |e| reference.set(event_target_value(&e))
+                />
+            </label>
+            <label class="block">
+                <span class=LABEL>"Notes"</span>
+                <textarea
+                    class=INPUT
+                    rows="3"
+                    prop:value=move || notes.get()
+                    on:input=move |e| notes.set(event_target_value(&e))
                 />
             </label>
             <Show when=move || !error.get().is_empty()>
@@ -960,5 +908,150 @@ fn FundingForm(
                 {move || if busy.get() { "Saving\u{2026}" } else { "Record funding" }}
             </button>
         </div>
+    }
+}
+
+#[component]
+fn OrganizationPicker(
+    label: &'static str,
+    selected: RwSignal<String>,
+    #[prop(optional)] initial_label: String,
+) -> impl IntoView {
+    let query = RwSignal::new(initial_label);
+    let debounced = RwSignal::new(String::new());
+    let results = RwSignal::new(Vec::<ActiveOrganizationSummary>::new());
+    let mut search = debounce(std::time::Duration::from_millis(300), move |value| {
+        debounced.set(value)
+    });
+    Effect::new(move |_| {
+        let value = debounced.get();
+        spawn_local(async move {
+            match search_active_organizations(value).await {
+                Ok(items) => results.set(items),
+                Err(_) => results.set(Vec::new()),
+            }
+        });
+    });
+    view! {
+        <label class="block">
+            <span class=LABEL>{label}</span>
+            <input type="search" class=INPUT placeholder="Search active organizations"
+                prop:value=move || query.get()
+                on:input=move |event| {
+                    selected.set(String::new());
+                    let value = event_target_value(&event);
+                    query.set(value.clone());
+                    search(value);
+                } />
+            <Show when=move || selected.get().is_empty() && !query.get().is_empty()>
+                <div class="mt-1 max-h-32 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950">
+                    {move || results.get().into_iter().map(|item| {
+                        let id = item.id.clone();
+                        let name = item.name.clone();
+                        view! { <button type="button" class="block w-full px-3 py-1.5 text-left text-xs text-slate-200 hover:bg-slate-800"
+                            on:click=move |_| { selected.set(id.clone()); query.set(name.clone()); }>{item.name}</button> }
+                    }).collect_view()}
+                </div>
+            </Show>
+            <Show when=move || !query.get().is_empty()>
+                <button type="button" class="mt-1 text-xs text-slate-500 hover:text-slate-300"
+                    on:click=move |_| { selected.set(String::new()); query.set(String::new()); results.set(Vec::new()); }>"Clear"</button>
+            </Show>
+        </label>
+    }
+}
+
+#[component]
+fn ContactPicker(
+    label: &'static str,
+    selected: RwSignal<String>,
+    #[prop(optional)] initial_label: String,
+) -> impl IntoView {
+    let query = RwSignal::new(initial_label);
+    let debounced = RwSignal::new(String::new());
+    let results = RwSignal::new(Vec::<ActiveContactSummary>::new());
+    let mut search = debounce(std::time::Duration::from_millis(300), move |value| {
+        debounced.set(value)
+    });
+    Effect::new(move |_| {
+        let value = debounced.get();
+        spawn_local(async move {
+            match search_active_contacts(value).await {
+                Ok(items) => results.set(items),
+                Err(_) => results.set(Vec::new()),
+            }
+        });
+    });
+    view! {
+        <label class="block">
+            <span class=LABEL>{label}</span>
+            <input type="search" class=INPUT placeholder="Search active people"
+                prop:value=move || query.get()
+                on:input=move |event| {
+                    selected.set(String::new());
+                    let value = event_target_value(&event);
+                    query.set(value.clone());
+                    search(value);
+                } />
+            <Show when=move || selected.get().is_empty() && !query.get().is_empty()>
+                <div class="mt-1 max-h-32 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950">
+                    {move || results.get().into_iter().map(|item| {
+                        let id = item.id.clone();
+                        let label = item.label.clone();
+                        view! { <button type="button" class="block w-full px-3 py-1.5 text-left text-xs text-slate-200 hover:bg-slate-800"
+                            on:click=move |_| { selected.set(id.clone()); query.set(label.clone()); }>{item.label}</button> }
+                    }).collect_view()}
+                </div>
+            </Show>
+            <Show when=move || !query.get().is_empty()>
+                <button type="button" class="mt-1 text-xs text-slate-500 hover:text-slate-300"
+                    on:click=move |_| { selected.set(String::new()); query.set(String::new()); results.set(Vec::new()); }>"Clear"</button>
+            </Show>
+        </label>
+    }
+}
+
+#[component]
+fn GrantPicker(label: &'static str, selected: RwSignal<String>) -> impl IntoView {
+    let query = RwSignal::new(String::new());
+    let debounced = RwSignal::new(String::new());
+    let results = RwSignal::new(Vec::<(String, String)>::new());
+    let mut search = debounce(std::time::Duration::from_millis(300), move |value| {
+        debounced.set(value)
+    });
+    Effect::new(move |_| {
+        let value = debounced.get();
+        spawn_local(async move {
+            match search_grant_options(value).await {
+                Ok(items) => results.set(items),
+                Err(_) => results.set(Vec::new()),
+            }
+        });
+    });
+    view! {
+        <label class="block">
+            <span class=LABEL>{label}</span>
+            <input type="search" class=INPUT placeholder="Search grants"
+                prop:value=move || query.get()
+                on:input=move |event| {
+                    selected.set(String::new());
+                    let value = event_target_value(&event);
+                    query.set(value.clone());
+                    search(value);
+                } />
+            <Show when=move || selected.get().is_empty() && !query.get().is_empty()>
+                <div class="mt-1 max-h-32 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950">
+                    {move || results.get().into_iter().map(|(id, name)| {
+                        let selected_name = name.clone();
+                        view! { <button type="button" class="block w-full px-3 py-1.5 text-left text-xs text-slate-200 hover:bg-slate-800"
+                            on:click=move |_| { selected.set(id.clone()); query.set(selected_name.clone()); }>{name}</button> }
+                    }).collect_view()}
+                </div>
+            </Show>
+            <Show when=move || !query.get().is_empty()>
+                <button type="button" class="mt-1 text-xs text-slate-500 hover:text-slate-300"
+                    on:click=move |_| { selected.set(String::new()); query.set(String::new()); results.set(Vec::new()); }>"Clear"</button>
+            </Show>
+        </label>
     }
 }

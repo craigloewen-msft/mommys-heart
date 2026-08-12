@@ -156,6 +156,7 @@ pub async fn add_case_contact(
         role,
         &clean_note(&note)?,
         is_primary,
+        &user.id,
         &user.full_name(),
     )
     .await
@@ -187,6 +188,7 @@ pub async fn update_case_contact(
         role,
         &clean_note(&note)?,
         is_primary,
+        &user.id,
         &user.full_name(),
     )
     .await
@@ -206,7 +208,7 @@ pub async fn remove_case_contact(id: String) -> Result<(), ServerFnError> {
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("That case contact no longer exists."))?;
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
-    case_contacts::remove(&id, &case_id, &user.full_name())
+    case_contacts::remove(&id, &case_id, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }

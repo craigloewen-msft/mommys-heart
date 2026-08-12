@@ -53,6 +53,8 @@ fn OrganizationDirectory() -> impl IntoView {
     let include_archived = RwSignal::new(false);
     let applied = RwSignal::new(OrganizationFilters::default());
     let items = RwSignal::new(Vec::<Organization>::new());
+    let total = RwSignal::new(0i64);
+    let window = RwSignal::new(50i64);
     let loading = RwSignal::new(true);
     let error = RwSignal::new(String::new());
     let reload = RwSignal::new(0u32);
@@ -60,12 +62,14 @@ fn OrganizationDirectory() -> impl IntoView {
 
     Effect::new(move |_| {
         let filters = applied.get();
+        let limit = window.get();
         reload.track();
         loading.set(true);
         spawn_local(async move {
-            match list_organizations(filters, 0, 200).await {
+            match list_organizations(filters, 0, limit).await {
                 Ok(page) => {
                     items.set(page.items);
+                    total.set(page.total);
                     error.set(String::new());
                 }
                 Err(e) => error.set(err_text(e)),
@@ -75,6 +79,7 @@ fn OrganizationDirectory() -> impl IntoView {
     });
 
     let apply = move |_| {
+        window.set(50);
         applied.set(OrganizationFilters {
             keyword: keyword.get_untracked(),
             kind: OrganizationKind::from_slug(&kind_filter.get_untracked()),
@@ -196,6 +201,15 @@ fn OrganizationDirectory() -> impl IntoView {
             </button>
 
             <div class="mt-4 space-y-2">{rows}</div>
+            <div class="mt-4 flex items-center justify-between text-xs text-slate-500">
+                <span>"Showing " {move || items.get().len()} " of " {move || total.get()} " organizations"</span>
+                <Show when=move || (items.get().len() as i64) < total.get()>
+                    <button type="button" on:click=move |_| window.update(|value| *value += 50)
+                        class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+                        "Load more"
+                    </button>
+                </Show>
+            </div>
         </div>
     }
 }
@@ -212,6 +226,10 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
     let organization = RwSignal::new(None::<Organization>);
     let contacts = RwSignal::new(Vec::<Contact>::new());
     let grants = RwSignal::new(Vec::<Grant>::new());
+    let contact_total = RwSignal::new(0i64);
+    let contact_window = RwSignal::new(50i64);
+    let grant_total = RwSignal::new(0i64);
+    let grant_window = RwSignal::new(50i64);
     let loading = RwSignal::new(true);
     let error = RwSignal::new(String::new());
     let editing = RwSignal::new(false);
@@ -219,6 +237,8 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
 
     Effect::new(move |_| {
         reload.track();
+        let contact_limit = contact_window.get();
+        let grant_limit = grant_window.get();
         loading.set(true);
         spawn_local(async move {
             match load_organization(id.get_value()).await {
@@ -233,16 +253,18 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                 include_archived: true,
                 ..Default::default()
             };
-            if let Ok(page) = list_contacts(filters, 0, 100).await {
+            if let Ok(page) = list_contacts(filters, 0, contact_limit).await {
                 contacts.set(page.items);
+                contact_total.set(page.total);
             }
             if is_admin {
                 let filters = GrantFilters {
                     funder_organization_id: id.get_value(),
                     ..Default::default()
                 };
-                if let Ok(page) = list_grants(filters, 0, 100).await {
+                if let Ok(page) = list_grants(filters, 0, grant_limit).await {
                     grants.set(page.items);
+                    grant_total.set(page.total);
                 }
             }
             loading.set(false);
@@ -345,6 +367,8 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                     organization_id=id.get_value()
                     organization_name=org.name
                     contacts
+                    total=contact_total
+                    window=contact_window
                     reload
                 />
             })}
@@ -370,6 +394,15 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                             }).collect_view().into_any()
                         }}
                     </div>
+                    <div class="mt-4 flex items-center justify-between text-xs text-slate-500">
+                        <span>"Showing " {move || grants.get().len()} " of " {move || grant_total.get()} " grants"</span>
+                        <Show when=move || (grants.get().len() as i64) < grant_total.get()>
+                            <button type="button" on:click=move |_| grant_window.update(|value| *value += 50)
+                                class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+                                "Load more grants"
+                            </button>
+                        </Show>
+                    </div>
                 </div>
 
                 <div class=PANEL>
@@ -392,6 +425,8 @@ fn OrganizationPeoplePanel(
     organization_id: String,
     organization_name: String,
     contacts: RwSignal<Vec<Contact>>,
+    total: RwSignal<i64>,
+    window: RwSignal<i64>,
     reload: RwSignal<u32>,
 ) -> impl IntoView {
     let id = StoredValue::new(organization_id);
@@ -558,6 +593,15 @@ fn OrganizationPeoplePanel(
                 <p class="mt-3 text-sm text-rose-300" role="alert">{move || error.get()}</p>
             </Show>
             <div class="mt-4 space-y-2">{rows}</div>
+            <div class="mt-4 flex items-center justify-between text-xs text-slate-500">
+                <span>"Showing " {move || contacts.get().len()} " of " {move || total.get()} " people"</span>
+                <Show when=move || (contacts.get().len() as i64) < total.get()>
+                    <button type="button" on:click=move |_| window.update(|value| *value += 50)
+                        class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+                        "Load more people"
+                    </button>
+                </Show>
+            </div>
         </div>
     }
 }

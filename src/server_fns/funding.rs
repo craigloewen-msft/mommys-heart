@@ -53,6 +53,8 @@ pub struct FundingRecord {
     pub notes: String,
     pub voided: bool,
     pub void_reason: String,
+    pub voided_by: String,
+    pub voided_at: String,
     pub recorded_by: String,
     pub created_at: String,
 }
@@ -173,7 +175,7 @@ pub async fn record_funding(input: FundingInput) -> Result<String, ServerFnError
     let user = require_user().await?;
     require_operations_admin(&user)?;
     let validated = input.validate().map_err(ServerFnError::new)?;
-    funding::create(&validated, &user.full_name())
+    funding::create(&validated, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }
@@ -193,7 +195,7 @@ pub async fn void_funding(id: String, reason: String) -> Result<(), ServerFnErro
             "Give a reason so the correction explains itself later.",
         ));
     }
-    funding::void(&id, &reason, &user.full_name())
+    funding::void(&id, &reason, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }

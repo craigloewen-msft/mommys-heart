@@ -27,6 +27,9 @@ pub fn ContactForm(
     let editing = StoredValue::new(existing_id.clone());
 
     let seed = contact.unwrap_or_default();
+    // REQ-CRM-047: linked-account identity is projected from `users` and cannot
+    // be edited through the independent CRM contact form.
+    let account_owned_identity = seed.has_account();
     let initial_organization_name = if !seed.organization_name.is_empty() {
         seed.organization_name.clone()
     } else {
@@ -151,12 +154,12 @@ pub fn ContactForm(
     view! {
         <div class="space-y-4">
             <div class="grid gap-3 sm:grid-cols-2">
-                {text_field("First name", first_name, "")}
-                {text_field("Last name", last_name, "Required unless an organization is set")}
+                <IdentityField label="Account first name" signal=first_name locked=account_owned_identity />
+                <IdentityField label="Account last name" signal=last_name locked=account_owned_identity />
                 {text_field("Preferred name", preferred_name, "")}
                 {text_field("Job title", job_title, "")}
-                {text_field("Email", email, "")}
-                {text_field("Phone", phone, "")}
+                <IdentityField label="Sign-in email" signal=email locked=account_owned_identity />
+                <IdentityField label="Account phone" signal=phone locked=account_owned_identity />
                 {text_field("Mobile", mobile, "")}
                 {text_field("Source", source, "How we met them")}
             </div>
@@ -225,7 +228,12 @@ pub fn ContactForm(
                 </Show>
             </div>
 
-            {text_field("Address", address, "")}
+            <IdentityField label="Account address" signal=address locked=account_owned_identity />
+            <Show when=move || account_owned_identity>
+                <p class="text-xs text-slate-500">
+                    "Account identity fields are read-only here. Change them on the linked profile; preferred name, mobile, job title, and CRM fields remain editable."
+                </p>
+            </Show>
 
             <div>
                 <span class=LABEL>"Contact types"</span>
@@ -297,5 +305,25 @@ pub fn ContactForm(
                 }}
             </button>
         </div>
+    }
+}
+
+#[component]
+fn IdentityField(label: &'static str, signal: RwSignal<String>, locked: bool) -> impl IntoView {
+    view! {
+        <label class="block">
+            <span class=LABEL>{label}</span>
+            <input
+                class=INPUT
+                prop:value=move || signal.get()
+                readonly=locked
+                aria-readonly=locked.to_string()
+                on:input=move |event| {
+                    if !locked {
+                        signal.set(event_target_value(&event));
+                    }
+                }
+            />
+        </label>
     }
 }

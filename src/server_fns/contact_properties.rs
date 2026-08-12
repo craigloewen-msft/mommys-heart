@@ -112,7 +112,7 @@ pub async fn set_contact_properties(
     require_operations_admin(&user)?;
     let cleaned = clean(properties);
     validate(&cleaned).map_err(ServerFnError::new)?;
-    contact_properties::replace(&contact_id, cleaned, &user.full_name())
+    contact_properties::replace(&contact_id, cleaned, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }
@@ -127,7 +127,7 @@ pub async fn add_missing_contact_property_defaults(
 
     let user = require_user().await?;
     require_operations_admin(&user)?;
-    contact_properties::add_missing_defaults(&contact_id, &user.full_name())
+    contact_properties::add_missing_defaults(&contact_id, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }

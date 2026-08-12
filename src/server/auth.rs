@@ -155,10 +155,14 @@ pub fn generate_code() -> String {
     format!("{n:06}")
 }
 
-/// Whether to skip the emailed one-time code and sign in on the password alone.
-/// This is ONLY done during debug builds
+/// Whether an explicitly non-production process may bypass emailed MFA.
 pub fn skip_mfa() -> bool {
-    cfg!(debug_assertions) || !crate::server::config::EmailConfig::from_env().is_configured()
+    if crate::server::config::is_production() {
+        return false;
+    }
+    cfg!(debug_assertions)
+        || std::env::var("ALLOW_MFA_BYPASS")
+            .is_ok_and(|value| value.eq_ignore_ascii_case("true") || value == "1")
 }
 
 /// Extractor that resolves the session cookie to the signed-in [`User`],

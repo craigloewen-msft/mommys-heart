@@ -46,3 +46,19 @@ pub async fn consume(token: &str) -> Result<Option<String>, sqlx::Error> {
     .fetch_optional(pool())
     .await
 }
+
+/// Transactional token consumption for the atomic credential-reset path.
+pub async fn consume_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    token: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "UPDATE password_reset_tokens
+         SET used = true
+         WHERE token_hash = $1 AND used = false AND expires_at > now()
+         RETURNING user_id",
+    )
+    .bind(hash(token))
+    .fetch_optional(&mut **tx)
+    .await
+}

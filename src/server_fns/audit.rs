@@ -15,6 +15,9 @@ use crate::server_fns::pagination::Page;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChangeLogEntry {
     pub id: String,
+    /// Stable authenticated account id; empty on legacy entries.
+    #[serde(default)]
+    pub actor_user_id: String,
     /// Display name of the actor who made the change.
     pub actor: String,
     /// The field or property that changed.
@@ -36,6 +39,7 @@ pub enum AuditScope {
     Contact,
     Organization,
     Grant,
+    Funding,
 }
 
 #[server(prefix = "/api")]
@@ -84,6 +88,10 @@ pub async fn list_audit_page(
         AuditScope::Grant => {
             require_operations_admin(&user)?;
             Entity::Grant
+        }
+        AuditScope::Funding => {
+            require_operations_admin(&user)?;
+            Entity::Funding
         }
     };
 

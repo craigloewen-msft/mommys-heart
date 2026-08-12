@@ -19,6 +19,7 @@ pub enum Entity {
     Contact,
     Organization,
     Grant,
+    Funding,
 }
 
 impl Entity {
@@ -29,6 +30,7 @@ impl Entity {
             Entity::Contact => "contact",
             Entity::Organization => "organization",
             Entity::Grant => "grant",
+            Entity::Funding => "funding",
         }
     }
 }
@@ -36,6 +38,7 @@ impl Entity {
 #[derive(sqlx::FromRow)]
 struct AuditRow {
     id: String,
+    actor_user_id: Option<String>,
     actor: String,
     field: String,
     old_value: String,
@@ -47,6 +50,7 @@ impl From<AuditRow> for ChangeLogEntry {
     fn from(r: AuditRow) -> Self {
         ChangeLogEntry {
             id: r.id,
+            actor_user_id: r.actor_user_id.unwrap_or_default(),
             actor: r.actor,
             field: r.field,
             old_value: r.old_value,
@@ -87,7 +91,7 @@ pub async fn page(
     .await?;
 
     let rows = sqlx::query_as::<_, AuditRow>(
-        "SELECT id, actor, field, old_value, new_value, at
+        "SELECT id, actor_user_id, actor, field, old_value, new_value, at
          FROM audit_log
          WHERE entity_type = $1 AND entity_id = $2
            AND ($3 = '' OR left(at, 10) >= $3)
@@ -162,6 +166,19 @@ pub async fn record_with_visibility(
     .await
 }
 
+/// Bind the authenticated account to this transaction. CRM audit writes inherit
+/// the stable id without duplicating it at every repository call.
+pub async fn set_actor_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    actor_user_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT set_config('app.actor_user_id', $1, true)")
+        .bind(actor_user_id)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
+}
+
 /// Append an audit entry as part of an existing transaction, so the audited
 /// mutation and its audit record commit or roll back together.
 pub async fn record_in_transaction(
@@ -182,6 +199,58 @@ pub async fn record_in_transaction(
         old_value,
         new_value,
         Visibility::Shared,
+    )
+    .await
+}
+
+/// Record a mutation with both stable actor identity and its historical display
+/// snapshot. Legacy callers may continue using [`record_in_transaction`].
+pub async fn record_in_transaction_by(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entity: Entity,
+    entity_id: &str,
+    actor_user_id: &str,
+    actor: &str,
+    field: &str,
+    old_value: &str,
+    new_value: &str,
+) -> Result<(), sqlx::Error> {
+    record_with_connection_by(
+        &mut **transaction,
+        entity,
+        entity_id,
+        Some(actor_user_id),
+        actor,
+        field,
+        old_value,
+        new_value,
+        Visibility::Shared,
+    )
+    .await
+}
+
+/// Stable-actor variant for restricted audit metadata.
+pub async fn record_in_transaction_by_with_visibility(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entity: Entity,
+    entity_id: &str,
+    actor_user_id: &str,
+    actor: &str,
+    field: &str,
+    old_value: &str,
+    new_value: &str,
+    visibility: Visibility,
+) -> Result<(), sqlx::Error> {
+    record_with_connection_by(
+        &mut **transaction,
+        entity,
+        entity_id,
+        Some(actor_user_id),
+        actor,
+        field,
+        old_value,
+        new_value,
+        visibility,
     )
     .await
 }
@@ -220,15 +289,36 @@ async fn record_with_connection(
     new_value: &str,
     visibility: Visibility,
 ) -> Result<(), sqlx::Error> {
+    record_with_connection_by(
+        connection, entity, entity_id, None, actor, field, old_value, new_value, visibility,
+    )
+    .await
+}
+
+async fn record_with_connection_by(
+    connection: &mut sqlx::PgConnection,
+    entity: Entity,
+    entity_id: &str,
+    actor_user_id: Option<&str>,
+    actor: &str,
+    field: &str,
+    old_value: &str,
+    new_value: &str,
+    visibility: Visibility,
+) -> Result<(), sqlx::Error> {
     let id = ids::next(&mut *connection, "cl").await?;
     sqlx::query(
         "INSERT INTO audit_log
-            (id, entity_type, entity_id, actor, field, old_value, new_value, at, visibility)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            (id, entity_type, entity_id, actor_user_id, actor, field, old_value,
+             new_value, at, visibility)
+         VALUES ($1, $2, $3,
+                 COALESCE($4, NULLIF(current_setting('app.actor_user_id', true), '')),
+                 $5, $6, $7, $8, $9, $10)",
     )
     .bind(&id)
     .bind(entity.as_str())
     .bind(entity_id)
+    .bind(actor_user_id)
     .bind(actor)
     .bind(field)
     .bind(old_value)

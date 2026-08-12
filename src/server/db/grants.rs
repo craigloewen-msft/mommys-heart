@@ -159,9 +159,35 @@ pub async fn options() -> Result<Vec<(String, String)>, sqlx::Error> {
     Ok(rows)
 }
 
-pub async fn create(input: &ValidatedGrant, actor: &str) -> Result<String, sqlx::Error> {
+/// Bounded server-side grant search for relationship pickers.
+pub async fn search_options(query: &str, limit: i64) -> Result<Vec<(String, String)>, sqlx::Error> {
+    let pattern = if query.trim().is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            query.trim().replace('%', "\\%").replace('_', "\\_")
+        ))
+    };
+    sqlx::query_as(
+        "SELECT id, name FROM grants
+         WHERE status <> 'declined' AND ($1::text IS NULL OR name ILIKE $1 ESCAPE '\\')
+         ORDER BY lower(name), seq DESC LIMIT $2",
+    )
+    .bind(pattern)
+    .bind(limit.clamp(1, 50))
+    .fetch_all(pool())
+    .await
+}
+
+pub async fn create(
+    input: &ValidatedGrant,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<String, sqlx::Error> {
     let id = ids::next(pool(), "gr").await?;
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     sqlx::query(
         "INSERT INTO grants
              (id, name, status, funder_organization_id, program_officer_contact_id,
@@ -201,7 +227,12 @@ pub async fn create(input: &ValidatedGrant, actor: &str) -> Result<String, sqlx:
 
 /// Update a grant, recording the status transition in the Change Log when it
 /// actually moves.
-pub async fn update(id: &str, input: &ValidatedGrant, actor: &str) -> Result<(), sqlx::Error> {
+pub async fn update(
+    id: &str,
+    input: &ValidatedGrant,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
     let previous: Option<String> = sqlx::query_scalar("SELECT status FROM grants WHERE id = $1")
         .bind(id)
         .fetch_optional(pool())
@@ -209,6 +240,7 @@ pub async fn update(id: &str, input: &ValidatedGrant, actor: &str) -> Result<(),
     let previous = previous.ok_or(sqlx::Error::RowNotFound)?;
 
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     sqlx::query(
         "UPDATE grants
          SET name = $2, status = $3, funder_organization_id = $4,

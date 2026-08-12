@@ -111,12 +111,14 @@ pub async fn add_defaults_for_new_organization(
 pub async fn replace(
     organization_id: &str,
     properties: Vec<OrganizationProperty>,
+    actor_user_id: &str,
     actor: &str,
 ) -> Result<(), sqlx::Error> {
     let existing = list(organization_id).await?;
     let changed = existing != properties;
 
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     sqlx::query("DELETE FROM organization_properties WHERE organization_id = $1")
         .bind(organization_id)
         .execute(&mut *tx)
@@ -140,8 +142,13 @@ pub async fn replace(
 }
 
 /// Add the missing defaults once, auditing only when rows were appended.
-pub async fn add_missing_defaults(organization_id: &str, actor: &str) -> Result<(), sqlx::Error> {
+pub async fn add_missing_defaults(
+    organization_id: &str,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
     let changed = ensure_defaults_in_transaction(&mut tx, organization_id).await?;
     if changed {
         audit::record_in_transaction(

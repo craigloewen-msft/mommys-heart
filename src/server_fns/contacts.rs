@@ -79,6 +79,9 @@ pub struct Contact {
     /// Read-only snapshots of the linked account, owned by `users`.
     pub linked_email: String,
     pub linked_role: Option<AccountRole>,
+    /// Preserved contact values differ from account-owned projected fields.
+    #[serde(default)]
+    pub has_account_field_conflict: bool,
 }
 
 impl Contact {
@@ -239,7 +242,7 @@ pub async fn create_contact(input: ContactInput) -> Result<String, ServerFnError
     let user = require_user().await?;
     require_operations_admin(&user)?;
     let input = input.validate().map_err(ServerFnError::new)?;
-    contacts::create(&input, &user.full_name())
+    contacts::create(&input, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }
@@ -252,7 +255,7 @@ pub async fn update_contact(id: String, input: ContactInput) -> Result<(), Serve
     let user = require_user().await?;
     require_operations_admin(&user)?;
     let input = input.validate().map_err(ServerFnError::new)?;
-    contacts::update(&id, &input, &user.full_name())
+    contacts::update(&id, &input, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }
@@ -266,7 +269,7 @@ pub async fn set_contact_archived(id: String, archived: bool) -> Result<(), Serv
 
     let user = require_user().await?;
     require_operations_admin(&user)?;
-    contacts::set_archived(&id, archived, &user.full_name())
+    contacts::set_archived(&id, archived, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }
@@ -310,6 +313,7 @@ pub async fn set_contact_account(id: String, user_id: String) -> Result<(), Serv
     contacts::set_account(
         &id,
         (!target.is_empty()).then_some(target),
+        &user.id,
         &user.full_name(),
     )
     .await
@@ -332,6 +336,7 @@ pub async fn set_contact_organization(
     contacts::set_organization(
         &contact_id,
         (!target.is_empty()).then_some(target),
+        &user.id,
         &user.full_name(),
     )
     .await

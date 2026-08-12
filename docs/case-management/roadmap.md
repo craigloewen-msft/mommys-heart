@@ -18,7 +18,18 @@ scheduled, because scheduling them would imply the decision has been made.
 
 ## Phase 3 (next)
 
-### 3.1 Referrals and service records
+### 3.0 Production approval gates
+
+Engineering safeguards for MFA, credential reset, browser requests, evidence
+scanning, stable actor attribution, funding audit, and collection scaling are
+delivered. Production approval remains blocked until the organization supplies
+the owners and evidence in
+[`../operations/production-readiness.md`](../operations/production-readiness.md):
+retention/legal hold, backup and restore objectives/drill, incident response,
+accessibility target, and independent security review.
+
+
+### 3.1 Referrals and service records (`REQ-CRM-050`)
 
 Record that a client was referred to a provider, with status and outcome, rather
 than describing it in a note narrative.
@@ -29,7 +40,7 @@ than describing it in a note narrative.
   `src/server_fns/case_notes.rs` rather than inventing a parallel one.
 - **Open question:** may a client ever see that they were referred somewhere?
 
-### 3.2 Client goals and service-plan objectives
+### 3.2 Client goals and service-plan objectives (`REQ-CRM-051`)
 
 Track what a case is working toward, with an append-only progress history.
 
@@ -47,7 +58,7 @@ So a note can record which goal it advanced.
   an intricate transaction. The link belongs in a separate table written in the
   same transaction, not as a new column on `case_notes`.
 
-### 3.4 Duplicate detection and contact merging
+### 3.4 Duplicate detection and contact merging (`REQ-CRM-049`)
 
 Phase 2 makes it possible to create a contact for someone who already has one —
 for instance when an account is added later and never linked.
@@ -71,7 +82,7 @@ of truth.
 - **Depends on:** a concrete reporting or workflow need for multiple concurrent
   affiliations and a decision about historical snapshots.
 
-### 4.2 Tasks, reminders, court deadlines, and a case timeline
+### 4.2 Tasks, reminders, court deadlines, and a case timeline (`REQ-CRM-052`)
 
 Dated obligations that currently live in note narratives or chat.
 
@@ -114,7 +125,7 @@ Search across cases, notes, and contacts from one place.
 - **Constraint:** results must contain only records the caller is allowed to know
   exist — a search index is the easiest way to leak existence.
 
-### 4.7 Bulk import and export
+### 4.7 Bulk import and export (`REQ-CRM-053`)
 
 Onboarding an existing contact list, and getting data out.
 

@@ -3,7 +3,7 @@
 #[cfg(feature = "ssr")]
 #[tokio::main]
 async fn main() {
-    use axum::Router;
+    use axum::{middleware, Router};
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use mommys_heart_app::app::{shell, App};
@@ -17,6 +17,12 @@ async fn main() {
     // Start structured logging first so startup (incl. DB migrations/seeding) is
     // captured. Verbosity is controlled by `RUST_LOG`.
     telemetry::init();
+
+    // REQ-SEC-001/004/005: production never starts with MFA, secure cookies,
+    // origin validation, or malware quarantine accidentally disabled.
+    if let Err(error) = mommys_heart_app::server::config::validate_production() {
+        panic!("unsafe production configuration: {error}");
+    }
 
     if std::env::args().nth(1).as_deref() == Some("seed") {
         if let Err(e) = mommys_heart_app::server::db::init().await {
@@ -92,6 +98,10 @@ async fn main() {
     let app = server_fns::evidence::install(app);
     let app = api::message_transcripts::install(app)
         .fallback(leptos_axum::file_and_error_handler(shell))
+        // The security layer is outermost so it covers SSR, RPC, and REST responses.
+        .layer(middleware::from_fn(
+            mommys_heart_app::server::security::protect,
+        ))
         // Log every incoming request (method, path, status, latency).
         .layer(TraceLayer::new_for_http())
         .with_state(leptos_options);

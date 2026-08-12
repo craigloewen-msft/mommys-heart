@@ -411,6 +411,12 @@ fn PersonDetail(contact_id: String) -> impl IntoView {
 
                     <ContactPropertiesPanel contact_id=id.get_value() />
 
+                    <Show when=move || person.has_account_field_conflict>
+                        <div class="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+                            "This linked person has preserved CRM identity values that differ from the account. The account-owned values shown above are authoritative; review the migration conflict record before unlinking."
+                        </div>
+                    </Show>
+
                     <ContactCasesPanel contact_id=id.get_value() />
 
                     <AccountLink

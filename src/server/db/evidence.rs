@@ -63,6 +63,33 @@ impl EvidenceRow {
     }
 }
 
+/// Persist a scan outcome even when rejected bytes never become evidence.
+pub async fn record_scan(
+    evidence_id: &str,
+    case_id: &str,
+    actor_user_id: &str,
+    actor: &str,
+    sha256: &str,
+    status: &str,
+    detail: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO evidence_scan_log
+             (evidence_id, case_id, actor_user_id, actor, sha256, status, detail)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(evidence_id)
+    .bind(case_id)
+    .bind(actor_user_id)
+    .bind(actor)
+    .bind(sha256)
+    .bind(status)
+    .bind(detail)
+    .execute(pool())
+    .await?;
+    Ok(())
+}
+
 /// The file details of a stored upload.
 pub struct EvidenceFile<'a> {
     pub original_filename: &'a str,
@@ -204,7 +231,8 @@ pub async fn set_file(
 
     sqlx::query(
         "UPDATE evidence SET uploaded_by = $2, uploaded_at = $3, original_filename = $4,
-                content_type = $5, size_bytes = $6, sha256 = $7, blob_path = $8
+                content_type = $5, size_bytes = $6, sha256 = $7, blob_path = $8,
+                scan_status = 'clean', scanned_at = now(), scan_detail = $9
          WHERE id = $1",
     )
     .bind(evidence_id)
@@ -215,6 +243,7 @@ pub async fn set_file(
     .bind(file.size_bytes)
     .bind(file.sha256)
     .bind(file.blob_path)
+    .bind("Malware scan passed")
     .execute(pool())
     .await?;
 
@@ -234,12 +263,14 @@ pub async fn set_file(
 /// The blob path backing a piece of evidence, or an empty string when it has no
 /// file. `None` when the evidence does not exist on the case.
 pub async fn blob_path(case_id: &str, evidence_id: &str) -> Result<Option<String>, sqlx::Error> {
-    let path: Option<String> =
-        sqlx::query_scalar("SELECT blob_path FROM evidence WHERE case_id = $1 AND id = $2")
-            .bind(case_id)
-            .bind(evidence_id)
-            .fetch_optional(pool())
-            .await?;
+    let path: Option<String> = sqlx::query_scalar(
+        "SELECT blob_path FROM evidence
+             WHERE case_id = $1 AND id = $2 AND scan_status = 'clean'",
+    )
+    .bind(case_id)
+    .bind(evidence_id)
+    .fetch_optional(pool())
+    .await?;
     Ok(path)
 }
 
@@ -284,7 +315,8 @@ pub async fn download_meta(
     evidence_id: &str,
 ) -> Result<Option<(String, String)>, sqlx::Error> {
     let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT original_filename, content_type FROM evidence WHERE case_id = $1 AND id = $2",
+        "SELECT original_filename, content_type FROM evidence
+         WHERE case_id = $1 AND id = $2 AND scan_status = 'clean'",
     )
     .bind(case_id)
     .bind(evidence_id)
