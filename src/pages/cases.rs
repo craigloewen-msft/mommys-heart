@@ -2068,7 +2068,10 @@ pub fn CaseDetail(
                 ().into_any()
             } else {
                 view! {
-                    <CaseContactsPanel case_id=case_sv.get_value() can_edit=can_edit />
+                    <CaseContactsPanel
+                        case_id=case_sv.get_value()
+                        can_edit=can_edit && has_operations_admin_permissions
+                    />
                 }
                 .into_any()
             }}

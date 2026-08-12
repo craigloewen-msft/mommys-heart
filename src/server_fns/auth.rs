@@ -313,9 +313,9 @@ pub async fn register(
     let first_name = first_name.trim().to_string();
     let last_name = last_name.trim().to_string();
     let email = email.trim().to_lowercase();
-    if first_name.is_empty() || email.is_empty() || password.is_empty() {
+    if first_name.is_empty() || last_name.is_empty() || email.is_empty() || password.is_empty() {
         return Err(ServerFnError::new(
-            "Please fill in first name, email, and password.",
+            "Please fill in first name, last name, email, and password.",
         ));
     }
     validate_account_lengths(&first_name, &last_name, &email)?;
@@ -491,7 +491,11 @@ pub async fn register_case_signup(
 pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
     use crate::server::auth::{build_session_cookie, clear_register_cookie, REGISTER_COOKIE_NAME};
     use crate::server::db::pending_registrations::{self, Verify};
-    use crate::server::db::{cases, clients, pool, sessions, throttle, users};
+    use crate::server::db::{
+        case_contacts, cases, clients, contacts, pool, sessions, throttle, users,
+    };
+    use crate::server_fns::case_contacts::CaseContactRole;
+    use crate::server_fns::contacts::{ContactInput, ContactType};
     use crate::server_fns::users::AccountRole;
 
     let code = code.trim();
@@ -566,6 +570,22 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
         .await
         .map_err(ServerFnError::new)?;
 
+    let contact_id = contacts::create_linked_in(
+        &mut tx,
+        &ContactInput {
+            first_name: account.first_name.clone(),
+            last_name: account.last_name.clone(),
+            email: account.email.clone(),
+            types: vec![ContactType::Client],
+            source: "Account registration".to_string(),
+            ..Default::default()
+        },
+        &id,
+        &account.full_name(),
+    )
+    .await
+    .map_err(ServerFnError::new)?;
+
     if let Some(signup) = pending.case_signup {
         let intake: CaseIntake =
             serde_json::from_str(&signup.intake_json).map_err(ServerFnError::new)?;
@@ -577,6 +597,17 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
             &signup.case_name,
             intake.properties(),
             &signup.terms_version,
+        )
+        .await
+        .map_err(ServerFnError::new)?;
+        case_contacts::add_in(
+            &mut tx,
+            &signup.case_id,
+            &contact_id,
+            CaseContactRole::Client,
+            "",
+            true,
+            &account.full_name(),
         )
         .await
         .map_err(ServerFnError::new)?;

@@ -99,7 +99,7 @@ PDF output, no field-level sensitivity controls, no cross-case note search.
 
 ## Phase 2: the CRM
 
-*Requirements: `REQ-CRM-001` – `REQ-CRM-024`. See
+*Requirements: `REQ-CRM-001` – `REQ-CRM-043`. See
 [ADR-0005](adr/ADR-0005-contacts-are-not-users.md).*
 
 ### Contacts — people, with or without a login
@@ -140,6 +140,9 @@ attorneys, court clerks, board members, and emergency contacts.
 - A blank value is meaningful: it is a field that has been named but not yet
   filled in.
 - Property edits are audited against the contact.
+- Every person begins with six low-sensitivity defaults for communication and
+  relationship follow-up. Administrators can idempotently add missing defaults
+  without replacing existing values or order.
 - **No visibility axis, deliberately.** On a case, `shared` vs `volunteer_only`
   answers "may the client see this?"; clients cannot see contacts at all, so
   reusing that vocabulary would give it a second, weaker meaning.
@@ -150,9 +153,15 @@ attorneys, court clerks, board members, and emergency contacts.
   employers, each with type, contact details, notes, and an archived state.
 - Active names are unique case-insensitively; archived rows are exempt, so a name
   can be reused after an organization is retired.
-- An organization's page lists the people filed under it.
-- Any staff account may read the directory, so a volunteer can file a contact
-  under an organization. Only administrators may create, edit, or archive one.
+- An organization's page lists the people filed under it, related grants,
+  sectioned custom properties, and its Change Log.
+- Administrators can create a person with the organization preselected, file an
+  existing person there, explicitly move them from another organization, or
+  remove the link when the person still has a displayable surname.
+- `contacts.organization_id` remains the single source of truth for the person's
+  current filing organization; no parallel relationship table is maintained.
+- Every organization begins with four low-sensitivity relationship defaults.
+  Only administrators may create, edit, link, archive, or change CRM properties.
 
 ### Case contacts — who is involved in a case
 
@@ -167,6 +176,13 @@ attorneys, court clerks, board members, and emergency contacts.
   against the case the link actually belongs to.
 - Clients never see the panel or the data. Audit entries are `volunteer_only` and
   record the role only — never the note text.
+- The same links are shown on person detail with stable admin case links.
+  Add/edit/remove remains authorized by the target case's stored `EditCase`
+  capability, even when the workflow starts from a person or an admin read view.
+- New verified client accounts receive a linked person record and defaults; a
+  case signup also links that person to the new case as its primary Client.
+- Active person and editable-case pickers use bounded, debounced server-side
+  searches rather than downloading an arbitrary first page.
 
 ### Grants
 
@@ -203,9 +219,9 @@ extended in place so existing rows survived.
 
 | Object | Client | Volunteer | Operations / site admin |
 | --- | --- | --- | --- |
-| Contacts, organizations | none | read only | all, plus archive and account linking |
-| Contact properties | none | read only | all |
-| Case contacts | none | `ViewCase` to read, `EditCase` to edit | same |
+| Contacts, organizations | none | narrow staff reads used by case work | all, plus archive and account/organization linking |
+| Contact and organization properties | none | none | all |
+| Case contacts | none | `ViewCase` to read, `EditCase` to edit from case work | same, plus person-side admin workflow |
 | Grants, funding | none | none | all |
 
 Every CRM server function rejects a client account.
@@ -218,8 +234,9 @@ itself is admin-only, so they are redirected away from `/admin/people`.
 **Limits, stated on purpose:** no field-level sensitivity or break-glass access,
 no email campaigns or donor receipts, no accounting or payment-processor
 integration, no pledges or recurring gifts, no funder report generation, no
-duplicate detection or contact merging, no household/relationship graph, no bulk
-import or export, and no client-facing visibility of any CRM record. The
+duplicate detection or contact merging, no multi-organization affiliation
+history, no household/relationship graph, no bulk import or export, and no
+client-facing visibility of any CRM record. The
 `volunteers` emergency-contact columns still exist and were deliberately not
 migrated into contact records.
 
@@ -243,6 +260,7 @@ that must not depend on application code at all live in the schema:
 | A void carries a reason and a time | `funding_void_reason_check` |
 | An awarded grant has an amount and a period | `grants_awarded_requires_terms_check` |
 | A decided grant has a decision date | `grants_decided_requires_date_check` |
+| Every contact has at least one type | `contacts_types_nonempty_check` |
 | One primary contact per case | `case_contacts_one_primary_idx` |
 | One contact per account | `contacts_user_id_key` |
 | A contact has a surname or an organization | `contacts_named_check` |

@@ -1,25 +1,20 @@
-//! The custom-property editor on a person, grouped into sections.
-//!
-//! The same idea as the case's property list: name a fact once and fill it in
-//! later. A blank value is kept on purpose — it is a field waiting for an answer.
+//! The custom-property editor on an organization, grouped into sections.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::helpers::sections;
-use crate::server_fns::contact_properties::{
-    add_missing_contact_property_defaults, list_contact_properties, set_contact_properties,
-    ContactProperty,
-};
 use crate::server_fns::err_text;
+use crate::server_fns::organization_properties::{
+    add_missing_organization_property_defaults, list_organization_properties,
+    set_organization_properties, OrganizationProperty,
+};
 use crate::state::AppState;
 
 const PANEL: &str = "rounded-xl border border-slate-800 bg-slate-900 p-5";
 const INPUT: &str =
     "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-primary-500 focus:outline-none";
 
-/// One editable row. `id` only distinguishes rows within this component, so
-/// adding and removing rows never reorders the others.
 #[derive(Clone, Copy)]
 struct Row {
     id: usize,
@@ -29,19 +24,19 @@ struct Row {
 }
 
 #[component]
-pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
+pub fn OrganizationPropertiesPanel(organization_id: String) -> impl IntoView {
     let state = expect_context::<AppState>();
     let can_edit = state
         .current_user_summary
         .get_untracked()
         .is_some_and(|user| user.role.has_operations_admin_permissions());
-    let id = StoredValue::new(contact_id);
-    let saved = RwSignal::new(Vec::<ContactProperty>::new());
+    let id = StoredValue::new(organization_id);
+    let saved = RwSignal::new(Vec::<OrganizationProperty>::new());
     let rows = RwSignal::new(Vec::<Row>::new());
     let next_row_id = RwSignal::new(0usize);
     let editing = RwSignal::new(false);
     let loading = RwSignal::new(true);
-    let busy = RwSignal::new(false);
+    let saving = RwSignal::new(false);
     let adding_defaults = RwSignal::new(false);
     let error = RwSignal::new(String::new());
     let reload = RwSignal::new(0u32);
@@ -50,7 +45,7 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
         reload.track();
         loading.set(true);
         spawn_local(async move {
-            match list_contact_properties(id.get_value()).await {
+            match list_organization_properties(id.get_value()).await {
                 Ok(list) => {
                     saved.set(list);
                     error.set(String::new());
@@ -88,39 +83,40 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
     };
 
     let save = move |_| {
-        if busy.get_untracked() {
+        if saving.get_untracked() || adding_defaults.get_untracked() {
             return;
         }
-        let properties: Vec<ContactProperty> = rows
+        let properties: Vec<OrganizationProperty> = rows
             .get_untracked()
             .into_iter()
-            .map(|row| ContactProperty {
+            .map(|row| OrganizationProperty {
                 key: row.key.get_untracked(),
                 value: row.value.get_untracked(),
                 section: row.section.get_untracked(),
             })
             .collect();
-        busy.set(true);
+        saving.set(true);
+        error.set(String::new());
         spawn_local(async move {
-            match set_contact_properties(id.get_value(), properties).await {
+            match set_organization_properties(id.get_value(), properties).await {
                 Ok(()) => {
                     editing.set(false);
                     reload.update(|r| *r += 1);
                 }
                 Err(e) => error.set(err_text(e)),
             }
-            busy.set(false);
+            saving.set(false);
         });
     };
 
     let add_defaults = move |_| {
-        if busy.get_untracked() || adding_defaults.get_untracked() {
+        if saving.get_untracked() || adding_defaults.get_untracked() {
             return;
         }
         adding_defaults.set(true);
         error.set(String::new());
         spawn_local(async move {
-            match add_missing_contact_property_defaults(id.get_value()).await {
+            match add_missing_organization_property_defaults(id.get_value()).await {
                 Ok(()) => reload.update(|r| *r += 1),
                 Err(e) => error.set(err_text(e)),
             }
@@ -128,8 +124,6 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
         });
     };
 
-    // Grouped for display in the order each section first appears, so the list
-    // keeps the order it was entered in.
     let grouped = move || {
         let list = saved.get();
         let mut order: Vec<String> = Vec::new();
@@ -141,7 +135,7 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
         order
             .into_iter()
             .map(|section| {
-                let in_section: Vec<ContactProperty> = list
+                let in_section: Vec<OrganizationProperty> = list
                     .iter()
                     .filter(|p| p.section == section)
                     .cloned()
@@ -155,7 +149,7 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
         let groups = grouped();
         if groups.is_empty() {
             let message = if loading.get() {
-                "Loading properties\u{2026}"
+                "Loading properties…"
             } else {
                 "No properties recorded yet."
             };
@@ -243,7 +237,7 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
                 <div>
                     <h3 class="text-sm font-semibold text-slate-200">"Properties"</h3>
                     <p class="mt-1 text-xs text-slate-500">
-                        "Custom fields about this person, grouped into sections."
+                        "Custom fields about this organization, grouped into sections."
                     </p>
                 </div>
                 <div class="flex shrink-0 gap-2">
@@ -261,12 +255,16 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
                                         prop:disabled=move || adding_defaults.get() || loading.get()
                                         class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
                                     >
-                                        {move || if adding_defaults.get() { "Adding defaults\u{2026}" } else { "Add missing defaults" }}
+                                        {move || if adding_defaults.get() {
+                                            "Adding defaults…"
+                                        } else {
+                                            "Add missing defaults"
+                                        }}
                                     </button>
                                     <button
                                         type="button"
                                         on:click=begin_edit
-                                        prop:disabled=move || adding_defaults.get() || loading.get()
+                                        prop:disabled=move || loading.get() || adding_defaults.get()
                                         class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
                                     >
                                         "Edit"
@@ -279,10 +277,10 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
                         <button
                             type="button"
                             on:click=save
-                            prop:disabled=move || busy.get()
+                            prop:disabled=move || saving.get()
                             class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
                         >
-                            {move || if busy.get() { "Saving\u{2026}" } else { "Save" }}
+                            {move || if saving.get() { "Saving…" } else { "Save" }}
                         </button>
                         <button
                             type="button"
@@ -299,7 +297,7 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
                 <p class="mt-3 text-sm text-rose-300" role="alert">{move || error.get()}</p>
             </Show>
 
-            <div class="mt-4 space-y-3">
+            <div class="mt-4">
                 <Show when=move || editing.get() fallback=read_view>
                     {edit_view()}
                 </Show>

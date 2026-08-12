@@ -60,7 +60,18 @@ for instance when an account is added later and never linked.
 
 ## Phase 4 (later)
 
-### 4.1 Tasks, reminders, court deadlines, and a case timeline
+### 4.1 Multiple and historical organization affiliations
+
+Represent a person who belongs to several organizations, with organization-
+specific titles and relationship history. Today's `contacts.organization_id`
+remains one current filing organization; additional affiliations must become a
+first-class relationship model rather than custom properties or a second source
+of truth.
+
+- **Depends on:** a concrete reporting or workflow need for multiple concurrent
+  affiliations and a decision about historical snapshots.
+
+### 4.2 Tasks, reminders, court deadlines, and a case timeline
 
 Dated obligations that currently live in note narratives or chat.
 
@@ -69,7 +80,7 @@ Dated obligations that currently live in note narratives or chat.
 - **Open questions:** which deadlines are informational versus must-alert? Who
   owns an overdue task on a shared case? What may a client see?
 
-### 4.2 Funder reporting
+### 4.3 Funder reporting
 
 Turn the grant and funding records into the reports funders actually ask for.
 
@@ -79,13 +90,13 @@ Turn the grant and funding records into the reports funders actually ask for.
 - **Open questions:** which reports are operational convenience versus official
   submissions? What funding-code hierarchy is organization-approved?
 
-### 4.3 Detailed service units and funding codes
+### 4.4 Detailed service units and funding codes
 
 Structured time and service units allocated against funding sources.
 
 - **Depends on:** 3.1, and finance/operations ownership.
 
-### 4.4 Attachments, document links, and PDF output
+### 4.5 Attachments, document links, and PDF output
 
 Attach or link supporting material to notes and messages; render an immutable
 record as a portable document.
@@ -94,7 +105,7 @@ record as a portable document.
 - **Open questions:** which file types are acceptable? Must a generated PDF
   include every addendum and audit marker?
 
-### 4.5 Global authorized search
+### 4.6 Global authorized search
 
 Search across cases, notes, and contacts from one place.
 
@@ -103,7 +114,7 @@ Search across cases, notes, and contacts from one place.
 - **Constraint:** results must contain only records the caller is allowed to know
   exist — a search index is the easiest way to leak existence.
 
-### 4.6 Bulk import and export
+### 4.7 Bulk import and export
 
 Onboarding an existing contact list, and getting data out.
 

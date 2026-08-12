@@ -5,9 +5,10 @@
 //! with `ON DELETE RESTRICT`, so retiring one must not erase the history that
 //! points at it.
 
-use crate::server::db::{audit, ids, pool};
+use crate::server::db::{audit, ids, organization_properties, pool};
 use crate::server_fns::organizations::{
-    Organization, OrganizationFilters, OrganizationInput, OrganizationKind,
+    ActiveOrganizationSummary, Organization, OrganizationFilters, OrganizationInput,
+    OrganizationKind,
 };
 use crate::server_fns::pagination::Page;
 
@@ -39,6 +40,37 @@ impl From<OrganizationRow> for Organization {
             archived: row.archived,
             contact_count: row.contact_count,
         }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ActiveOrganizationRow {
+    id: String,
+    name: String,
+    kind: String,
+}
+
+impl From<ActiveOrganizationRow> for ActiveOrganizationSummary {
+    fn from(row: ActiveOrganizationRow) -> Self {
+        Self {
+            id: row.id,
+            name: row.name,
+            kind: OrganizationKind::from_slug(&row.kind).unwrap_or_default(),
+        }
+    }
+}
+
+fn escaped_like_pattern(query: &str) -> Option<String> {
+    let term = query.trim();
+    if term.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            term.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        ))
     }
 }
 
@@ -98,7 +130,7 @@ pub async fn get(id: &str) -> Result<Option<Organization>, sqlx::Error> {
     Ok(row.map(Into::into))
 }
 
-/// Every organization that may still be chosen, for pickers.
+/// Every organization that may still be chosen, for legacy pickers.
 pub async fn active_options() -> Result<Vec<(String, String)>, sqlx::Error> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT id, name FROM organizations WHERE NOT archived ORDER BY lower(name) ASC",
@@ -108,11 +140,34 @@ pub async fn active_options() -> Result<Vec<(String, String)>, sqlx::Error> {
     Ok(rows)
 }
 
+/// Active organizations for typeahead pickers, with only the fields the picker needs.
+pub async fn search_active(
+    query: &str,
+    limit: i64,
+) -> Result<Vec<ActiveOrganizationSummary>, sqlx::Error> {
+    let limit = limit.clamp(1, 50);
+    let pattern = escaped_like_pattern(query);
+
+    let rows = sqlx::query_as::<_, ActiveOrganizationRow>(
+        "SELECT id, name, kind FROM organizations
+         WHERE NOT archived
+           AND ($1::text IS NULL OR name ILIKE $1 OR email ILIKE $1)
+         ORDER BY lower(name) ASC, seq DESC
+         LIMIT $2",
+    )
+    .bind(&pattern)
+    .bind(limit)
+    .fetch_all(pool())
+    .await?;
+
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
 /// Create an organization and audit it in one transaction, so an unaudited row
 /// can never exist.
 pub async fn create(input: &OrganizationInput, actor: &str) -> Result<String, sqlx::Error> {
-    let id = ids::next(pool(), "org").await?;
     let mut tx = pool().begin().await?;
+    let id = ids::next(&mut *tx, "org").await?;
     sqlx::query(
         "INSERT INTO organizations
              (id, name, kind, website, phone, email, address, description)
@@ -128,6 +183,7 @@ pub async fn create(input: &OrganizationInput, actor: &str) -> Result<String, sq
     .bind(&input.description)
     .execute(&mut *tx)
     .await?;
+    organization_properties::add_defaults_for_new_organization(&mut tx, &id).await?;
     audit::record_in_transaction(
         &mut tx,
         audit::Entity::Organization,

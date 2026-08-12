@@ -298,6 +298,43 @@ pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, s
         .collect())
 }
 
+/// Cases the caller may edit, for the person-side relationship picker.
+pub async fn search_editable(
+    search: &str,
+    user_id: &str,
+    limit: i64,
+) -> Result<Vec<crate::server_fns::case_contacts::EditableCaseSummary>, sqlx::Error> {
+    let pattern = escaped_like_pattern(search);
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT c.id, c.name, c.status
+         FROM cases c
+         WHERE c.status <> 'declined'
+           AND EXISTS (
+               SELECT 1 FROM case_assignments assignment
+               WHERE assignment.case_id = c.id
+                 AND assignment.user_id = $2
+                 AND assignment.capability = 'edit_case'
+           )
+           AND ($1::text IS NULL OR c.id ILIKE $1 OR c.name ILIKE $1)
+         ORDER BY c.id LIMIT $3",
+    )
+    .bind(&pattern)
+    .bind(user_id)
+    .bind(limit.clamp(1, 50))
+    .fetch_all(pool())
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, name, status)| crate::server_fns::case_contacts::EditableCaseSummary {
+                id,
+                name,
+                status: CaseStatus::from_slug(&status).unwrap_or(CaseStatus::Open),
+            },
+        )
+        .collect())
+}
+
 /// The cases awaiting an accept/decline decision. Callers gate on admin.
 pub async fn pending_review_cases() -> Result<Vec<CaseSummary>, sqlx::Error> {
     let rows = sqlx::query_as::<_, SummaryRow>(&format!(

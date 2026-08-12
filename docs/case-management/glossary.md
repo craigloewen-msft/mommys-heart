@@ -23,10 +23,22 @@ court, or employer. Contacts are filed under one; grants are awarded by one.
 
 ## Contact property
 
-A custom key/value field on a person, grouped under a free-text section heading.
-The same shape as a case property, but with **no visibility axis** — clients
-cannot see contacts at all, so the case vocabulary would not mean the same thing
-here.
+An ordered custom field on a person, grouped under a free-text section heading.
+New person records begin with a small set of blank communication and relationship
+defaults; these do not duplicate first-class contact or organization fields.
+There is **no visibility axis** because clients cannot see contacts at all.
+
+## Organization property
+
+An ordered custom field on an organization. It has the same section/key/value
+shape as a contact property and is visible only in the administrative workspace.
+New organizations begin with blank relationship defaults.
+
+## Filing organization
+
+The one current organization stored on `contacts.organization_id`. It is the
+person's primary filing context, not an affiliation history or a claim that the
+person has no other real-world relationships.
 
 ## Case contact
 

@@ -44,7 +44,7 @@ Stable IDs are still referenced from code comments and task files:
 - `REQ-MSG-001`–`009` — secure messaging
 - `REQ-CN-001`–`011` — structured Case Notes
 - `REQ-AUD-001`–`004` — audit visibility and retention
-- `REQ-CRM-001`–`024` — contacts, organizations, grants, and funding
+- `REQ-CRM-001`–`043` — connected people, organizations, cases, grants, and funding
 - `REQ-DOC-001`–`004` — documentation (see ADR-0006 for what changed)
 
 ## Documentation and RAG isolation

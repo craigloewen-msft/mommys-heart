@@ -25,6 +25,7 @@ pub mod grants;
 pub mod ids;
 pub mod messages;
 pub mod mfa;
+pub mod organization_properties;
 pub mod organizations;
 pub mod password_reset;
 pub mod pending_registrations;

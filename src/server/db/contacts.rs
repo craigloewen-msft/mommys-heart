@@ -5,9 +5,9 @@
 //! copying them: a contact must never become a second source of truth for who
 //! someone is, or a second way to sign in.
 
-use crate::server::db::{audit, ids, pool};
+use crate::server::db::{audit, contact_properties, ids, pool};
 use crate::server_fns::contacts::{
-    Contact, ContactFilters, ContactInput, ContactType, LinkableAccount,
+    ActiveContactSummary, Contact, ContactFilters, ContactInput, ContactType, LinkableAccount,
 };
 use crate::server_fns::pagination::Page;
 use crate::server_fns::users::AccountRole;
@@ -26,6 +26,7 @@ struct ContactRow {
     organization_id: Option<String>,
     organization_name: Option<String>,
     types: Vec<String>,
+    organization_archived: Option<bool>,
     source: String,
     description: String,
     do_not_contact: bool,
@@ -49,6 +50,7 @@ impl From<ContactRow> for Contact {
             job_title: row.job_title,
             organization_id: row.organization_id.unwrap_or_default(),
             organization_name: row.organization_name.unwrap_or_default(),
+            organization_archived: row.organization_archived.unwrap_or(false),
             // An unknown slug would mean the CHECK constraint was bypassed; drop
             // it rather than failing the whole read.
             types: row
@@ -67,17 +69,83 @@ impl From<ContactRow> for Contact {
     }
 }
 
+#[derive(sqlx::FromRow)]
+struct ActiveContactRow {
+    id: String,
+    label: String,
+    organization_id: Option<String>,
+    organization_name: Option<String>,
+}
+
+impl From<ActiveContactRow> for ActiveContactSummary {
+    fn from(row: ActiveContactRow) -> Self {
+        Self {
+            id: row.id,
+            label: row.label,
+            organization_id: row.organization_id.unwrap_or_default(),
+            organization_name: row.organization_name.unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ContactOrganizationState {
+    last_name: String,
+    organization_id: Option<String>,
+    organization_name: Option<String>,
+    display_name: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct OrganizationRef {
+    id: String,
+    name: String,
+    archived: bool,
+}
+
 /// The `SELECT` list every read shares. The organization name and the account's
 /// email/role are joined in for display and stay owned by their own tables.
 const SELECT_COLUMNS: &str = "c.id, c.first_name, c.last_name, c.preferred_name, c.email,
      c.phone, c.mobile, c.address, c.job_title, c.organization_id,
-     o.name AS organization_name, c.types, c.source, c.description,
+     o.name AS organization_name, c.types, o.archived AS organization_archived,
+     c.source, c.description,
      c.do_not_contact, c.archived, c.user_id,
      u.email AS linked_email, u.role AS linked_role";
 
 const FROM_JOINS: &str = "FROM contacts c
      LEFT JOIN organizations o ON o.id = c.organization_id
      LEFT JOIN users u ON u.id = c.user_id";
+
+const PERSON_NAME_SQL: &str = "nullif(
+     btrim(coalesce(nullif(c.preferred_name, ''), c.first_name) || ' ' || c.last_name),
+     ''
+ )";
+
+const ACTIVE_LABEL_SQL: &str = "coalesce(
+     CASE
+         WHEN nullif(
+             btrim(coalesce(nullif(c.preferred_name, ''), c.first_name) || ' ' || c.last_name),
+             ''
+         ) IS NULL THEN nullif(o.name, '')
+         ELSE btrim(coalesce(nullif(c.preferred_name, ''), c.first_name) || ' ' || c.last_name)
+              || coalesce(' (' || nullif(o.name, '') || ')', '')
+     END,
+     c.id
+ )";
+
+fn escaped_like_pattern(query: &str) -> Option<String> {
+    let term = query.trim();
+    if term.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "%{}%",
+            term.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        ))
+    }
+}
 
 /// One page of the directory, filtered and searched in SQL so the browser never
 /// receives rows it did not ask for.
@@ -151,7 +219,7 @@ pub async fn for_user(user_id: &str) -> Result<Option<Contact>, sqlx::Error> {
     Ok(row.map(Into::into))
 }
 
-/// Active contacts as `(id, label)` for pickers, newest surname order.
+/// Active contacts as `(id, label)` for legacy pickers.
 pub async fn active_options() -> Result<Vec<(String, String)>, sqlx::Error> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT c.id,
@@ -167,6 +235,39 @@ pub async fn active_options() -> Result<Vec<(String, String)>, sqlx::Error> {
     Ok(rows)
 }
 
+/// Active contacts for typeahead pickers, with only the fields the picker needs.
+pub async fn search_active(
+    query: &str,
+    limit: i64,
+) -> Result<Vec<ActiveContactSummary>, sqlx::Error> {
+    let limit = limit.clamp(1, 50);
+    let pattern = escaped_like_pattern(query);
+
+    let rows = sqlx::query_as::<_, ActiveContactRow>(&format!(
+        "SELECT c.id, {ACTIVE_LABEL_SQL} AS label, c.organization_id, o.name AS organization_name
+         FROM contacts c
+         LEFT JOIN organizations o ON o.id = c.organization_id
+         WHERE NOT c.archived
+           AND ($1::text IS NULL
+                OR c.first_name ILIKE $1
+                OR c.last_name ILIKE $1
+                OR c.preferred_name ILIKE $1
+                OR {PERSON_NAME_SQL} ILIKE $1
+                OR c.email ILIKE $1
+                OR c.phone ILIKE $1
+                OR c.mobile ILIKE $1
+                OR o.name ILIKE $1)
+         ORDER BY lower(c.last_name) ASC, lower(c.first_name) ASC, c.seq DESC
+         LIMIT $2"
+    ))
+    .bind(&pattern)
+    .bind(limit)
+    .fetch_all(pool())
+    .await?;
+
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
 fn type_slugs(input: &ContactInput) -> Vec<String> {
     input.types.iter().map(|t| t.slug().to_string()).collect()
 }
@@ -177,17 +278,44 @@ fn optional(value: &str) -> Option<&str> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
-pub async fn create(input: &ContactInput, actor: &str) -> Result<String, sqlx::Error> {
-    let id = ids::next(pool(), "ct").await?;
-    let mut tx = pool().begin().await?;
+async fn validate_active_organization_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    organization_id: Option<&str>,
+) -> Result<Option<OrganizationRef>, sqlx::Error> {
+    let Some(organization_id) = organization_id else {
+        return Ok(None);
+    };
+    let organization = sqlx::query_as::<_, OrganizationRef>(
+        "SELECT id, name, archived FROM organizations WHERE id = $1 FOR UPDATE",
+    )
+    .bind(organization_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| sqlx::Error::Protocol("That organization no longer exists.".into()))?;
+    if organization.archived {
+        return Err(sqlx::Error::Protocol(
+            "Archived organizations cannot receive new contacts.".into(),
+        ));
+    }
+    Ok(Some(organization))
+}
+
+async fn insert_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: &str,
+    input: &ContactInput,
+    user_id: Option<&str>,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let _ = validate_active_organization_in(tx, optional(&input.organization_id)).await?;
     sqlx::query(
         "INSERT INTO contacts
              (id, first_name, last_name, preferred_name, email, phone, mobile,
-              address, job_title, organization_id, types, source, description,
-              do_not_contact)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+              address, job_title, organization_id, user_id, types, source,
+              description, do_not_contact)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
-    .bind(&id)
+    .bind(id)
     .bind(&input.first_name)
     .bind(&input.last_name)
     .bind(&input.preferred_name)
@@ -197,28 +325,96 @@ pub async fn create(input: &ContactInput, actor: &str) -> Result<String, sqlx::E
     .bind(&input.address)
     .bind(&input.job_title)
     .bind(optional(&input.organization_id))
+    .bind(user_id)
     .bind(type_slugs(input))
     .bind(&input.source)
     .bind(&input.description)
     .bind(input.do_not_contact)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
+    contact_properties::add_defaults_for_new_contact(tx, id).await?;
     audit::record_in_transaction(
-        &mut tx,
+        tx,
         audit::Entity::Contact,
-        &id,
+        id,
         actor,
         "contact",
         "",
         "created",
     )
     .await?;
+    if let Some(organization_id) = optional(&input.organization_id) {
+        let display_name = format!("{} {}", input.preferred_name, input.last_name)
+            .trim()
+            .to_string();
+        let display_name = if display_name.is_empty() {
+            format!("{} {}", input.first_name, input.last_name)
+                .trim()
+                .to_string()
+        } else {
+            display_name
+        };
+        audit::record_in_transaction(
+            tx,
+            audit::Entity::Organization,
+            organization_id,
+            actor,
+            "person",
+            "",
+            &format!("linked {display_name}"),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub async fn create(input: &ContactInput, actor: &str) -> Result<String, sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    let id = ids::next(&mut *tx, "ct").await?;
+    insert_in(&mut tx, &id, input, None, actor).await?;
     tx.commit().await?;
+    Ok(id)
+}
+
+/// Create a linked contact inside an existing transaction.
+///
+/// Used by registration and backfills so the account, its linked contact,
+/// default properties, and audit entry all commit together.
+pub async fn create_linked_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    input: &ContactInput,
+    user_id: &str,
+    actor: &str,
+) -> Result<String, sqlx::Error> {
+    if let Some(existing_id) =
+        sqlx::query_scalar::<_, String>("SELECT id FROM contacts WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&mut **tx)
+            .await?
+    {
+        return Ok(existing_id);
+    }
+    let id = ids::next(&mut **tx, "ct").await?;
+    insert_in(tx, &id, input, Some(user_id), actor).await?;
     Ok(id)
 }
 
 pub async fn update(id: &str, input: &ContactInput, actor: &str) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
+    let current = sqlx::query_as::<_, ContactOrganizationState>(&format!(
+        "SELECT c.last_name, c.organization_id, o.name AS organization_name,
+                coalesce({PERSON_NAME_SQL}, nullif(o.name, ''), c.id) AS display_name
+         FROM contacts c
+         LEFT JOIN organizations o ON o.id = c.organization_id
+         WHERE c.id = $1 FOR UPDATE OF c"
+    ))
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(sqlx::Error::RowNotFound)?;
+    if current.organization_id.as_deref() != optional(&input.organization_id) {
+        let _ = validate_active_organization_in(&mut tx, optional(&input.organization_id)).await?;
+    }
     let updated = sqlx::query(
         "UPDATE contacts
          SET first_name = $2, last_name = $3, preferred_name = $4, email = $5,
@@ -256,6 +452,54 @@ pub async fn update(id: &str, input: &ContactInput, actor: &str) -> Result<(), s
         "updated",
     )
     .await?;
+    let target_id = optional(&input.organization_id);
+    if current.organization_id.as_deref() != target_id {
+        let old_name = current.organization_name.as_deref().unwrap_or("unassigned");
+        let new_name: Option<String> = match target_id {
+            Some(target_id) => {
+                sqlx::query_scalar("SELECT name FROM organizations WHERE id = $1")
+                    .bind(target_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+            }
+            None => None,
+        };
+        let new_name = new_name.as_deref().unwrap_or("unassigned");
+        audit::record_in_transaction(
+            &mut tx,
+            audit::Entity::Contact,
+            id,
+            actor,
+            "organization",
+            old_name,
+            new_name,
+        )
+        .await?;
+        if let Some(old_id) = current.organization_id.as_deref() {
+            audit::record_in_transaction(
+                &mut tx,
+                audit::Entity::Organization,
+                old_id,
+                actor,
+                &current.display_name,
+                "linked here",
+                &format!("moved to {new_name}"),
+            )
+            .await?;
+        }
+        if let Some(new_id) = target_id {
+            audit::record_in_transaction(
+                &mut tx,
+                audit::Entity::Organization,
+                new_id,
+                actor,
+                &current.display_name,
+                old_name,
+                "linked here",
+            )
+            .await?;
+        }
+    }
     tx.commit().await
 }
 
@@ -327,5 +571,100 @@ pub async fn set_account(id: &str, user_id: Option<&str>, actor: &str) -> Result
         },
     )
     .await?;
+    tx.commit().await
+}
+
+/// Change the one canonical organization link on a contact.
+pub async fn set_organization(
+    contact_id: &str,
+    organization_id: Option<&str>,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    let current = sqlx::query_as::<_, ContactOrganizationState>(&format!(
+        "SELECT c.last_name, c.organization_id, o.name AS organization_name,
+                    coalesce({PERSON_NAME_SQL}, nullif(o.name, ''), c.id) AS display_name
+             FROM contacts c
+             LEFT JOIN organizations o ON o.id = c.organization_id
+             WHERE c.id = $1
+             FOR UPDATE OF c"
+    ))
+    .bind(contact_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(sqlx::Error::RowNotFound)?;
+
+    let target = validate_active_organization_in(&mut tx, organization_id).await?;
+    if current.organization_id.as_deref() == target.as_ref().map(|org| org.id.as_str()) {
+        return Ok(());
+    }
+    if target.is_none() && current.last_name.trim().is_empty() {
+        return Err(sqlx::Error::Protocol(
+            "This contact needs a last name before you can remove their organization.".into(),
+        ));
+    }
+
+    sqlx::query("UPDATE contacts SET organization_id = $2, updated_at = now() WHERE id = $1")
+        .bind(contact_id)
+        .bind(target.as_ref().map(|org| org.id.as_str()))
+        .execute(&mut *tx)
+        .await?;
+
+    let old_name = current.organization_name.clone().unwrap_or_default();
+    let new_name = target
+        .as_ref()
+        .map(|org| org.name.clone())
+        .unwrap_or_default();
+    let old_display = if old_name.is_empty() {
+        "unassigned".to_string()
+    } else {
+        old_name.clone()
+    };
+    let new_display = if new_name.is_empty() {
+        "unassigned".to_string()
+    } else {
+        new_name.clone()
+    };
+    audit::record_in_transaction(
+        &mut tx,
+        audit::Entity::Contact,
+        contact_id,
+        actor,
+        "organization",
+        &old_display,
+        &new_display,
+    )
+    .await?;
+
+    if let Some(old_org_id) = current.organization_id.as_deref() {
+        let destination = target
+            .as_ref()
+            .map(|org| format!("moved to {}", org.name))
+            .unwrap_or_else(|| "removed".to_string());
+        audit::record_in_transaction(
+            &mut tx,
+            audit::Entity::Organization,
+            old_org_id,
+            actor,
+            &current.display_name,
+            "linked here",
+            &destination,
+        )
+        .await?;
+    }
+
+    if let Some(new_org) = &target {
+        audit::record_in_transaction(
+            &mut tx,
+            audit::Entity::Organization,
+            &new_org.id,
+            actor,
+            &current.display_name,
+            &old_display,
+            "linked here",
+        )
+        .await?;
+    }
+
     tx.commit().await
 }

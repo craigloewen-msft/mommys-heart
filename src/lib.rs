@@ -19,12 +19,14 @@ pub mod components {
     pub mod case_contacts;
     pub mod case_intake;
     pub mod change_log;
+    pub mod contact_cases;
     pub mod contact_form;
     pub mod contact_properties;
     pub mod email_failures;
     pub mod guard;
     pub mod layout;
     pub mod loading;
+    pub mod organization_properties;
     pub mod profile_link;
     pub mod volunteer_details;
     pub mod volunteer_hours;

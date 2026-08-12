@@ -34,6 +34,7 @@ pub mod evidence;
 pub mod funding;
 pub mod grants;
 pub mod message;
+pub mod organization_properties;
 pub mod organizations;
 pub mod pagination;
 pub mod profile;

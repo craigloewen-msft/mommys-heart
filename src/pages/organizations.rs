@@ -8,10 +8,18 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 
+use crate::components::change_log::ChangeLog;
+use crate::components::contact_form::ContactForm;
 use crate::components::loading::Loading;
+use crate::components::organization_properties::OrganizationPropertiesPanel;
 use crate::helpers::format::badge_pill;
-use crate::server_fns::contacts::{list_contacts, Contact, ContactFilters};
+use crate::server_fns::audit::AuditScope;
+use crate::server_fns::contacts::{
+    list_contacts, search_active_contacts, set_contact_organization, ActiveContactSummary, Contact,
+    ContactFilters,
+};
 use crate::server_fns::err_text;
+use crate::server_fns::grants::{list_grants, Grant, GrantFilters};
 use crate::server_fns::organizations::{
     create_organization, list_organizations, load_organization, set_organization_archived,
     update_organization, Organization, OrganizationFilters, OrganizationInput, OrganizationKind,
@@ -35,7 +43,10 @@ pub fn ManageOrganizations(selected_id: Option<String>) -> impl IntoView {
 #[component]
 fn OrganizationDirectory() -> impl IntoView {
     let state = expect_context::<AppState>();
-    let is_admin = state.has_operations_admin_permissions();
+    let is_admin = state
+        .current_user_summary
+        .get_untracked()
+        .is_some_and(|user| user.role.has_operations_admin_permissions());
 
     let keyword = RwSignal::new(String::new());
     let kind_filter = RwSignal::new(String::new());
@@ -192,11 +203,15 @@ fn OrganizationDirectory() -> impl IntoView {
 #[component]
 fn OrganizationDetail(organization_id: String) -> impl IntoView {
     let state = expect_context::<AppState>();
-    let is_admin = state.has_operations_admin_permissions();
+    let is_admin = state
+        .current_user_summary
+        .get_untracked()
+        .is_some_and(|user| user.role.has_operations_admin_permissions());
     let id = StoredValue::new(organization_id);
 
     let organization = RwSignal::new(None::<Organization>);
     let contacts = RwSignal::new(Vec::<Contact>::new());
+    let grants = RwSignal::new(Vec::<Grant>::new());
     let loading = RwSignal::new(true);
     let error = RwSignal::new(String::new());
     let editing = RwSignal::new(false);
@@ -215,10 +230,20 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
             }
             let filters = ContactFilters {
                 organization_id: id.get_value(),
+                include_archived: true,
                 ..Default::default()
             };
             if let Ok(page) = list_contacts(filters, 0, 100).await {
                 contacts.set(page.items);
+            }
+            if is_admin {
+                let filters = GrantFilters {
+                    funder_organization_id: id.get_value(),
+                    ..Default::default()
+                };
+                if let Ok(page) = list_grants(filters, 0, 100).await {
+                    grants.set(page.items);
+                }
             }
             loading.set(false);
         });
@@ -313,41 +338,242 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                 .into_any()
             }}
 
-            <div class=PANEL>
-                <h3 class="text-sm font-semibold text-slate-200">"People here"</h3>
-                <div class="mt-3 space-y-2">
-                    {move || {
-                        let list = contacts.get();
-                        if list.is_empty() {
-                            return view! {
-                                <p class="text-sm text-slate-500">"No contacts are filed under this organization."</p>
+            <OrganizationPropertiesPanel organization_id=id.get_value() />
+
+            {move || organization.get().map(|org| view! {
+                <OrganizationPeoplePanel
+                    organization_id=id.get_value()
+                    organization_name=org.name
+                    contacts
+                    reload
+                />
+            })}
+
+            <Show when=move || is_admin>
+                <div class=PANEL>
+                    <h3 class="text-sm font-semibold text-slate-200">"Grants"</h3>
+                    <div class="mt-3 space-y-2">
+                        {move || {
+                            let list = grants.get();
+                            if list.is_empty() {
+                                return view! { <p class="text-sm text-slate-500">"No grants are linked to this organization."</p> }.into_any();
                             }
-                            .into_any();
-                        }
-                        list.into_iter()
-                            .map(|c| {
-                                let href = format!("/admin/people/{}", c.id);
-                                let title = c.job_title.clone();
-                                let has_title = !title.is_empty();
+                            list.into_iter().map(|grant| {
+                                let href = format!("/admin/funding/{}", grant.id);
+                                let status = grant.status;
                                 view! {
                                     <A href=href attr:class="block rounded-lg border border-slate-800 bg-slate-950 p-3 hover:border-primary-500/40">
-                                        <span class="text-sm font-medium text-slate-100">{c.display_name()}</span>
-                                        <Show when=move || has_title>
-                                            <span class="ml-2 text-xs text-slate-500">{title.clone()}</span>
-                                        </Show>
+                                        <span class="text-sm font-medium text-slate-100">{grant.name}</span>
+                                        <span class=badge_pill(status.badge_classes())>{status.label()}</span>
                                     </A>
                                 }
-                            })
-                            .collect_view()
-                            .into_any()
-                    }}
+                            }).collect_view().into_any()
+                        }}
+                    </div>
                 </div>
-            </div>
+
+                <div class=PANEL>
+                    <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
+                    <div class="mt-3">
+                        <ChangeLog scope=AuditScope::Organization entity_id=id.get_value() />
+                    </div>
+                </div>
+            </Show>
 
             <A href="/admin/organizations" attr:class="inline-block text-sm text-primary-400 hover:text-primary-300">
                 "\u{2190} Back to organizations"
             </A>
         </div>
+    }
+}
+
+#[component]
+fn OrganizationPeoplePanel(
+    organization_id: String,
+    organization_name: String,
+    contacts: RwSignal<Vec<Contact>>,
+    reload: RwSignal<u32>,
+) -> impl IntoView {
+    let id = StoredValue::new(organization_id);
+    let name = StoredValue::new(organization_name);
+    let creating = RwSignal::new(false);
+    let linking = RwSignal::new(false);
+    let query = RwSignal::new(String::new());
+    let debounced_query = RwSignal::new(String::new());
+    let debounce_generation = RwSignal::new(0u64);
+    let results = RwSignal::new(Vec::<ActiveContactSummary>::new());
+    let error = RwSignal::new(String::new());
+    let busy = RwSignal::new(false);
+    let organizations = RwSignal::new(Vec::<(String, String)>::new());
+    organizations.set(vec![(id.get_value(), name.get_value())]);
+
+    Effect::new(move |_| {
+        if !linking.get() {
+            return;
+        }
+        let q = debounced_query.get();
+        spawn_local(async move {
+            match search_active_contacts(q).await {
+                Ok(list) => results.set(list),
+                Err(e) => error.set(err_text(e)),
+            }
+        });
+    });
+
+    let rows = move || {
+        let list = contacts.get();
+        if list.is_empty() {
+            return view! { <p class="text-sm text-slate-500">"No people are filed under this organization."</p> }.into_any();
+        }
+        list.into_iter().map(|person| {
+            let href = format!("/admin/people/{}", person.id);
+            let person_id = person.id.clone();
+            let title = person.job_title.clone();
+            let archived = person.archived;
+            let unlink = move |_| {
+                busy.set(true);
+                let person_id = person_id.clone();
+                spawn_local(async move {
+                    match set_contact_organization(person_id, String::new()).await {
+                        Ok(()) => reload.update(|value| *value += 1),
+                        Err(e) => error.set(err_text(e)),
+                    }
+                    busy.set(false);
+                });
+            };
+            view! {
+                <div class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950 p-3">
+                    <div>
+                        <A href=href attr:class="text-sm font-medium text-slate-100 hover:text-primary-300">{person.display_name()}</A>
+                        {(!title.is_empty()).then(|| view! { <span class="ml-2 text-xs text-slate-500">{title}</span> })}
+                        {archived.then(|| view! { <span class=badge_pill("bg-slate-700/40 text-slate-300 ring-1 ring-slate-600")>"Archived"</span> })}
+                    </div>
+                    <button type="button" on:click=unlink prop:disabled=move || busy.get()
+                        class="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 disabled:opacity-50">
+                        "Remove"
+                    </button>
+                </div>
+            }
+        }).collect_view().into_any()
+    };
+
+    Effect::new(move |_| {
+        let value = query.get();
+        debounce_generation.update(|generation| *generation += 1);
+        let generation = debounce_generation.get_untracked();
+        set_timeout(
+            move || {
+                if debounce_generation.get_untracked() == generation {
+                    debounced_query.set(value);
+                }
+            },
+            std::time::Duration::from_millis(300),
+        );
+    });
+
+    view! {
+        <div class=PANEL>
+            <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                    <h3 class="text-sm font-semibold text-slate-200">"People here"</h3>
+                    <p class="mt-1 text-xs text-slate-500">"Create a person here or file an existing person under this organization."</p>
+                </div>
+                <div class="flex gap-2">
+                    <button type="button" on:click=move |_| { creating.update(|value| *value = !*value); linking.set(false); }
+                        class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800">
+                        {move || if creating.get() { "Cancel" } else { "+ New person here" }}
+                    </button>
+                    <button type="button" on:click=move |_| { linking.update(|value| *value = !*value); creating.set(false); }
+                        class="rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-600">
+                        {move || if linking.get() { "Cancel" } else { "File existing person" }}
+                    </button>
+                </div>
+            </div>
+
+            <Show when=move || creating.get()>
+                <div class="mt-4 border-t border-slate-800 pt-4">
+                    <ContactForm
+                        contact=None
+                        organizations
+                        initial_organization_id=id.get_value()
+                        on_saved=Callback::new(move |_: String| {
+                            creating.set(false);
+                            reload.update(|value| *value += 1);
+                        })
+                    />
+                </div>
+            </Show>
+
+            <Show when=move || linking.get()>
+                <div class="mt-4 space-y-2 border-t border-slate-800 pt-4">
+                    <label class="block">
+                        <span class=LABEL>"Search active people"</span>
+                        <input type="search" class=INPUT placeholder="Name, email, phone, or organization"
+                            prop:value=move || query.get()
+                            on:input=move |event| {
+                                query.set(event_target_value(&event));
+                            } />
+                    </label>
+                    {move || results.get().into_iter()
+                        .filter(|person| person.organization_id != id.get_value())
+                        .map(|person| {
+                            let person_id = person.id.clone();
+                            let moving = !person.organization_id.is_empty();
+                            let current = person.organization_name.clone();
+                            let label = person.label.clone();
+                            let link = move |_| {
+                                if moving && !current.is_empty() && !crate::pages::organizations::confirm_move(&label, &current, &name.get_value()) {
+                                    return;
+                                }
+                                busy.set(true);
+                                let person_id = person_id.clone();
+                                spawn_local(async move {
+                                    match set_contact_organization(person_id, id.get_value()).await {
+                                        Ok(()) => {
+                                            linking.set(false);
+                                            reload.update(|value| *value += 1);
+                                        }
+                                        Err(e) => error.set(err_text(e)),
+                                    }
+                                    busy.set(false);
+                                });
+                            };
+                            view! {
+                                <div class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950 p-3">
+                                    <div>
+                                        <p class="text-sm text-slate-100">{person.label}</p>
+                                        <p class="text-xs text-slate-500">{if moving { format!("Currently filed under {}", person.organization_name) } else { "No current organization".to_string() }}</p>
+                                    </div>
+                                    <button type="button" on:click=link prop:disabled=move || busy.get()
+                                        class="rounded-lg border border-primary-500/40 px-3 py-1.5 text-xs font-medium text-primary-200 hover:bg-primary-500/10 disabled:opacity-50">
+                                        {if moving { "Move here" } else { "File here" }}
+                                    </button>
+                                </div>
+                            }
+                        }).collect_view()}
+                </div>
+            </Show>
+
+            <Show when=move || !error.get().is_empty()>
+                <p class="mt-3 text-sm text-rose-300" role="alert">{move || error.get()}</p>
+            </Show>
+            <div class="mt-4 space-y-2">{rows}</div>
+        </div>
+    }
+}
+
+fn confirm_move(person: &str, current: &str, target: &str) -> bool {
+    #[cfg(feature = "hydrate")]
+    {
+        let message = format!("Move {person} from {current} to {target}?");
+        web_sys::window()
+            .and_then(|window| window.confirm_with_message(&message).ok())
+            .unwrap_or(false)
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        let _ = (person, current, target);
+        false
     }
 }
 

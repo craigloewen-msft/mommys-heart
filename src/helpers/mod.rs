@@ -13,6 +13,7 @@ pub mod case_intake;
 pub mod format;
 pub mod new_case_fields;
 pub mod new_case_folders;
+pub mod new_crm_fields;
 pub mod sections;
 pub mod terms;
 pub mod visibility;

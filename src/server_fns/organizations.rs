@@ -111,6 +111,14 @@ pub struct OrganizationFilters {
     pub include_archived: bool,
 }
 
+/// One narrow active organization option for server-side typeahead pickers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ActiveOrganizationSummary {
+    pub id: String,
+    pub name: String,
+    pub kind: OrganizationKind,
+}
+
 /// The organization directory. Readable by any staff account so a volunteer can
 /// file a contact under an organization; clients are refused.
 #[server(prefix = "/api")]
@@ -137,6 +145,21 @@ pub async fn load_organization(id: String) -> Result<Option<Organization>, Serve
     let user = require_user().await?;
     crate::server_fns::crm::require_staff(&user)?;
     organizations::get(&id).await.map_err(ServerFnError::new)
+}
+
+/// Server-side typeahead search over active organizations for relationship pickers.
+#[server(prefix = "/api")]
+pub async fn search_active_organizations(
+    query: String,
+) -> Result<Vec<ActiveOrganizationSummary>, ServerFnError> {
+    use crate::server::db::organizations;
+    use crate::server::permissions::require_user;
+
+    let user = require_user().await?;
+    crate::server_fns::crm::require_staff(&user)?;
+    organizations::search_active(&query, 10)
+        .await
+        .map_err(ServerFnError::new)
 }
 
 #[server(prefix = "/api")]

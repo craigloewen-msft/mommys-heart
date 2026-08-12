@@ -10,6 +10,7 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 
 use crate::components::change_log::ChangeLog;
+use crate::components::contact_cases::ContactCasesPanel;
 use crate::components::contact_form::ContactForm;
 use crate::components::contact_properties::ContactPropertiesPanel;
 use crate::components::loading::Loading;
@@ -283,7 +284,10 @@ fn PeopleDirectory() -> impl IntoView {
 #[component]
 fn PersonDetail(contact_id: String) -> impl IntoView {
     let state = expect_context::<AppState>();
-    let is_admin = state.has_operations_admin_permissions();
+    let is_admin = state
+        .current_user_summary
+        .get_untracked()
+        .is_some_and(|user| user.role.has_operations_admin_permissions());
     let id = StoredValue::new(contact_id);
 
     let contact = RwSignal::new(None::<Contact>);
@@ -406,6 +410,8 @@ fn PersonDetail(contact_id: String) -> impl IntoView {
                     </div>
 
                     <ContactPropertiesPanel contact_id=id.get_value() />
+
+                    <ContactCasesPanel contact_id=id.get_value() />
 
                     <AccountLink
                         contact=linked.clone()
@@ -638,7 +644,24 @@ fn ContactSummary(contact: Contact) -> impl IntoView {
         <dl class="mt-4 grid gap-x-6 sm:grid-cols-2">
             {row("Full name", format!("{} {}", contact.first_name, contact.last_name).trim().to_string())}
             {row("Preferred name", contact.preferred_name.clone())}
-            {row("Organization", contact.organization_name.clone())}
+            <div class="border-b border-slate-800 py-2 last:border-b-0">
+                <dt class="text-xs font-medium text-slate-500">"Organization"</dt>
+                <dd class="mt-1 text-sm text-slate-200">
+                    {if contact.organization_id.is_empty() {
+                        view! { <span class="italic text-slate-500">"Not provided"</span> }.into_any()
+                    } else {
+                        view! {
+                            <A
+                                href=format!("/admin/organizations/{}", contact.organization_id)
+                                attr:class="text-primary-300 hover:text-primary-200"
+                            >
+                                {contact.organization_name.clone()}
+                            </A>
+                        }
+                        .into_any()
+                    }}
+                </dd>
+            </div>
             {row("Job title", contact.job_title.clone())}
             {row("Email", contact.email.clone())}
             {row("Phone", contact.phone.clone())}

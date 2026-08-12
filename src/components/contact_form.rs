@@ -8,6 +8,7 @@ use crate::server_fns::contacts::{
     create_contact, update_contact, Contact, ContactInput, ContactType,
 };
 use crate::server_fns::err_text;
+use crate::server_fns::organizations::{search_active_organizations, ActiveOrganizationSummary};
 
 const INPUT: &str =
     "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-primary-500 focus:outline-none";
@@ -19,12 +20,22 @@ const LABEL: &str = "text-xs font-medium text-slate-400";
 pub fn ContactForm(
     contact: Option<Contact>,
     organizations: RwSignal<Vec<(String, String)>>,
+    #[prop(optional)] initial_organization_id: String,
     on_saved: Callback<String>,
 ) -> impl IntoView {
     let existing_id = contact.as_ref().map(|c| c.id.clone());
     let editing = StoredValue::new(existing_id.clone());
 
     let seed = contact.unwrap_or_default();
+    let initial_organization_name = if !seed.organization_name.is_empty() {
+        seed.organization_name.clone()
+    } else {
+        organizations
+            .get_untracked()
+            .into_iter()
+            .find_map(|(id, name)| (id == initial_organization_id).then_some(name))
+            .unwrap_or_default()
+    };
     let first_name = RwSignal::new(seed.first_name.clone());
     let last_name = RwSignal::new(seed.last_name.clone());
     let preferred_name = RwSignal::new(seed.preferred_name.clone());
@@ -33,7 +44,17 @@ pub fn ContactForm(
     let mobile = RwSignal::new(seed.mobile.clone());
     let address = RwSignal::new(seed.address.clone());
     let job_title = RwSignal::new(seed.job_title.clone());
-    let organization_id = RwSignal::new(seed.organization_id.clone());
+    let organization_id = RwSignal::new(if seed.organization_id.is_empty() {
+        initial_organization_id
+    } else {
+        seed.organization_id.clone()
+    });
+    let organization_query = RwSignal::new(initial_organization_name);
+    let debounced_organization_query = RwSignal::new(String::new());
+    let organization_results = RwSignal::new(Vec::<ActiveOrganizationSummary>::new());
+    let organization_picker_open = RwSignal::new(false);
+    let organization_search_generation = RwSignal::new(0u64);
+    let selected_organization_archived = seed.organization_archived;
     let source = RwSignal::new(seed.source.clone());
     let description = RwSignal::new(seed.description.clone());
     let do_not_contact = RwSignal::new(seed.do_not_contact);
@@ -41,6 +62,22 @@ pub fn ContactForm(
 
     let error = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
+
+    Effect::new(move |_| {
+        if !organization_picker_open.get() {
+            return;
+        }
+        let query = debounced_organization_query.get();
+        organization_search_generation.update(|generation| *generation += 1);
+        let generation = organization_search_generation.get_untracked();
+        spawn_local(async move {
+            if let Ok(list) = search_active_organizations(query).await {
+                if organization_search_generation.get_untracked() == generation {
+                    organization_results.set(list);
+                }
+            }
+        });
+    });
 
     let toggle_type = move |t: ContactType| {
         types.update(|list| {
@@ -106,6 +143,11 @@ pub fn ContactForm(
             }
         };
 
+    let mut on_organization_search = debounce(
+        std::time::Duration::from_millis(300),
+        move |value: String| debounced_organization_query.set(value),
+    );
+
     view! {
         <div class="space-y-4">
             <div class="grid gap-3 sm:grid-cols-2">
@@ -119,21 +161,69 @@ pub fn ContactForm(
                 {text_field("Source", source, "How we met them")}
             </div>
 
-            <label class="block">
-                <span class=LABEL>"Organization"</span>
-                <select
-                    class=INPUT
-                    prop:value=move || organization_id.get()
-                    on:change=move |e| organization_id.set(event_target_value(&e))
-                >
-                    <option value="">"No organization"</option>
-                    {move || organizations
-                        .get()
-                        .into_iter()
-                        .map(|(id, name)| view! { <option value=id>{name}</option> })
-                        .collect_view()}
-                </select>
-            </label>
+            <div class="relative">
+                <label class="block">
+                    <span class=LABEL>"Organization"</span>
+                    <input
+                        type="search"
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-expanded=move || organization_picker_open.get().to_string()
+                        class=INPUT
+                        placeholder="Search active organizations"
+                        prop:value=move || organization_query.get()
+                        on:focus=move |_| organization_picker_open.set(true)
+                        on:input=move |event| {
+                            organization_id.set(String::new());
+                            let value = event_target_value(&event);
+                            organization_query.set(value.clone());
+                            on_organization_search(value);
+                            organization_picker_open.set(true);
+                        }
+                        on:keydown=move |event: leptos::ev::KeyboardEvent| {
+                            if event.key() == "Escape" {
+                                organization_picker_open.set(false);
+                            }
+                        }
+                    />
+                </label>
+                <Show when=move || organization_picker_open.get()>
+                    <div role="listbox" class="absolute z-10 mt-1 max-h-52 w-full overflow-y-auto rounded-lg border border-slate-700 bg-slate-950">
+                        <button
+                            type="button"
+                            class="block w-full px-3 py-2 text-left text-sm text-slate-400 hover:bg-slate-800"
+                            on:click=move |_| {
+                                organization_id.set(String::new());
+                                organization_query.set(String::new());
+                                organization_picker_open.set(false);
+                            }
+                        >
+                            "No organization"
+                        </button>
+                        {move || organization_results.get().into_iter().map(|organization| {
+                            let id = organization.id.clone();
+                            let name = organization.name.clone();
+                            view! {
+                                <button
+                                    type="button"
+                                    role="option"
+                                    class="block w-full px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800"
+                                    on:click=move |_| {
+                                        organization_id.set(id.clone());
+                                        organization_query.set(name.clone());
+                                        organization_picker_open.set(false);
+                                    }
+                                >
+                                    {organization.name} " · " {organization.kind.label()}
+                                </button>
+                            }
+                        }).collect_view()}
+                    </div>
+                </Show>
+                <Show when=move || selected_organization_archived && !organization_id.get().is_empty()>
+                    <p class="mt-1 text-xs text-amber-300">"This existing organization is archived. It can remain, but cannot be selected for a new link."</p>
+                </Show>
+            </div>
 
             {text_field("Address", address, "")}
 

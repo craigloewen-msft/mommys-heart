@@ -68,6 +68,8 @@ pub struct Contact {
     pub organization_id: String,
     pub organization_name: String,
     pub types: Vec<ContactType>,
+    #[serde(default)]
+    pub organization_archived: bool,
     pub source: String,
     pub description: String,
     pub do_not_contact: bool,
@@ -132,6 +134,9 @@ impl ContactInput {
                 types.push(*t);
             }
         }
+        if types.is_empty() {
+            return Err("Choose at least one contact type.".into());
+        }
         if types.len() > MAX_TYPES {
             return Err(format!("Choose at most {MAX_TYPES} contact types."));
         }
@@ -173,6 +178,15 @@ pub struct ContactFilters {
     pub include_archived: bool,
 }
 
+/// One narrow active contact option for server-side typeahead pickers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ActiveContactSummary {
+    pub id: String,
+    pub label: String,
+    pub organization_id: String,
+    pub organization_name: String,
+}
+
 #[server(prefix = "/api")]
 pub async fn list_contacts(
     filters: ContactFilters,
@@ -197,6 +211,21 @@ pub async fn load_contact(id: String) -> Result<Option<Contact>, ServerFnError> 
     let user = require_user().await?;
     crate::server_fns::crm::require_staff(&user)?;
     contacts::get(&id).await.map_err(ServerFnError::new)
+}
+
+/// Server-side typeahead search over active contacts for relationship pickers.
+#[server(prefix = "/api")]
+pub async fn search_active_contacts(
+    query: String,
+) -> Result<Vec<ActiveContactSummary>, ServerFnError> {
+    use crate::server::db::contacts;
+    use crate::server::permissions::require_user;
+
+    let user = require_user().await?;
+    crate::server_fns::crm::require_staff(&user)?;
+    contacts::search_active(&query, 10)
+        .await
+        .map_err(ServerFnError::new)
 }
 
 /// Creating and editing a person is administrative: the directory lives under
@@ -280,6 +309,28 @@ pub async fn set_contact_account(id: String, user_id: String) -> Result<(), Serv
     let target = user_id.trim();
     contacts::set_account(
         &id,
+        (!target.is_empty()).then_some(target),
+        &user.full_name(),
+    )
+    .await
+    .map_err(ServerFnError::new)
+}
+
+/// File a contact under an organization, move them between organizations, or
+/// remove them from one when the contact can still be named without it.
+#[server(prefix = "/api")]
+pub async fn set_contact_organization(
+    contact_id: String,
+    organization_id: String,
+) -> Result<(), ServerFnError> {
+    use crate::server::db::contacts;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+    let target = organization_id.trim();
+    contacts::set_organization(
+        &contact_id,
         (!target.is_empty()).then_some(target),
         &user.full_name(),
     )

@@ -348,3 +348,29 @@ non-destructively, archived targets cannot acquire new links, relationship chang
 are transactional and auditable, organization detail completes the promised
 relationship picture, and maintained documentation states both the delivered
 behavior and the intentionally deferred CRM work.
+
+## Outcome
+
+Implemented the connected-record increment:
+
+- people and organizations now receive code-owned, non-sensitive default
+  properties, including non-destructive migration backfill and idempotent restore
+  actions;
+- successful registration creates the linked client person and case signup creates
+  the primary Client case link transactionally;
+- organization detail can create, file, move, and unfile people, and now includes
+  properties, grants, and its Change Log;
+- person detail lists and manages case links using the same capability-checked
+  `case_contacts` records as case detail;
+- relationship pickers use bounded, debounced server searches, archived targets
+  cannot acquire new links, and relationship audit is mirrored without copying
+  case-contact notes; and
+- product documentation records the delivered behavior and keeps affiliation
+  history, duplicate merging, emergency-contact promotion, and policy-sensitive
+  work explicitly deferred.
+
+Verification completed with formatting/diff checks, SSR and hydrate compile checks,
+a full SSR+WASM build, fresh seed/reset database invariant queries, `MH_READY`,
+desktop/mobile browser smoke checks, and a clean focused browser console. The full
+build used `CARGO_PROFILE_DEV_DEBUG=0` to avoid the host linker's 4 GiB debug-section
+relocation limit; this does not change the built application.

@@ -31,7 +31,8 @@ pub async fn reseed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "TRUNCATE users, sessions, grants, cases, case_properties, case_notes,
                   case_note_addenda, case_note_audit_log, evidence, case_folders,
                   case_channels, messages, case_assignments, audit_log,
-                  organizations, contacts, contact_properties, case_contacts, funding
+                  organizations, contacts, contact_properties, organization_properties,
+                  case_contacts, funding
          RESTART IDENTITY CASCADE",
     )
     .execute(pool())
@@ -568,10 +569,54 @@ async fn seed_crm_fixtures() -> Result<(), sqlx::Error> {
         .await?;
     }
 
+    // Every seeded person has the same missing defaults a runtime create receives.
+    for contact_id in sqlx::query_scalar::<_, String>("SELECT id FROM contacts")
+        .fetch_all(pool)
+        .await?
+    {
+        let mut tx = pool.begin().await?;
+        crate::server::db::contact_properties::ensure_defaults_in_transaction(&mut tx, &contact_id)
+            .await?;
+        tx.commit().await?;
+    }
+
+    for organization_id in sqlx::query_scalar::<_, String>("SELECT id FROM organizations")
+        .fetch_all(pool)
+        .await?
+    {
+        let mut tx = pool.begin().await?;
+        crate::server::db::organization_properties::ensure_defaults_in_transaction(
+            &mut tx,
+            &organization_id,
+        )
+        .await?;
+        tx.commit().await?;
+    }
+
+    // Mirror runtime signup: each client owner is the primary person on their case.
+    sqlx::query(
+        "INSERT INTO case_contacts
+             (id, case_id, contact_id, role, note, is_primary, added_by)
+         SELECT 'cc-' || nextval('app_id_seq'), ca.id, ct.id, 'client', '',
+                NOT EXISTS (SELECT 1 FROM case_contacts existing
+                            WHERE existing.case_id = ca.id AND existing.is_primary),
+                'Seed'
+         FROM cases ca
+         JOIN users u ON u.id = ca.owner_id AND u.role = 'client'
+         JOIN contacts ct ON ct.user_id = u.id AND NOT ct.archived
+         WHERE NOT EXISTS (
+             SELECT 1 FROM case_contacts existing
+             WHERE existing.case_id = ca.id AND existing.contact_id = ct.id
+               AND existing.role = 'client'
+         )",
+    )
+    .execute(pool)
+    .await?;
+
     // Who is involved in the first two seeded cases.
     let case_contacts = [
         (
-            "cc-1",
+            "cc-9001",
             "c-1",
             "ct-103",
             "attorney",
@@ -579,7 +624,7 @@ async fn seed_crm_fixtures() -> Result<(), sqlx::Error> {
             false,
         ),
         (
-            "cc-2",
+            "cc-9002",
             "c-1",
             "ct-108",
             "emergency_contact",
@@ -587,7 +632,7 @@ async fn seed_crm_fixtures() -> Result<(), sqlx::Error> {
             false,
         ),
         (
-            "cc-3",
+            "cc-9003",
             "c-1",
             "ct-105",
             "court_professional",
@@ -595,7 +640,7 @@ async fn seed_crm_fixtures() -> Result<(), sqlx::Error> {
             false,
         ),
         (
-            "cc-4",
+            "cc-9004",
             "c-2",
             "ct-104",
             "provider_contact",
