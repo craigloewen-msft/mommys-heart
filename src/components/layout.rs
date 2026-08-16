@@ -121,6 +121,11 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                         <nav class="hidden md:flex items-center gap-1">
                             <NavLink href="/cases" label="Cases" />
                             <NavLink href="/inbox" label="Case Chat" badge=NavBadge::UnreadMessages />
+                            {if role.has_volunteer_privileges() {
+                                view! { <NavLink href="/contacts" label="Contacts" /> }.into_any()
+                            } else {
+                                ().into_any()
+                            }}
                             {if has_operations_admin_permissions {
                                 view! {
                                     <NavLink
@@ -171,6 +176,11 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                     >
                         <NavLink href="/cases" label="Cases" />
                         <NavLink href="/inbox" label="Case Chat" badge=NavBadge::UnreadMessages />
+                        {if role.has_volunteer_privileges() {
+                            view! { <NavLink href="/contacts" label="Contacts" /> }.into_any()
+                        } else {
+                            ().into_any()
+                        }}
                         {if has_operations_admin_permissions {
                             view! {
                                 <NavLink

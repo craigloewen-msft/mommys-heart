@@ -12,6 +12,7 @@ use crate::pages::{
     case_notes::{CaseNoteDetailPage, NewCaseNotePage},
     case_signup::{CaseSignupDetailsPage, CaseSignupTermsPage},
     cases::{CaseHomePage, NewCasePage},
+    contacts::ContactsPage,
     forgot_password::ForgotPasswordPage,
     funding::{AdminFundingPage, AdminGrantDetailPage},
     inbox::InboxPage,
@@ -129,6 +130,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/cases/new") view=NewCasePage />
                 <Route path=path!("/cases/:case_id/notes/new") view=NewCaseNotePage />
                 <Route path=path!("/cases/:case_id/notes/:note_id") view=CaseNoteDetailPage />
+                <Route path=path!("/contacts") view=ContactsPage />
                 <Route path=path!("/inbox") view=InboxPage />
                 <Route path=path!("/settings") view=SettingsPage />
                 <Route path=path!("/profile") view=ProfilePage />

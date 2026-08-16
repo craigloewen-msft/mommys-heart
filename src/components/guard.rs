@@ -59,6 +59,31 @@ where
     .into_any()
 }
 
+/// Show `content` to volunteers and administrators, but not clients.
+pub fn require_volunteer_privileges<F>(state: AppState, content: F) -> AnyView
+where
+    F: Fn() -> AnyView + Send + 'static,
+{
+    (move || {
+        if state.is_authenticated() {
+            if state
+                .current_user_summary
+                .get()
+                .is_some_and(|user| user.role.has_volunteer_privileges())
+            {
+                content()
+            } else {
+                view! { <Redirect path="/cases" /> }.into_any()
+            }
+        } else if !state.auth_resolved.get() {
+            view! { <Loading label="Loading\u{2026}" /> }.into_any()
+        } else {
+            view! { <Redirect path="/login" /> }.into_any()
+        }
+    })
+    .into_any()
+}
+
 /// Show `content` only to site administrators. Other authenticated users return
 /// to `/cases`; signed-out visitors return to `/login`.
 pub fn require_site_admin<F>(state: AppState, content: F) -> AnyView

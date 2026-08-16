@@ -32,6 +32,7 @@ pub async fn reseed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                   case_note_addenda, case_note_audit_log, evidence, case_folders,
                   case_channels, messages, case_assignments, audit_log,
                   organizations, contacts, contact_properties, organization_properties,
+                  contact_category_assignments, contact_communications,
                   case_contacts, funding
          RESTART IDENTITY CASCADE",
     )
