@@ -64,6 +64,7 @@ pub async fn init() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
 
     sqlx::migrate!("./migrations").run(&pool).await?;
+    contact_directory::ensure_default_categories(&pool).await?;
 
     POOL.set(pool)
         .map_err(|_| "database pool already initialized")?;

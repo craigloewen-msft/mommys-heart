@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use crate::helpers::contact_categories::CONTACT_CATEGORIES;
 use crate::server::db::{contacts, ids, organizations, pool};
 use crate::server_fns::contact_directory::{
     CommunicationKind, Contact, ContactCategory, ContactCommunication, ContactDetails, ContactInput,
@@ -45,6 +46,15 @@ const DIRECTORY_COLUMNS: &str = "c.id,
      c.website, c.updated_at,
      category.id AS category_id, category.name AS category_name,
      category.parent_id, coalesce(parent.name, '') AS parent_name";
+
+/// The name the directory displays, composed the same way the projection does so
+/// a two-word query matches what the reader sees.
+const DISPLAY_NAME_SQL: &str = "btrim(
+     coalesce(nullif(c.preferred_name, ''),
+              CASE WHEN u.id IS NULL THEN c.first_name ELSE u.first_name END)
+     || ' '
+     || CASE WHEN u.id IS NULL THEN c.last_name ELSE u.last_name END
+ )";
 
 const DIRECTORY_JOINS: &str = "FROM contacts c
      LEFT JOIN organizations o ON o.id = c.organization_id
@@ -128,6 +138,38 @@ fn fold_contacts(rows: Vec<ContactRow>) -> Vec<Contact> {
     contacts
 }
 
+/// Insert any organization-supplied category presets that are not already
+/// present. User-created categories and existing rows are left untouched.
+pub async fn ensure_default_categories(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for category in CONTACT_CATEGORIES {
+        sqlx::query(
+            "INSERT INTO contact_categories (id, name)
+             VALUES ($1, $2)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(category.id)
+        .bind(category.name)
+        .execute(&mut *tx)
+        .await?;
+
+        for child in category.children {
+            sqlx::query(
+                "INSERT INTO contact_categories (id, name, parent_id)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(child.id)
+            .bind(child.name)
+            .bind(category.id)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 pub async fn list_categories() -> Result<Vec<ContactCategory>, sqlx::Error> {
     sqlx::query_as::<_, CategoryRow>(
         "SELECT category.id, category.name, category.parent_id,
@@ -179,6 +221,7 @@ pub async fn search(query: &str, category_ids: &[String]) -> Result<Vec<Contact>
          AND (
              $1 = '' OR c.first_name ILIKE $2 OR c.last_name ILIKE $2
              OR c.preferred_name ILIKE $2 OR u.first_name ILIKE $2 OR u.last_name ILIKE $2
+             OR {DISPLAY_NAME_SQL} ILIKE $2
              OR c.job_title ILIKE $2 OR o.name ILIKE $2
              OR c.email ILIKE $2 OR u.email ILIKE $2 OR c.phone ILIKE $2
              OR c.mobile ILIKE $2 OR c.address ILIKE $2 OR c.website ILIKE $2
@@ -307,14 +350,23 @@ pub async fn save(
     actor_user_id: &str,
     actor: &str,
 ) -> Result<String, sqlx::Error> {
+    let known_categories: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM contact_categories WHERE id = ANY($1::text[])")
+            .bind(&input.category_ids)
+            .fetch_one(pool())
+            .await?;
+    if known_categories != input.category_ids.len() as i64 {
+        return Err(sqlx::Error::Protocol(
+            "One or more selected contact categories no longer exist.".to_string(),
+        ));
+    }
+
     let (first_name, last_name) = split_name(&input.full_name);
     let organization_id = resolve_organization(&input.organization, actor_user_id, actor).await?;
 
     let id = match contact_id {
         Some(id) => {
-            let existing = contacts::get(id)
-                .await?
-                .ok_or(sqlx::Error::RowNotFound)?;
+            let existing = contacts::get(id).await?.ok_or(sqlx::Error::RowNotFound)?;
             // A linked person's name, email, phone and address are owned by their
             // account, so editing them here would be silently discarded.
             if existing.has_account() {
@@ -365,17 +417,6 @@ pub async fn save(
         .bind(&input.website)
         .execute(&mut *tx)
         .await?;
-
-    let valid_count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM contact_categories WHERE id = ANY($1::text[])")
-            .bind(&input.category_ids)
-            .fetch_one(&mut *tx)
-            .await?;
-    if valid_count != input.category_ids.len() as i64 {
-        return Err(sqlx::Error::Protocol(
-            "One or more selected contact categories no longer exist.".to_string(),
-        ));
-    }
 
     sqlx::query("DELETE FROM contact_category_assignments WHERE contact_id = $1")
         .bind(&id)

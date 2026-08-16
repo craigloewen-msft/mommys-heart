@@ -140,6 +140,12 @@ fn validate_input(mut input: ContactInput) -> Result<ContactInput, ServerFnError
     input.phone = input.phone.trim().to_string();
     input.address = input.address.trim().to_string();
     input.website = input.website.trim().to_string();
+    input.category_ids = input
+        .category_ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
     input.category_ids.sort();
     input.category_ids.dedup();
 
