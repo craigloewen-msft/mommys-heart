@@ -64,7 +64,7 @@ cmd_reset() {
   if [ "${1:-}" = --rebuild-seed ]; then build_seed_image force; fi
   build_seed_image
   remove_container "$DB_CONTAINER"
-  "$WSLC" volume remove "$DB_VOLUME" >/dev/null 2>&1 || true
+  "$DOCKER" volume rm "$DB_VOLUME" >/dev/null 2>&1 || true
   instance_up
   echo "Database reset to fresh seed data."
 }
@@ -75,11 +75,11 @@ cmd_clean() {
 
   while read -r name; do
     [ -n "$name" ] && remove_container "$name"
-  done < <(wslc_names --all | grep -E '^mh-(db|storage|seedbuild)-' || true)
+  done < <(docker_names --all | grep -E '^mh-(db|storage|seedbuild)-' || true)
 
   while read -r name; do
-    [ -n "$name" ] && "$WSLC" volume remove "$name" >/dev/null 2>&1 || true
-  done < <(wslc_volumes | grep -E '^mh-(pgdata|blobdata|dbdata)-' || true)
+    [ -n "$name" ] && "$DOCKER" volume rm "$name" >/dev/null 2>&1 || true
+  done < <(docker_volumes | grep -E '^mh-(pgdata|blobdata|dbdata)-' || true)
 
   mkdir -p "$PORT_DIR"
   exec {port_lock_fd}>"$PORT_LOCK"
@@ -111,7 +111,7 @@ cmd_oneshot() {
 
 # ══ plumbing ════════════════════════════════════════════════════════════════
 # Every checkout gets its OWN containers, so any number of agents can work at
-# the same time without coordinating (via wslc.exe, the WSL container CLI):
+# the same time without coordinating (via Docker):
 #   * mh-db-<instance>       — PostgreSQL, comes up already seeded
 #   * mh-storage-<instance>  — Azurite, the Azure Storage emulator for evidence
 #
@@ -129,7 +129,7 @@ cmd_oneshot() {
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEV_BINARY="$REPO_ROOT/target/debug/mommys-heart-app"
-WSLC="${WSLC:-wslc.exe}"
+DOCKER="${DOCKER:-docker}"
 ENV_LOCAL="$REPO_ROOT/.env.local"
 CACHE_DIR="${MH_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/mommys-heart-devdb}"
 PORT_DIR="$CACHE_DIR/ports"
@@ -267,33 +267,32 @@ FINGERPRINT="$(cat "$REPO_ROOT"/migrations/*.sql "$REPO_ROOT/src/mockdata.rs" \
 SEED_IMAGE="mommys-heart-devdb:$FINGERPRINT"
 CACHE_FILE="$CACHE_DIR/seed-$FINGERPRINT.sql"
 
-# `wslc list` truncates the NAME column and emits CRLF line endings, so exact
-# matching needs --no-trunc and \r stripped.
-wslc_names() {
+# List exact container names for reliable matching.
+docker_names() {
   if [ -n "${1:-}" ]; then
-    "$WSLC" list "$1" --no-trunc 2>/dev/null
+    "$DOCKER" ps "$1" --format '{{.Names}}' 2>/dev/null
   else
-    "$WSLC" list --no-trunc 2>/dev/null
-  fi | tr -d '\r' | awk 'NR>1{print $2}'
+    "$DOCKER" ps --format '{{.Names}}' 2>/dev/null
+  fi
 }
 
-container_running() { wslc_names | grep -qx "$1"; }
-container_exists() { wslc_names --all | grep -qx "$1"; }
+container_running() { docker_names | grep -qx "$1"; }
+container_exists() { docker_names --all | grep -qx "$1"; }
 
 remove_container() {
   container_exists "$1" || return 0
-  "$WSLC" stop "$1" >/dev/null 2>&1 || true
-  "$WSLC" remove "$1" >/dev/null 2>&1 || true
+  "$DOCKER" stop "$1" >/dev/null 2>&1 || true
+  "$DOCKER" rm "$1" >/dev/null 2>&1 || true
 }
 
-wslc_volumes() {
-  "$WSLC" volume list 2>/dev/null | tr -d '\r' | awk 'NR>1{print $2}'
+docker_volumes() {
+  "$DOCKER" volume list --format '{{.Name}}' 2>/dev/null
 }
 
 # A run owns its current containers only; stopping preserves their volumes/data.
 instance_stop() {
-  "$WSLC" stop "$DB_CONTAINER" >/dev/null 2>&1 || true
-  "$WSLC" stop "$STORAGE_CONTAINER" >/dev/null 2>&1 || true
+  "$DOCKER" stop "$DB_CONTAINER" >/dev/null 2>&1 || true
+  "$DOCKER" stop "$STORAGE_CONTAINER" >/dev/null 2>&1 || true
 }
 
 # Seed once into a scratch container and cache the dump. The cache is keyed by
@@ -312,12 +311,12 @@ build_seed_dump() {
   echo "This runs the Rust seeder; the result is cached and reused by every instance."
 
   remove_container "$scratch"
-  "$WSLC" run -d --name "$scratch" -e "POSTGRES_USER=$POSTGRES_USER" \
+  "$DOCKER" run -d --name "$scratch" -e "POSTGRES_USER=$POSTGRES_USER" \
     -e "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" -e "POSTGRES_DB=$POSTGRES_DB" \
     -p "$seed_port:5432" "$DB_BASE_IMAGE" >/dev/null
 
   local tries=60
-  until "$WSLC" exec "$scratch" pg_isready -U "$POSTGRES_USER" -q >/dev/null 2>&1; do
+  until "$DOCKER" exec "$scratch" pg_isready -U "$POSTGRES_USER" -q >/dev/null 2>&1; do
     ((tries-- > 0)) || { remove_container "$scratch"; echo "dev: scratch container never became ready" >&2; return 1; }
     sleep 1
   done
@@ -327,7 +326,7 @@ build_seed_dump() {
       RUST_LOG="${MH_SEED_LOG:-info}" cargo run --quiet --no-default-features --features ssr -- seed \
   ) || { remove_container "$scratch"; return 1; }
 
-  "$WSLC" exec "$scratch" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  "$DOCKER" exec "$scratch" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
     --no-owner --no-privileges >"$CACHE_FILE.tmp"
   mv "$CACHE_FILE.tmp" "$CACHE_FILE"
   remove_container "$scratch"
@@ -340,8 +339,8 @@ build_seed_dump() {
 # fresh container come up already seeded.
 build_seed_image_unlocked() {
   if [ "${1:-}" = force ]; then
-    rm -f "$CACHE_FILE"; "$WSLC" rmi -f "$SEED_IMAGE" >/dev/null 2>&1 || true
-  elif "$WSLC" images 2>/dev/null | tr -d '\r' | awk 'NR>1{print $1":"$2}' | grep -qx "$SEED_IMAGE"; then
+    rm -f "$CACHE_FILE"; "$DOCKER" rmi -f "$SEED_IMAGE" >/dev/null 2>&1 || true
+  elif "$DOCKER" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -qx "$SEED_IMAGE"; then
     return
   fi
 
@@ -349,9 +348,9 @@ build_seed_image_unlocked() {
   local ctx; ctx="$(mktemp -d)"
   cp "$CACHE_FILE" "$ctx/seed.sql"
   printf 'FROM %s\nENV POSTGRES_USER=%s\nENV POSTGRES_PASSWORD=%s\nENV POSTGRES_DB=%s\nCOPY seed.sql /docker-entrypoint-initdb.d/10-seed.sql\n' \
-    "$DB_BASE_IMAGE" "$POSTGRES_USER" "$POSTGRES_PASSWORD" "$POSTGRES_DB" >"$ctx/Containerfile"
+    "$DB_BASE_IMAGE" "$POSTGRES_USER" "$POSTGRES_PASSWORD" "$POSTGRES_DB" >"$ctx/Dockerfile"
   echo "Baking seed image '$SEED_IMAGE'."
-  "$WSLC" build -t "$SEED_IMAGE" "$ctx" >/dev/null
+  "$DOCKER" build -t "$SEED_IMAGE" "$ctx" >/dev/null
   rm -rf "$ctx"
 }
 
@@ -374,12 +373,12 @@ wait_for_db() {
   # Probe over TCP, not the unix socket: while the seed image's init scripts run,
   # postgres listens on the socket only. A socket probe would report ready during
   # that bootstrap phase, just before the server restarts.
-  # Redirect stdin: `wslc exec -i` inherits the caller's stdin, and under a tty
+  # Redirect stdin: `docker exec -i` inherits the caller's stdin, and under a tty
   # (an IDE/tmux pane) psql waits for input forever instead of exiting.
   local tries=90
-  until "$WSLC" exec -i "$DB_CONTAINER" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  until "$DOCKER" exec -i "$DB_CONTAINER" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
       -tAc "SELECT 1 FROM users LIMIT 1" </dev/null 2>/dev/null | grep -q 1; do
-    ((tries-- > 0)) || { echo "dev: timed out waiting for '$DB_CONTAINER' (see: $WSLC logs $DB_CONTAINER)" >&2; return 1; }
+    ((tries-- > 0)) || { echo "dev: timed out waiting for '$DB_CONTAINER' (see: $DOCKER logs $DB_CONTAINER)" >&2; return 1; }
     sleep 1
   done
 }
@@ -387,10 +386,10 @@ wait_for_db() {
 db_up() {
   build_seed_image
   if container_running "$DB_CONTAINER"; then :
-  elif container_exists "$DB_CONTAINER"; then "$WSLC" start "$DB_CONTAINER" >/dev/null
+  elif container_exists "$DB_CONTAINER"; then "$DOCKER" start "$DB_CONTAINER" >/dev/null
   else
     echo "Creating '$DB_CONTAINER' from '$SEED_IMAGE' (already seeded)."
-    "$WSLC" run -d --name "$DB_CONTAINER" -p "$DB_PORT:5432" \
+    "$DOCKER" run -d --name "$DB_CONTAINER" -p "$DB_PORT:5432" \
       -v "$DB_VOLUME:/var/lib/postgresql/data" "$SEED_IMAGE" >/dev/null
   fi
   wait_for_db
@@ -399,12 +398,12 @@ db_up() {
 storage_up() {
   container_running "$STORAGE_CONTAINER" && return 0
   if container_exists "$STORAGE_CONTAINER"; then
-    "$WSLC" start "$STORAGE_CONTAINER" >/dev/null
+    "$DOCKER" start "$STORAGE_CONTAINER" >/dev/null
   else
     echo "Creating '$STORAGE_CONTAINER' ($STORAGE_IMAGE)."
     # --skipApiVersionCheck lets the newer Azure SDK's x-ms-version header work
     # against the emulator without pinning it to an exact Azurite release.
-    "$WSLC" run -d --name "$STORAGE_CONTAINER" -p "$BLOB_PORT:10000" \
+    "$DOCKER" run -d --name "$STORAGE_CONTAINER" -p "$BLOB_PORT:10000" \
       -v "$STORAGE_VOLUME:/data" "$STORAGE_IMAGE" \
       azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck >/dev/null
   fi
@@ -476,4 +475,3 @@ run_and_await_readiness() {
 }
 
 main "$@"
-
