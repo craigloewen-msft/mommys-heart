@@ -5,8 +5,7 @@ use leptos_router::path;
 
 use crate::pages::{
     admin::{
-        AdminCaseDetailPage, AdminCasesPage, AdminDashboardPage, AdminOrganizationDetailPage,
-        AdminOrganizationsPage, AdminPeoplePage, AdminPersonDetailPage, AdminUserDetailPage,
+        AdminCaseDetailPage, AdminCasesPage, AdminDashboardPage, AdminUserDetailPage,
         AdminUsersPage,
     },
     case_notes::{CaseNoteDetailPage, NewCaseNotePage},
@@ -14,10 +13,11 @@ use crate::pages::{
     cases::{CaseHomePage, NewCasePage},
     contacts::ContactsPage,
     forgot_password::ForgotPasswordPage,
-    funding::{AdminFundingPage, AdminGrantDetailPage},
+    funding::FundingPage,
     inbox::InboxPage,
     login::LoginPage,
     mfa::MfaVerifyPage,
+    organizations::OrganizationsPage,
     profile::ProfilePage,
     register::RegisterPage,
     reset_password::ResetPasswordPage,
@@ -131,6 +131,11 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/cases/:case_id/notes/new") view=NewCaseNotePage />
                 <Route path=path!("/cases/:case_id/notes/:note_id") view=CaseNoteDetailPage />
                 <Route path=path!("/contacts") view=ContactsPage />
+                <Route path=path!("/contacts/:id") view=ContactsPage />
+                <Route path=path!("/organizations") view=OrganizationsPage />
+                <Route path=path!("/organizations/:id") view=OrganizationsPage />
+                <Route path=path!("/funding") view=FundingPage />
+                <Route path=path!("/funding/:id") view=FundingPage />
                 <Route path=path!("/inbox") view=InboxPage />
                 <Route path=path!("/settings") view=SettingsPage />
                 <Route path=path!("/profile") view=ProfilePage />
@@ -141,12 +146,6 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/admin/cases/:id") view=AdminCaseDetailPage />
                 <Route path=path!("/admin/users") view=AdminUsersPage />
                 <Route path=path!("/admin/users/:id") view=AdminUserDetailPage />
-                <Route path=path!("/admin/people") view=AdminPeoplePage />
-                <Route path=path!("/admin/people/:id") view=AdminPersonDetailPage />
-                <Route path=path!("/admin/organizations") view=AdminOrganizationsPage />
-                <Route path=path!("/admin/organizations/:id") view=AdminOrganizationDetailPage />
-                <Route path=path!("/admin/funding") view=AdminFundingPage />
-                <Route path=path!("/admin/funding/:id") view=AdminGrantDetailPage />
             </Routes>
         </Router>
     }

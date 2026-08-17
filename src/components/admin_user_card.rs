@@ -54,6 +54,49 @@ pub fn UserCard(
     let role_select_id = StoredValue::new(format!("account-role-select-{user_id}"));
     let role_note_id = StoredValue::new(format!("account-role-note-{user_id}"));
 
+    // --- information management access ------------------------------------
+    let information_target = StoredValue::new(user_id.clone());
+    let information_actor = StoredValue::new(actor_user_id.clone());
+    let current_information_access = user.information_management_access;
+    let information_enabled = RwSignal::new(current_information_access);
+    let information_busy = RwSignal::new(false);
+    let information_feedback = RwSignal::new(None::<Result<String, String>>);
+
+    let apply_information_access = move |_| {
+        if information_busy.get_untracked()
+            || information_enabled.get_untracked() == current_information_access
+        {
+            return;
+        }
+        information_busy.set(true);
+        information_feedback.set(None);
+        spawn_local(async move {
+            let result = crate::server_fns::users::set_information_management_access(
+                information_target.get_value(),
+                information_enabled.get_untracked(),
+            )
+            .await
+            .map(|_| "Information access updated.".to_string())
+            .map_err(err_text);
+            match result {
+                Ok(message) => {
+                    information_feedback.set(Some(Ok(message)));
+                    reload.update(|value| *value += 1);
+                    if information_target.get_value() == information_actor.get_value() {
+                        state.current_user_summary.update(|current| {
+                            if let Some(current) = current {
+                                current.information_management_access =
+                                    information_enabled.get_untracked();
+                            }
+                        });
+                    }
+                }
+                Err(message) => information_feedback.set(Some(Err(message))),
+            }
+            information_busy.set(false);
+        });
+    };
+
     let apply_role_change = move |_| {
         if role_busy.get_untracked() {
             return;
@@ -93,6 +136,13 @@ pub fn UserCard(
                     selected_role.set(current_role.slug().to_string());
                     if is_site_admin {
                         reload.update(|value| *value += 1);
+                    }
+                    if role_target.get_value() == information_actor.get_value() {
+                        state.current_user_summary.update(|current| {
+                            if let Some(current) = current {
+                                current.role = role;
+                            }
+                        });
                     }
                     state.refresh_badges();
                 }
@@ -534,6 +584,79 @@ pub fn UserCard(
         .into_any()
     };
 
+    let information_access_section = move || {
+        let status = if current_information_access {
+            "Granted"
+        } else {
+            "Denied"
+        };
+        view! {
+            <section class="mt-4 border-t border-slate-800 pt-4">
+                <div class="flex flex-wrap items-center gap-2">
+                    <h3 class="text-sm font-semibold text-slate-200">"Information access"</h3>
+                    <span class=badge(if current_information_access {
+                        "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+                    } else {
+                        "bg-slate-700/40 text-slate-300 ring-1 ring-slate-600"
+                    })>{status}</span>
+                </div>
+                <p class="mt-1 text-xs text-slate-500">
+                    "This grant enables Contacts, Organizations, and Funding management. It does not grant Admin dashboard or case permissions, and it never gives a client access."
+                </p>
+                {if is_site_admin {
+                    view! {
+                        <div class="mt-4 space-y-3">
+                            <label class="flex items-start gap-3 text-sm text-slate-200">
+                                <input
+                                    type="checkbox"
+                                    class="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-950"
+                                    prop:checked=move || information_enabled.get()
+                                    prop:disabled=move || information_busy.get()
+                                    on:change=move |event| information_enabled.set(event_target_checked(&event))
+                                />
+                                <span>"Can manage contacts, organizations, and funding information."</span>
+                            </label>
+                            <button
+                                type="button"
+                                on:click=apply_information_access
+                                prop:disabled=move || {
+                                    information_busy.get()
+                                        || information_enabled.get() == current_information_access
+                                }
+                                class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                            >
+                                {move || if information_busy.get() { "Saving…" } else { "Save access" }}
+                            </button>
+                        </div>
+                    }
+                    .into_any()
+                } else {
+                    view! {
+                        <p class="mt-4 text-sm text-slate-500">
+                            "Only a site admin can grant or revoke this access."
+                        </p>
+                    }
+                    .into_any()
+                }}
+                <Show when=move || information_feedback.get().is_some()>
+                    {move || information_feedback.get().map(|feedback| match feedback {
+                        Ok(message) => view! {
+                            <p class="mt-3 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300" aria-live="polite">
+                                {message}
+                            </p>
+                        }.into_any(),
+                        Err(message) => view! {
+                            <p class="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-300" role="alert">
+                                {message}
+                            </p>
+                        }.into_any(),
+                    })}
+                </Show>
+            </section>
+        }
+        .into_any()
+    };
+
     let case_access_section = move || {
         let helper = if is_site_admin {
             "Site admins apply case-access changes directly."
@@ -927,6 +1050,7 @@ pub fn UserCard(
             </div>
 
             {account_role_section}
+            {information_access_section}
             {case_access_section}
 
             {is_site_admin.then(|| view! {

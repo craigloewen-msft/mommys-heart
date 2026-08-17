@@ -158,10 +158,10 @@ pub async fn list_funding(
     limit: i64,
 ) -> Result<Page<FundingRecord>, ServerFnError> {
     use crate::server::db::funding;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     funding::page(&filters, offset, limit)
         .await
         .map_err(ServerFnError::new)
@@ -170,10 +170,10 @@ pub async fn list_funding(
 #[server(prefix = "/api")]
 pub async fn record_funding(input: FundingInput) -> Result<String, ServerFnError> {
     use crate::server::db::funding;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     let validated = input.validate().map_err(ServerFnError::new)?;
     funding::create(&validated, &user.id, &user.full_name())
         .await
@@ -185,10 +185,10 @@ pub async fn record_funding(input: FundingInput) -> Result<String, ServerFnError
 #[server(prefix = "/api")]
 pub async fn void_funding(id: String, reason: String) -> Result<(), ServerFnError> {
     use crate::server::db::funding;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     let reason = clean_text(&reason, "reason", MAX_SHORT_TEXT).map_err(ServerFnError::new)?;
     if reason.is_empty() {
         return Err(ServerFnError::new(

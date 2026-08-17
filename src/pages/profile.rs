@@ -480,7 +480,7 @@ pub fn ProfilePage() -> impl IntoView {
             let Some(person) = profile.get().and_then(|p| p.person) else {
                 return ().into_any();
             };
-            let href = format!("/admin/people/{}", person.contact_id);
+            let href = format!("/contacts/{}", person.contact_id);
             let org = person.organization_name.clone();
             let has_org = !org.is_empty();
             let archived = person.archived;

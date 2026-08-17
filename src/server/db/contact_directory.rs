@@ -9,12 +9,13 @@
 use std::collections::HashMap;
 
 use crate::helpers::contact_categories::CONTACT_CATEGORIES;
-use crate::server::db::{contacts, ids, organizations, pool};
+use crate::server::db::{audit, contacts, ids, organizations, pool};
 use crate::server_fns::contact_directory::{
     CommunicationKind, Contact, ContactCategory, ContactCommunication, ContactDetails, ContactInput,
 };
 use crate::server_fns::contacts::{ContactInput as PersonInput, ContactType};
 use crate::server_fns::organizations::{OrganizationInput, OrganizationKind};
+use crate::server_fns::pagination::Page;
 
 const STAMP: &str = "%Y-%m-%d %H:%M";
 
@@ -43,7 +44,18 @@ const DIRECTORY_COLUMNS: &str = "c.id,
      CASE WHEN u.id IS NULL THEN c.email ELSE u.email END AS email,
      CASE WHEN u.id IS NULL THEN c.phone ELSE u.phone END AS phone,
      CASE WHEN u.id IS NULL THEN c.address ELSE u.home_address END AS address,
-     c.website, c.updated_at,
+     c.website, c.archived, (u.id IS NOT NULL) AS has_account, c.updated_at,
+     category.id AS category_id, category.name AS category_name,
+     category.parent_id, coalesce(parent.name, '') AS parent_name";
+
+const SAFE_DIRECTORY_COLUMNS: &str = "c.id,
+     coalesce(
+         nullif(btrim(coalesce(nullif(c.preferred_name, ''), c.first_name) || ' ' || c.last_name), ''),
+         o.name, ''
+     ) AS full_name,
+     c.job_title AS title, coalesce(o.name, '') AS organization,
+     c.email, c.phone, c.address, c.website, c.archived,
+     (u.id IS NOT NULL) AS has_account, c.updated_at,
      category.id AS category_id, category.name AS category_name,
      category.parent_id, coalesce(parent.name, '') AS parent_name";
 
@@ -55,6 +67,9 @@ const DISPLAY_NAME_SQL: &str = "btrim(
      || ' '
      || CASE WHEN u.id IS NULL THEN c.last_name ELSE u.last_name END
  )";
+
+const SAFE_DISPLAY_NAME_SQL: &str =
+    "btrim(coalesce(nullif(c.preferred_name, ''), c.first_name) || ' ' || c.last_name)";
 
 const DIRECTORY_JOINS: &str = "FROM contacts c
      LEFT JOIN organizations o ON o.id = c.organization_id
@@ -92,6 +107,8 @@ struct ContactRow {
     phone: String,
     address: String,
     website: String,
+    archived: bool,
+    has_account: bool,
     updated_at: chrono::DateTime<chrono::Utc>,
     category_id: Option<String>,
     category_name: Option<String>,
@@ -122,6 +139,8 @@ fn fold_contacts(rows: Vec<ContactRow>) -> Vec<Contact> {
                 address: row.address,
                 website: row.website,
                 categories: Vec::new(),
+                archived: row.archived,
+                has_account: row.has_account,
                 updated_at: stamp(row.updated_at),
             });
             index
@@ -210,20 +229,36 @@ pub async fn category_is_root(category_id: &str) -> Result<bool, sqlx::Error> {
     .await
 }
 
-/// Archived people are left out: the directory exists to be acted on, and an
-/// archived record is deliberately absent from every other picker too.
-pub async fn search(query: &str, category_ids: &[String]) -> Result<Vec<Contact>, sqlx::Error> {
+/// A bounded page of active directory contacts with an accurate result count.
+pub async fn search_page(
+    query: &str,
+    category_ids: &[String],
+    contact_type: Option<ContactType>,
+    organization_id: &str,
+    include_archived: bool,
+    offset: i64,
+    limit: i64,
+    include_account_projection: bool,
+) -> Result<Page<Contact>, sqlx::Error> {
     let pattern = format!("%{query}%");
-    let rows = sqlx::query_as::<_, ContactRow>(&format!(
-        "SELECT {DIRECTORY_COLUMNS}
-         {DIRECTORY_JOINS}
-         WHERE NOT c.archived
-         AND (
+    let offset = offset.max(0);
+    let limit = limit.clamp(1, 100);
+    let (directory_columns, display_name_sql, account_search_sql) = if include_account_projection {
+        (
+            DIRECTORY_COLUMNS,
+            DISPLAY_NAME_SQL,
+            "OR u.first_name ILIKE $2 OR u.last_name ILIKE $2 OR u.email ILIKE $2",
+        )
+    } else {
+        (SAFE_DIRECTORY_COLUMNS, SAFE_DISPLAY_NAME_SQL, "")
+    };
+    let filter = format!(
+        "WHERE (
              $1 = '' OR c.first_name ILIKE $2 OR c.last_name ILIKE $2
-             OR c.preferred_name ILIKE $2 OR u.first_name ILIKE $2 OR u.last_name ILIKE $2
-             OR {DISPLAY_NAME_SQL} ILIKE $2
+             OR c.preferred_name ILIKE $2 {account_search_sql}
+             OR {display_name_sql} ILIKE $2
              OR c.job_title ILIKE $2 OR o.name ILIKE $2
-             OR c.email ILIKE $2 OR u.email ILIKE $2 OR c.phone ILIKE $2
+             OR c.email ILIKE $2 OR c.phone ILIKE $2
              OR c.mobile ILIKE $2 OR c.address ILIKE $2 OR c.website ILIKE $2
          )
          AND (
@@ -235,20 +270,74 @@ pub async fn search(query: &str, category_ids: &[String]) -> Result<Vec<Contact>
                  HAVING count(DISTINCT selected.category_id) = cardinality($3::text[])
              )
          )
+         AND ($4 = '' OR $4 = ANY(c.types))
+         AND ($5 = '' OR c.organization_id = $5)
+         AND ($6 OR NOT c.archived)"
+    );
+    let base = "FROM contacts c
+                LEFT JOIN organizations o ON o.id = c.organization_id
+                LEFT JOIN users u ON u.id = c.user_id";
+    let count_sql = format!("SELECT count(*) {base} {filter}");
+    let ids_sql = format!(
+        "SELECT c.id {base} {filter}
+         ORDER BY lower(c.last_name), lower(c.first_name), lower(coalesce(o.name, '')), c.id
+         LIMIT $7 OFFSET $8"
+    );
+
+    let contact_type = contact_type.map(ContactType::slug).unwrap_or_default();
+    let total_fut = sqlx::query_scalar::<_, i64>(&count_sql)
+        .bind(query)
+        .bind(&pattern)
+        .bind(category_ids)
+        .bind(contact_type)
+        .bind(organization_id)
+        .bind(include_archived)
+        .fetch_one(pool());
+    let ids_fut = sqlx::query_scalar::<_, String>(&ids_sql)
+        .bind(query)
+        .bind(&pattern)
+        .bind(category_ids)
+        .bind(contact_type)
+        .bind(organization_id)
+        .bind(include_archived)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool());
+    let (total, ids) = tokio::try_join!(total_fut, ids_fut)?;
+    if ids.is_empty() {
+        return Ok(Page {
+            items: Vec::new(),
+            total,
+        });
+    }
+
+    let rows = sqlx::query_as::<_, ContactRow>(&format!(
+        "SELECT {directory_columns}
+         {DIRECTORY_JOINS}
+         WHERE c.id = ANY($1::text[])
          ORDER BY lower(c.last_name), lower(c.first_name), lower(coalesce(o.name, '')),
-                  category.name"
+                  c.id, category.name"
     ))
-    .bind(query)
-    .bind(pattern)
-    .bind(category_ids)
+    .bind(ids)
     .fetch_all(pool())
     .await?;
-    Ok(fold_contacts(rows))
+    Ok(Page {
+        items: fold_contacts(rows),
+        total,
+    })
 }
 
-pub async fn get(contact_id: &str) -> Result<Option<ContactDetails>, sqlx::Error> {
+pub async fn get(
+    contact_id: &str,
+    include_account_projection: bool,
+) -> Result<Option<ContactDetails>, sqlx::Error> {
+    let directory_columns = if include_account_projection {
+        DIRECTORY_COLUMNS
+    } else {
+        SAFE_DIRECTORY_COLUMNS
+    };
     let rows = sqlx::query_as::<_, ContactRow>(&format!(
-        "SELECT {DIRECTORY_COLUMNS}
+        "SELECT {directory_columns}
          {DIRECTORY_JOINS}
          WHERE c.id = $1
          ORDER BY category.name"
@@ -362,18 +451,21 @@ pub async fn save(
     }
 
     let (first_name, last_name) = split_name(&input.full_name);
-    let organization_id = resolve_organization(&input.organization, actor_user_id, actor).await?;
 
     let id = match contact_id {
         Some(id) => {
-            let existing = contacts::get(id).await?.ok_or(sqlx::Error::RowNotFound)?;
+            let existing = contacts::get(id, true)
+                .await?
+                .ok_or(sqlx::Error::RowNotFound)?;
             // A linked person's name, email, phone and address are owned by their
             // account, so editing them here would be silently discarded.
             if existing.has_account() {
                 return Err(sqlx::Error::Protocol(
-                    "This person signs in with an account; edit them from Admin instead.".into(),
+                    "This person signs in with an account; edit their identity from the authoritative account/profile path.".into(),
                 ));
             }
+            let organization_id =
+                resolve_organization(&input.organization, actor_user_id, actor).await?;
             let person = PersonInput {
                 first_name,
                 last_name,
@@ -394,6 +486,8 @@ pub async fn save(
             id.to_string()
         }
         None => {
+            let organization_id =
+                resolve_organization(&input.organization, actor_user_id, actor).await?;
             let person = PersonInput {
                 first_name,
                 last_name,
@@ -443,6 +537,107 @@ pub async fn save(
     .await?;
     tx.commit().await?;
     Ok(id)
+}
+
+/// Replace category membership without rewriting the contact's identity fields.
+pub async fn set_categories(
+    contact_id: &str,
+    category_ids: &[String],
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let mut selected = category_ids.to_vec();
+    selected.sort();
+    selected.dedup();
+
+    let mut tx = pool().begin().await?;
+    let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM contacts WHERE id = $1 FOR UPDATE")
+        .bind(contact_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if exists.is_none() {
+        return Err(sqlx::Error::RowNotFound);
+    }
+
+    let known: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM contact_categories WHERE id = ANY($1::text[])")
+            .bind(&selected)
+            .fetch_one(&mut *tx)
+            .await?;
+    if known != selected.len() as i64 {
+        return Err(sqlx::Error::Protocol(
+            "One or more selected contact categories no longer exist.".to_string(),
+        ));
+    }
+
+    let mut expanded: Vec<String> = sqlx::query_scalar(
+        "SELECT category_id
+         FROM (
+             SELECT id AS category_id
+             FROM contact_categories
+             WHERE id = ANY($1::text[])
+             UNION
+             SELECT parent_id
+             FROM contact_categories
+             WHERE id = ANY($1::text[]) AND parent_id IS NOT NULL
+         ) selected
+         ORDER BY category_id",
+    )
+    .bind(&selected)
+    .fetch_all(&mut *tx)
+    .await?;
+    expanded.sort();
+
+    let mut current: Vec<String> = sqlx::query_scalar(
+        "SELECT category_id FROM contact_category_assignments
+         WHERE contact_id = $1 ORDER BY category_id",
+    )
+    .bind(contact_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    current.sort();
+    if current == expanded {
+        tx.commit().await?;
+        return Ok(());
+    }
+
+    sqlx::query("DELETE FROM contact_category_assignments WHERE contact_id = $1")
+        .bind(contact_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO contact_category_assignments (contact_id, category_id)
+         SELECT $1, category_id
+         FROM (
+             SELECT id AS category_id
+             FROM contact_categories
+             WHERE id = ANY($2::text[])
+             UNION
+             SELECT parent_id
+             FROM contact_categories
+             WHERE id = ANY($2::text[]) AND parent_id IS NOT NULL
+         ) selected",
+    )
+    .bind(contact_id)
+    .bind(&selected)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE contacts SET updated_at = now() WHERE id = $1")
+        .bind(contact_id)
+        .execute(&mut *tx)
+        .await?;
+    audit::record_in_transaction_by(
+        &mut tx,
+        audit::Entity::Contact,
+        contact_id,
+        actor_user_id,
+        actor,
+        "categories",
+        &current.join(", "),
+        &expanded.join(", "),
+    )
+    .await?;
+    tx.commit().await
 }
 
 pub async fn add_communication(

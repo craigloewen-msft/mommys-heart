@@ -1,5 +1,4 @@
-//! Route-backed administrative workspaces: cases, users, people,
-//! organizations, and funding — one place to manage everything.
+//! Route-backed administrative workspaces: cases, users, and admin tools.
 
 use leptos::prelude::*;
 use leptos_router::components::{Redirect, A};
@@ -10,19 +9,13 @@ use crate::components::admin_manage_users::ManageUsers;
 use crate::components::email_failures::EmailFailureLog;
 use crate::components::guard::require_operations_admin;
 use crate::components::layout::Layout;
-use crate::pages::organizations::ManageOrganizations;
-use crate::pages::people::ManagePeople;
 use crate::state::AppState;
 
-/// Which workspace a route shows. Funding is absent on purpose: it has its own
-/// route-level page (see [`crate::pages::funding`]) and only shares the tab
-/// strip, so it never flows through [`admin_page`].
+/// Which workspace a route shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AdminWorkspace {
     Cases,
     Users,
-    People,
-    Organizations,
 }
 
 impl AdminWorkspace {
@@ -31,8 +24,6 @@ impl AdminWorkspace {
         match self {
             Self::Cases => "cases",
             Self::Users => "users",
-            Self::People => "people",
-            Self::Organizations => "organizations",
         }
     }
 }
@@ -71,34 +62,6 @@ pub fn AdminUserDetailPage() -> impl IntoView {
     }
 }
 
-#[component]
-pub fn AdminPeoplePage() -> impl IntoView {
-    admin_page(AdminWorkspace::People, None)
-}
-
-#[component]
-pub fn AdminPersonDetailPage() -> impl IntoView {
-    let params = use_params_map();
-    move || {
-        let id = params.read().get("id").filter(|id| !id.trim().is_empty());
-        admin_page(AdminWorkspace::People, id)
-    }
-}
-
-#[component]
-pub fn AdminOrganizationsPage() -> impl IntoView {
-    admin_page(AdminWorkspace::Organizations, None)
-}
-
-#[component]
-pub fn AdminOrganizationDetailPage() -> impl IntoView {
-    let params = use_params_map();
-    move || {
-        let id = params.read().get("id").filter(|id| !id.trim().is_empty());
-        admin_page(AdminWorkspace::Organizations, id)
-    }
-}
-
 fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView {
     let state = expect_context::<AppState>();
     let reload = RwSignal::new(0u32);
@@ -113,12 +76,6 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
         let actor_user_id = actor.id;
 
         let content = match workspace {
-            AdminWorkspace::People => {
-                view! { <ManagePeople selected_id=selected_id.get_value() /> }.into_any()
-            }
-            AdminWorkspace::Organizations => {
-                view! { <ManageOrganizations selected_id=selected_id.get_value() /> }.into_any()
-            }
             AdminWorkspace::Cases => view! {
                 <ManageCases
                     is_site_admin=is_site_admin
@@ -142,7 +99,7 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
             <Layout title="Admin".to_string()>
                 <div class="mb-8">
                     <p class="text-sm text-slate-400">
-                        "Review pending work, inspect records, and manage people, money, and access."
+                        "Review pending work, manage accounts, and use the operational tools kept under Admin."
                     </p>
                     <AdminWorkspaceNav selected=workspace.slug() />
                 </div>
@@ -156,8 +113,7 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
     })
 }
 
-/// The workspace tabs, shared with the funding pages so every admin surface
-/// carries the same navigation.
+/// The workspace tabs for the remaining operational admin areas.
 #[component]
 pub fn AdminWorkspaceNav(#[prop(into)] selected: String) -> impl IntoView {
     let state = expect_context::<AppState>();
@@ -169,7 +125,7 @@ pub fn AdminWorkspaceNav(#[prop(into)] selected: String) -> impl IntoView {
     });
     view! {
         <nav
-            class="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5 sm:grid-cols-5"
+            class="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5"
             aria-label="Admin workspaces"
         >
             <WorkspaceLink
@@ -183,24 +139,6 @@ pub fn AdminWorkspaceNav(#[prop(into)] selected: String) -> impl IntoView {
                 label="Users"
                 selected=selected == "users"
                 badge=user_attention
-            />
-            <WorkspaceLink
-                href="/admin/people"
-                label="People"
-                selected=selected == "people"
-                badge=Signal::derive(|| 0)
-            />
-            <WorkspaceLink
-                href="/admin/organizations"
-                label="Organizations"
-                selected=selected == "organizations"
-                badge=Signal::derive(|| 0)
-            />
-            <WorkspaceLink
-                href="/admin/funding"
-                label="Funding"
-                selected=selected == "funding"
-                badge=Signal::derive(|| 0)
             />
         </nav>
     }

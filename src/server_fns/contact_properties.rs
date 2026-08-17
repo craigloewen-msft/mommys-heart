@@ -88,10 +88,10 @@ pub async fn list_contact_properties(
     contact_id: String,
 ) -> Result<Vec<ContactProperty>, ServerFnError> {
     use crate::server::db::contact_properties;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     contact_properties::list(&contact_id)
         .await
         .map_err(ServerFnError::new)
@@ -106,10 +106,10 @@ pub async fn set_contact_properties(
     properties: Vec<ContactProperty>,
 ) -> Result<(), ServerFnError> {
     use crate::server::db::contact_properties;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     let cleaned = clean(properties);
     validate(&cleaned).map_err(ServerFnError::new)?;
     contact_properties::replace(&contact_id, cleaned, &user.id, &user.full_name())
@@ -123,10 +123,10 @@ pub async fn add_missing_contact_property_defaults(
     contact_id: String,
 ) -> Result<(), ServerFnError> {
     use crate::server::db::contact_properties;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     contact_properties::add_missing_defaults(&contact_id, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)

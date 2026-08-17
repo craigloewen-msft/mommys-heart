@@ -603,6 +603,7 @@ pub fn CaseDetail(
         .with_untracked(|user| user.as_ref().map(|user| user.role));
     let has_operations_admin_permissions =
         role.is_some_and(|role| role.has_operations_admin_permissions());
+    let has_information_management_access = state.has_information_management_access();
     let is_site_admin = role.is_some_and(|role| role.is_site_admin());
     let is_client = matches!(role, Some(AccountRole::Client));
     let can_note = caps.contains(&CaseCapability::AddNotes) && accepts_changes;
@@ -2064,13 +2065,13 @@ pub fn CaseDetail(
             {case_information}
 
             // People on the case: staff-only, like Case Notes.
-            {if is_client {
+            {if is_client || !has_information_management_access {
                 ().into_any()
             } else {
                 view! {
                     <CaseContactsPanel
                         case_id=case_sv.get_value()
-                        can_edit=can_edit && has_operations_admin_permissions
+                        can_edit=can_edit && has_information_management_access
                     />
                 }
                 .into_any()

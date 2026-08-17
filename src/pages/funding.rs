@@ -1,7 +1,6 @@
 //! The funding workspace: grants and the money received against them.
 //!
-//! Back office only — every server function here requires operations-admin
-//! permissions, so volunteers and clients never reach it.
+//! Available to every non-client account granted information-management access.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -9,11 +8,10 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
 use crate::components::change_log::ChangeLog;
-use crate::components::guard::require_operations_admin;
+use crate::components::guard::require_information_management_access;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::helpers::format::badge_pill;
-use crate::pages::admin::AdminWorkspaceNav;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::contacts::{search_active_contacts, ActiveContactSummary};
 use crate::server_fns::crm::format_cents;
@@ -35,18 +33,17 @@ const INPUT: &str =
 const LABEL: &str = "text-xs font-medium text-slate-400";
 
 #[component]
-pub fn AdminFundingPage() -> impl IntoView {
+pub fn FundingPage() -> impl IntoView {
     let state = expect_context::<AppState>();
-    require_operations_admin(state, move || {
+    let params = use_params_map();
+    require_information_management_access(state, move || {
+        let selected_id = params.read().get("id").filter(|id| !id.trim().is_empty());
         view! {
-            <Layout title="Admin".to_string()>
-                <div class="mb-8">
-                    <p class="text-sm text-slate-400">
-                        "Grants sought and received, and the money recorded against them."
-                    </p>
-                    <AdminWorkspaceNav selected="funding" />
-                </div>
-                <FundingWorkspace />
+            <Layout title="Funding".to_string()>
+                {match selected_id {
+                    Some(id) => view! { <GrantDetail grant_id=id /> }.into_any(),
+                    None => view! { <FundingWorkspace /> }.into_any(),
+                }}
             </Layout>
         }
         .into_any()
@@ -139,7 +136,7 @@ fn FundingWorkspace() -> impl IntoView {
         }
         list.into_iter()
             .map(|grant| {
-                let href = format!("/admin/funding/{}", grant.id);
+                let href = format!("/funding/{}", grant.id);
                 let status = grant.status;
                 let funder = grant.funder_name.clone();
                 let awarded = grant
@@ -438,22 +435,6 @@ fn FundingList(records: RwSignal<Vec<FundingRecord>>, on_changed: Callback<()>) 
     }
 }
 
-/// `/admin/funding/:id` — one grant with its own ledger and rollups.
-#[component]
-pub fn AdminGrantDetailPage() -> impl IntoView {
-    let state = expect_context::<AppState>();
-    let params = use_params_map();
-    require_operations_admin(state, move || {
-        let id = params.read().get("id").unwrap_or_default();
-        view! {
-            <Layout title="Grant".to_string()>
-                <GrantDetail grant_id=id />
-            </Layout>
-        }
-        .into_any()
-    })
-}
-
 #[component]
 fn GrantDetail(grant_id: String) -> impl IntoView {
     let id = StoredValue::new(grant_id);
@@ -600,7 +581,7 @@ fn GrantDetail(grant_id: String) -> impl IntoView {
                 </div>
             </div>
 
-            <A href="/admin/funding" attr:class="inline-block text-sm text-primary-400 hover:text-primary-300">
+            <A href="/funding" attr:class="inline-block text-sm text-primary-400 hover:text-primary-300">
                 "\u{2190} Back to funding"
             </A>
         </div>

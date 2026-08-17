@@ -19,6 +19,7 @@ struct UserRow {
     phone: String,
     home_address: String,
     role: String,
+    information_management_access: bool,
 }
 
 impl UserRow {
@@ -31,6 +32,7 @@ impl UserRow {
             phone: self.phone,
             home_address: self.home_address,
             role: AccountRole::from_slug(&self.role).unwrap_or(AccountRole::Client),
+            information_management_access: self.information_management_access,
             assigned_cases,
         }
     }
@@ -228,8 +230,8 @@ pub async fn summary(
 ) -> Result<Option<crate::server_fns::users::UserSummary>, sqlx::Error> {
     use crate::server_fns::users::UserSummary;
 
-    let row: Option<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
-        "SELECT id, first_name, last_name, role
+    let row: Option<(String, Option<String>, Option<String>, String, bool)> = sqlx::query_as(
+        "SELECT id, first_name, last_name, role, information_management_access
          FROM users
          WHERE id = $1",
     )
@@ -237,7 +239,7 @@ pub async fn summary(
     .fetch_optional(pool())
     .await?;
 
-    let Some((id, first_name, last_name, role)) = row else {
+    let Some((id, first_name, last_name, role, information_management_access)) = row else {
         return Ok(None);
     };
     let role = AccountRole::from_slug(&role).ok_or_else(|| {
@@ -249,6 +251,7 @@ pub async fn summary(
         last_name: last_name.unwrap_or_else(|| id.clone()),
         id,
         role,
+        information_management_access,
     }))
 }
 
@@ -265,8 +268,8 @@ pub async fn search_user_summaries(
 
     let pattern = escaped_like_pattern(query);
 
-    let rows: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
-        "SELECT id, first_name, last_name, role
+    let rows: Vec<(String, Option<String>, Option<String>, String, bool)> = sqlx::query_as(
+        "SELECT id, first_name, last_name, role, information_management_access
          FROM users
          WHERE $1::text IS NULL
             OR id ILIKE $1
@@ -283,18 +286,21 @@ pub async fn search_user_summaries(
     .await?;
 
     rows.into_iter()
-        .map(|(id, first_name, last_name, role)| {
-            let role = AccountRole::from_slug(&role).ok_or_else(|| {
-                sqlx::Error::Decode(format!("invalid account role slug: {role:?}").into())
-            })?;
+        .map(
+            |(id, first_name, last_name, role, information_management_access)| {
+                let role = AccountRole::from_slug(&role).ok_or_else(|| {
+                    sqlx::Error::Decode(format!("invalid account role slug: {role:?}").into())
+                })?;
 
-            Ok(UserSummary {
-                first_name: first_name.unwrap_or_else(|| id.clone()),
-                last_name: last_name.unwrap_or_else(|| id.clone()),
-                id,
-                role,
-            })
-        })
+                Ok(UserSummary {
+                    first_name: first_name.unwrap_or_else(|| id.clone()),
+                    last_name: last_name.unwrap_or_else(|| id.clone()),
+                    id,
+                    role,
+                    information_management_access,
+                })
+            },
+        )
         .collect()
 }
 
@@ -438,6 +444,47 @@ pub async fn set_role_in(
 pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(), sqlx::Error> {
     let mut tx = pool().begin().await?;
     set_role_in(&mut tx, user_id, role, actor).await?;
+    tx.commit().await
+}
+
+/// Grant or revoke the shared information-area permission and audit the change.
+pub async fn set_information_management_access(
+    user_id: &str,
+    enabled: bool,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    let current: Option<bool> = sqlx::query_scalar(
+        "SELECT information_management_access FROM users WHERE id = $1 FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(current) = current else {
+        return Err(sqlx::Error::RowNotFound);
+    };
+    if current == enabled {
+        tx.commit().await?;
+        return Ok(());
+    }
+
+    sqlx::query("UPDATE users SET information_management_access = $2 WHERE id = $1")
+        .bind(user_id)
+        .bind(enabled)
+        .execute(&mut *tx)
+        .await?;
+    audit::record_in_transaction_by(
+        &mut tx,
+        audit::Entity::User,
+        user_id,
+        actor_user_id,
+        actor,
+        "information_management_access",
+        if current { "granted" } else { "denied" },
+        if enabled { "granted" } else { "denied" },
+    )
+    .await?;
     tx.commit().await
 }
 
@@ -649,7 +696,9 @@ pub async fn update_profile(
 /// A single user by id, with their per-case capability assignments.
 pub async fn get(id: &str) -> Result<Option<User>, sqlx::Error> {
     let row = sqlx::query_as::<_, UserRow>(
-        "SELECT id, first_name, last_name, email, phone, home_address, role FROM users WHERE id = $1",
+        "SELECT id, first_name, last_name, email, phone, home_address, role,
+                information_management_access
+         FROM users WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool())
@@ -691,7 +740,8 @@ pub async fn get(id: &str) -> Result<Option<User>, sqlx::Error> {
 pub async fn resolve_by_session_token(token_hash: &str) -> Result<Option<User>, sqlx::Error> {
     // The session's user (exactly one row, or none if the token is unknown/expired).
     let user_fut = sqlx::query_as::<_, UserRow>(
-        "SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.home_address, u.role
+        "SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.home_address, u.role,
+                u.information_management_access
          FROM sessions s
          JOIN users u ON u.id = s.user_id
          WHERE s.token_hash = $1 AND s.expires_at > now()",
@@ -746,12 +796,14 @@ pub async fn authenticate(email: &str) -> Result<Option<(User, String)>, sqlx::E
         phone: String,
         home_address: String,
         role: String,
+        information_management_access: bool,
         password_hash: String,
     }
 
     // The account row (with the password hash), or none if the email is unknown.
     let user_fut = sqlx::query_as::<_, AuthRow>(
-        "SELECT id, first_name, last_name, email, phone, home_address, role, password_hash
+        "SELECT id, first_name, last_name, email, phone, home_address, role,
+                information_management_access, password_hash
          FROM users WHERE lower(email) = lower($1)",
     )
     .bind(email)
@@ -794,6 +846,7 @@ pub async fn authenticate(email: &str) -> Result<Option<(User, String)>, sqlx::E
         phone: row.phone,
         home_address: row.home_address,
         role: row.role,
+        information_management_access: row.information_management_access,
     }
     .into_user(assignments);
     Ok(Some((user, password_hash)))
@@ -821,7 +874,8 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
 
     let count_sql = format!("SELECT count(*) FROM users {FILTER}");
     let page_sql = format!(
-        "SELECT id, first_name, last_name, email, phone, home_address, role
+        "SELECT id, first_name, last_name, email, phone, home_address, role,
+                information_management_access
          FROM users {FILTER} ORDER BY last_name, first_name, id LIMIT $2 OFFSET $3"
     );
 

@@ -51,8 +51,11 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for (u, password) in crate::mockdata::users() {
         let password_hash = hash_password(&password)?;
         sqlx::query(
-            "INSERT INTO users (id, first_name, last_name, email, phone, home_address, password_hash, role)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "INSERT INTO users (
+                 id, first_name, last_name, email, phone, home_address, password_hash, role,
+                 information_management_access
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(&u.id)
         .bind(&u.first_name)
@@ -62,6 +65,7 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .bind(&u.home_address)
         .bind(&password_hash)
         .bind(u.role.slug())
+        .bind(u.information_management_access)
         .execute(pool)
         .await?;
 

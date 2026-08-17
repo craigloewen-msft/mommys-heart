@@ -1,9 +1,7 @@
-//! The people directory and person detail views — the CRM's front door.
+//! The structured detail view behind the canonical `/contacts/:id` route.
 //!
-//! These render inside the Admin workspace (see [`crate::pages::admin`]), so
-//! they carry no page shell or guard of their own. Reading a contact is allowed
-//! for any staff account server-side — the case people-picker needs it — but the
-//! directory itself is administrative, which is why it lives under `/admin`.
+//! The surrounding Contacts page owns routing and the information-access guard;
+//! this module keeps the role-sensitive structured fields and connected records.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -15,279 +13,24 @@ use crate::components::contact_form::ContactForm;
 use crate::components::contact_properties::ContactPropertiesPanel;
 use crate::components::loading::Loading;
 use crate::helpers::format::badge_pill;
+use crate::pages::contacts::ContactOutreachPanel;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::contacts::{
-    list_contacts, load_contact, set_contact_account, set_contact_archived, unlinked_accounts,
-    Contact, ContactFilters, ContactType,
+    load_contact, set_contact_account, set_contact_archived, unlinked_accounts, Contact,
 };
 use crate::server_fns::err_text;
 use crate::server_fns::organizations::{list_organizations, OrganizationFilters};
 use crate::state::AppState;
 
-const PAGE_SIZE: i64 = 20;
 const PANEL: &str = "rounded-xl border border-slate-800 bg-slate-900 p-5";
 const INPUT: &str =
     "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-primary-500 focus:outline-none";
 
-/// The People workspace: the directory, or one person when `selected_id` is set.
 #[component]
-pub fn ManagePeople(selected_id: Option<String>) -> impl IntoView {
-    match selected_id {
-        Some(id) => view! { <PersonDetail contact_id=id /> }.into_any(),
-        None => view! { <PeopleDirectory /> }.into_any(),
-    }
-}
-
-#[component]
-fn PeopleDirectory() -> impl IntoView {
-    let keyword = RwSignal::new(String::new());
-    let type_filter = RwSignal::new(String::new());
-    let org_filter = RwSignal::new(String::new());
-    let include_archived = RwSignal::new(false);
-    let applied = RwSignal::new(ContactFilters::default());
-
-    let items = RwSignal::new(Vec::<Contact>::new());
-    let total = RwSignal::new(0i64);
-    let window = RwSignal::new(PAGE_SIZE);
-    let loading = RwSignal::new(true);
-    let error = RwSignal::new(String::new());
-    let reload = RwSignal::new(0u32);
-    let creating = RwSignal::new(false);
-
-    let organizations = RwSignal::new(Vec::<(String, String)>::new());
-    Effect::new(move |_| {
-        spawn_local(async move {
-            // A generous limit: the picker lists every organization that can
-            // still be chosen, and the directory is small.
-            let filters = OrganizationFilters::default();
-            if let Ok(page) = list_organizations(filters, 0, 200).await {
-                organizations.set(page.items.into_iter().map(|o| (o.id, o.name)).collect());
-            }
-        });
-    });
-
-    Effect::new(move |_| {
-        let filters = applied.get();
-        let limit = window.get();
-        reload.track();
-        loading.set(true);
-        spawn_local(async move {
-            match list_contacts(filters, 0, limit).await {
-                Ok(page) => {
-                    items.set(page.items);
-                    total.set(page.total);
-                    error.set(String::new());
-                }
-                Err(e) => error.set(err_text(e)),
-            }
-            loading.set(false);
-        });
-    });
-
-    let apply = move |_| {
-        window.set(PAGE_SIZE);
-        applied.set(ContactFilters {
-            keyword: keyword.get_untracked(),
-            contact_type: ContactType::from_slug(&type_filter.get_untracked()),
-            organization_id: org_filter.get_untracked(),
-            include_archived: include_archived.get_untracked(),
-        });
-    };
-    let clear = move |_| {
-        keyword.set(String::new());
-        type_filter.set(String::new());
-        org_filter.set(String::new());
-        include_archived.set(false);
-        window.set(PAGE_SIZE);
-        applied.set(ContactFilters::default());
-    };
-
-    let rows = move || {
-        if !error.get().is_empty() {
-            return view! {
-                <p class="text-sm text-rose-300">"Could not load people: " {error.get()}</p>
-            }
-            .into_any();
-        }
-        let list = items.get();
-        if list.is_empty() {
-            let message = if loading.get() {
-                "Loading people\u{2026}"
-            } else {
-                "No people match these filters."
-            };
-            return view! { <p class="text-sm text-slate-500">{message}</p> }.into_any();
-        }
-        list.into_iter()
-            .map(|contact| {
-                let href = format!("/admin/people/{}", contact.id);
-                let name = contact.display_name();
-                let types = contact.types.clone();
-                let org = contact.organization_name.clone();
-                let email = contact.email.clone();
-                let phone = contact.phone.clone();
-                let archived = contact.archived;
-                let has_account = contact.has_account();
-                view! {
-                    <A href=href attr:class="block rounded-lg border border-slate-800 bg-slate-950 p-3 hover:border-primary-500/40">
-                        <div class="flex flex-wrap items-center gap-2">
-                            <span class="text-sm font-semibold text-slate-100">{name}</span>
-                            <Show when=move || archived>
-                                <span class=badge_pill("bg-slate-700/40 text-slate-300 ring-1 ring-slate-600")>"Archived"</span>
-                            </Show>
-                            <Show when=move || has_account>
-                                <span class=badge_pill("bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/30")>"Has account"</span>
-                            </Show>
-                            {types
-                                .iter()
-                                .map(|t| view! {
-                                    <span class=badge_pill(t.badge_classes())>{t.label()}</span>
-                                })
-                                .collect_view()}
-                        </div>
-                        <p class="mt-1 text-xs text-slate-500">
-                            {if org.is_empty() { "No organization".to_string() } else { org }}
-                            {if email.is_empty() { String::new() } else { format!(" \u{b7} {email}") }}
-                            {if phone.is_empty() { String::new() } else { format!(" \u{b7} {phone}") }}
-                        </p>
-                    </A>
-                }
-            })
-            .collect_view()
-            .into_any()
-    };
-
-    view! {
-        <div class="space-y-6">
-            <div class=PANEL>
-                <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                        <h2 class="text-lg font-semibold text-slate-100">"Contact directory"</h2>
-                        <p class="mt-1 text-sm text-slate-500">
-                            "Everyone the foundation knows \u{2014} including people who have no login."
-                        </p>
-                    </div>
-                    <button
-                        type="button"
-                        on:click=move |_| creating.update(|c| *c = !*c)
-                        class="shrink-0 rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600"
-                    >
-                        {move || if creating.get() { "Cancel" } else { "+ New contact" }}
-                    </button>
-                </div>
-
-                <Show when=move || creating.get()>
-                    <div class="mt-4 border-t border-slate-800 pt-4">
-                        <ContactForm
-                            contact=None
-                            organizations=organizations
-                            on_saved=Callback::new(move |_id: String| {
-                                creating.set(false);
-                                reload.update(|r| *r += 1);
-                            })
-                        />
-                    </div>
-                </Show>
-
-                <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                    <label class="block">
-                        <span class="text-xs font-medium text-slate-400">"Search"</span>
-                        <input
-                            class=INPUT
-                            placeholder="Name, email, phone, organization"
-                            prop:value=move || keyword.get()
-                            on:input=move |e| keyword.set(event_target_value(&e))
-                        />
-                    </label>
-                    <label class="block">
-                        <span class="text-xs font-medium text-slate-400">"Type"</span>
-                        <select
-                            class=INPUT
-                            prop:value=move || type_filter.get()
-                            on:change=move |e| type_filter.set(event_target_value(&e))
-                        >
-                            <option value="">"Any type"</option>
-                            {ContactType::ALL
-                                .iter()
-                                .map(|t| view! { <option value=t.slug()>{t.label()}</option> })
-                                .collect_view()}
-                        </select>
-                    </label>
-                    <label class="block">
-                        <span class="text-xs font-medium text-slate-400">"Organization"</span>
-                        <select
-                            class=INPUT
-                            prop:value=move || org_filter.get()
-                            on:change=move |e| org_filter.set(event_target_value(&e))
-                        >
-                            <option value="">"Any organization"</option>
-                            {move || organizations
-                                .get()
-                                .into_iter()
-                                .map(|(id, name)| view! { <option value=id>{name}</option> })
-                                .collect_view()}
-                        </select>
-                    </label>
-                    <label class="flex items-end gap-2 pb-2 text-sm text-slate-300">
-                        <input
-                            type="checkbox"
-                            class="h-4 w-4 rounded border-slate-700 bg-slate-950"
-                            prop:checked=move || include_archived.get()
-                            on:change=move |e| include_archived.set(event_target_checked(&e))
-                        />
-                        "Include archived"
-                    </label>
-                </div>
-                <div class="mt-3 flex gap-2">
-                    <button
-                        type="button"
-                        on:click=apply
-                        class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600"
-                    >
-                        "Apply filters"
-                    </button>
-                    <button
-                        type="button"
-                        on:click=clear
-                        class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800"
-                    >
-                        "Clear"
-                    </button>
-                </div>
-
-                <div class="mt-4 space-y-2">{rows}</div>
-
-                <div class="mt-4 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-                    <span>"Showing " {move || items.get().len()} " of " {move || total.get()} " people"</span>
-                    <Show when=move || (items.get().len() as i64) < total.get()>
-                        <button
-                            type="button"
-                            prop:disabled=move || loading.get()
-                            on:click=move |_| window.update(|w| *w += PAGE_SIZE)
-                            class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
-                        >
-                            {move || if loading.get() { "Loading\u{2026}" } else { "Load more" }}
-                        </button>
-                    </Show>
-                </div>
-            </div>
-
-            <p class="text-xs text-slate-500">
-                "Funders, partner agencies and other bodies live under "
-                <A href="/admin/organizations" attr:class="text-primary-400 hover:text-primary-300">"Organizations"</A>
-                "."
-            </p>
-        </div>
-    }
-}
-
-#[component]
-fn PersonDetail(contact_id: String) -> impl IntoView {
+pub fn ContactDetail(contact_id: String) -> impl IntoView {
     let state = expect_context::<AppState>();
-    let is_admin = state
-        .current_user_summary
-        .get_untracked()
-        .is_some_and(|user| user.role.has_operations_admin_permissions());
+    let can_manage = state.has_information_management_access();
+    let can_manage_accounts = state.has_operations_admin_permissions();
     let id = StoredValue::new(contact_id);
 
     let contact = RwSignal::new(None::<Contact>);
@@ -372,15 +115,15 @@ fn PersonDetail(contact_id: String) -> impl IntoView {
                                         .collect_view()}
                                 </div>
                             </div>
-                            <div class="flex shrink-0 gap-2">
-                                <button
-                                    type="button"
-                                    on:click=move |_| editing.update(|e| *e = !*e)
-                                    class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
-                                >
-                                    {move || if editing.get() { "Cancel" } else { "Edit" }}
-                                </button>
-                                <Show when=move || is_admin>
+                            <Show when=move || can_manage>
+                                <div class="flex shrink-0 gap-2">
+                                    <button
+                                        type="button"
+                                        on:click=move |_| editing.update(|e| *e = !*e)
+                                        class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                                    >
+                                        {move || if editing.get() { "Cancel" } else { "Edit" }}
+                                    </button>
                                     <button
                                         type="button"
                                         on:click=toggle_archive
@@ -388,8 +131,8 @@ fn PersonDetail(contact_id: String) -> impl IntoView {
                                     >
                                         {if archived { "Restore" } else { "Archive" }}
                                     </button>
-                                </Show>
-                            </div>
+                                </div>
+                            </Show>
                         </div>
 
                         <Show
@@ -409,7 +152,14 @@ fn PersonDetail(contact_id: String) -> impl IntoView {
                         </Show>
                     </div>
 
-                    <ContactPropertiesPanel contact_id=id.get_value() />
+                    <Show when=move || can_manage>
+                        <ContactPropertiesPanel contact_id=id.get_value() />
+                    </Show>
+
+                    <ContactOutreachPanel
+                        contact_id=id.get_value()
+                        contact_changed=Callback::new(move |()| reload.update(|value| *value += 1))
+                    />
 
                     <Show when=move || person.has_account_field_conflict>
                         <div class="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
@@ -417,15 +167,19 @@ fn PersonDetail(contact_id: String) -> impl IntoView {
                         </div>
                     </Show>
 
-                    <ContactCasesPanel contact_id=id.get_value() />
+                    <Show when=move || can_manage>
+                        <ContactCasesPanel contact_id=id.get_value() />
+                    </Show>
 
-                    <AccountLink
-                        contact=linked.clone()
-                        can_manage=is_admin
-                        on_changed=Callback::new(move |_: ()| reload.update(|r| *r += 1))
-                    />
+                    <Show when=move || can_manage_accounts>
+                        <AccountLink
+                            contact=linked.clone()
+                            can_manage=true
+                            on_changed=Callback::new(move |_: ()| reload.update(|r| *r += 1))
+                        />
+                    </Show>
 
-                    <Show when=move || is_admin>
+                    <Show when=move || can_manage>
                         <div class=PANEL>
                             <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
                             <div class="mt-3">
@@ -437,8 +191,8 @@ fn PersonDetail(contact_id: String) -> impl IntoView {
                 .into_any()
             }}
 
-            <A href="/admin/people" attr:class="inline-block text-sm text-primary-400 hover:text-primary-300">
-                "\u{2190} Back to people"
+            <A href="/contacts" attr:class="inline-block text-sm text-primary-400 hover:text-primary-300">
+                "\u{2190} Back to contacts"
             </A>
         </div>
     }
@@ -636,14 +390,14 @@ fn ContactSummary(contact: Contact) -> impl IntoView {
         }
     };
 
-    let account = if contact.has_account() {
+    let account = if contact.linked_email.is_empty() {
+        String::new()
+    } else {
         let role = contact
             .linked_role
             .map(|r| r.label().to_string())
             .unwrap_or_default();
         format!("{} ({role})", contact.linked_email)
-    } else {
-        String::new()
     };
 
     view! {
@@ -658,7 +412,7 @@ fn ContactSummary(contact: Contact) -> impl IntoView {
                     } else {
                         view! {
                             <A
-                                href=format!("/admin/organizations/{}", contact.organization_id)
+                                href=format!("/organizations/{}", contact.organization_id)
                                 attr:class="text-primary-300 hover:text-primary-200"
                             >
                                 {contact.organization_name.clone()}
@@ -674,7 +428,7 @@ fn ContactSummary(contact: Contact) -> impl IntoView {
             {row("Mobile", contact.mobile.clone())}
             {row("Address", contact.address.clone())}
             {row("Source", contact.source.clone())}
-            {row("Sign-in account", account)}
+            {(!account.is_empty()).then(|| row("Sign-in account", account))}
             {row("Notes", contact.description.clone())}
         </dl>
     }

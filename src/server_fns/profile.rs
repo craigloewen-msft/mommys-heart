@@ -209,6 +209,7 @@ pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError>
             .map_err(ServerFnError::new)?
     };
     let has_operations_admin_permissions = viewer.role.has_operations_admin_permissions();
+    let has_information_management_access = viewer.has_information_management_access();
     if !is_self && !shares_case && !has_operations_admin_permissions {
         return Err(ServerFnError::new(UNAVAILABLE));
     }
@@ -232,9 +233,8 @@ pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError>
         None
     };
 
-    // The CRM person record behind this account. Admins only: they are the only
-    // ones who can open the People workspace it links to.
-    let person = if has_operations_admin_permissions {
+    // The reverse account link remains an account-administration detail.
+    let person = if has_operations_admin_permissions && has_information_management_access {
         contacts::for_user(&record.id)
             .await
             .map_err(ServerFnError::new)?

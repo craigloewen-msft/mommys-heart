@@ -91,7 +91,7 @@ fn CaseContactRow(
 ) -> impl IntoView {
     let row_id = StoredValue::new(person.id.clone());
     let name = person.contact_name.clone();
-    let href = format!("/admin/people/{}", person.contact_id);
+    let href = format!("/contacts/{}", person.contact_id);
     let meta = {
         let mut parts = vec![if person.organization_name.is_empty() {
             "No organization".to_string()
@@ -519,10 +519,7 @@ pub fn CaseContactsPanel(case_id: String, can_edit: bool) -> impl IntoView {
             };
             return view! { <p class="text-sm text-slate-500">{message}</p> }.into_any();
         }
-        let can_link_person = state
-            .current_user_summary
-            .get_untracked()
-            .is_some_and(|user| user.role.has_operations_admin_permissions());
+        let can_link_person = state.has_information_management_access();
         list.into_iter()
             .map(|person| {
                 view! {
@@ -659,7 +656,7 @@ pub fn CaseContactsPanel(case_id: String, can_edit: bool) -> impl IntoView {
                     />
 
                     <p class="text-xs text-slate-500">
-                        "Not finding them? An administrator can add people under Admin → People."
+                        "Not finding them? Add the person under Contacts first."
                     </p>
 
                     <button

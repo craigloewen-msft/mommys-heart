@@ -15,12 +15,8 @@ Admin shall return to its operational purpose: Cases, Users, and Admin tools.
 ## Confirmed product decisions
 
 1. **Contacts becomes one merged experience.** The existing navbar Contact Directory and Admin People workspace use the same `contacts` records. They shall be consolidated under Contacts rather than leaving two competing directories.
-2. **Current access boundaries stay in force.** This is an information-architecture change, not a privacy-policy change:
-   - Contacts: volunteers, operations admins, and site admins.
-   - Organizations: readable by volunteers and admins; management remains admin-only.
-   - Funding/grants: operations admins and site admins only.
-   - Clients: no Contacts, Organizations, or Funding navigation or route access.
-3. **Old Admin URLs redirect.** Existing bookmarks and links under `/admin/people`, `/admin/organizations`, and `/admin/funding`, including detail URLs, shall resolve to the corresponding canonical route.
+2. **Information management uses one explicit grant.** Permitted non-client accounts can fully manage Contacts, Organizations, grants, and Funding. Clients remain excluded; Admin dashboard access and case capabilities remain separate.
+3. **Old Admin URLs are removed.** Existing `/admin/people`, `/admin/organizations`, and `/admin/funding` URLs may return the normal 404; clean canonical routing is preferred over compatibility redirects.
 
 ## Current-state findings
 
@@ -28,7 +24,7 @@ Admin shall return to its operational purpose: Cases, Users, and Admin tools.
 - `src/pages/contacts.rs` is an outreach-oriented directory with category/tag filters, contact editing, and a communication log.
 - `src/pages/people.rs` is a second view of the same records with structured CRM fields, type/organization/archive filters, properties, case relationships, account linking, and audit history. It is currently mounted through the Admin shell.
 - Organizations and Funding are also mounted under `/admin`, and `AdminWorkspaceNav` presents all three as peers of Cases and Users.
-- Read/write permissions are not uniform by design. Contacts and Organizations have staff-readable APIs plus narrower admin-only operations, while all grant/funding APIs are admin-only. Moving routes must not weaken those server checks.
+- The unified information-management permission governs both reads and writes across Contacts, Organizations, grants, and Funding.
 - Several case, profile, contact, organization, and funding links hard-code the old Admin paths.
 - Adding two more direct links to the existing desktop navbar at its current breakpoint can cause crowding, so the expanded navigation needs an explicit responsive pass.
 
@@ -51,9 +47,8 @@ The application shall update every internal link to use canonical URLs, includin
 
 Both desktop and collapsed/mobile navigation shall show:
 
-- **Contacts** and **Organizations** to roles with volunteer privileges;
-- **Funding** only to roles with operations-admin permissions; and
-- none of those entries to clients.
+- **Contacts**, **Organizations**, and **Funding** to eligible non-client accounts with information-management access; and
+- none of those entries to clients or denied accounts.
 
 Active-link styling shall cover list and detail routes. The desktop navigation shall not wrap, overlap account controls, or clip at intermediate widths; use an appropriate collapse breakpoint or similarly clear responsive treatment. The collapsed menu shall close after navigation and remain keyboard usable.
 
@@ -81,49 +76,25 @@ The merged experience shall preserve the useful behavior of both current views:
 - organization links, contact types, source, notes, and do-not-contact state;
 - outreach/communication history;
 - contact properties, related cases, linked account state, archive controls, and change history for roles already authorized to use them; and
-- stable `/contacts/:id` detail links that can be refreshed, bookmarked, and reached from old Admin detail URLs.
+- stable `/contacts/:id` detail links that can be refreshed and bookmarked.
 
 Present one coherent directory/detail flow rather than stacking both existing pages unchanged. Extract or reorganize shared components and server projections where needed so there is one source of UI behavior per concern.
 
-Role-sensitive controls shall be honest:
-
-- actions already available in the volunteer Contact Directory remain available to volunteers;
-- admin-only structured edits, archive/account operations, properties, reverse case inspection, and audit data remain hidden from volunteers and protected server-side; and
-- linked-account identity continues to be edited only through its authoritative account/profile path.
+Permission-sensitive controls shall be honest: permitted volunteers receive full information-management controls. Case-linked actions still follow case capabilities, and login-account linking remains restricted to administrators because it exposes private account records.
 
 The consolidation must not create a second contact persistence model. Categories and communications remain layers over the same `contacts` rows.
 
 ### REQ-NAV-005 — Organizations as a staff-readable top-level area
 
-Create top-level Organization list and detail page wrappers guarded for volunteer privileges. Preserve existing staff-readable directory/detail behavior.
+Create top-level Organization list and detail page wrappers guarded by information-management access. Permitted non-client accounts may create, edit, archive, restore, manage properties, connect people, inspect audit history, and work with related grants.
 
-All management affordances shall be role-aware now that the page is no longer enclosed by an Admin-only shell. Only authorized admins may see or use:
+### REQ-NAV-006 — Funding as a top-level information area
 
-- create, edit, archive, and restore controls;
-- organization property management and audit history;
-- filing, moving, creating, or removing people from an organization; and
-- related grant information.
+Move the Funding/grant list and detail pages to `/funding` and `/funding/:id`, link them directly from the main navbar for permitted non-client accounts, and remove the Admin workspace tab strip. Preserve totals, forms, ledger records, voiding, audit history, and detail Back navigation.
 
-Volunteers shall receive a useful read-only organization directory/detail experience, including canonical links to readable Contacts, without controls that will only fail authorization. Existing server-side admin gates remain authoritative.
+### REQ-NAV-007 — Remove old Admin routes
 
-### REQ-NAV-006 — Funding as a top-level admin-only area
-
-Move the Funding/grant list and detail pages to `/funding` and `/funding/:id`, link them directly from the main navbar for operations/site admins, and remove the Admin workspace tab strip from those pages.
-
-Preserve all existing grant and funding behavior and server authorization, including totals, forms, ledger records, voiding, audit history, and detail Back navigation. Volunteers and clients shall still be refused by both the route guard and direct server-function calls.
-
-### REQ-NAV-007 — Backward-compatible redirects
-
-Keep redirect-only handlers for:
-
-- `/admin/people` → `/contacts`
-- `/admin/people/:id` → `/contacts/:id`
-- `/admin/organizations` → `/organizations`
-- `/admin/organizations/:id` → `/organizations/:id`
-- `/admin/funding` → `/funding`
-- `/admin/funding/:id` → `/funding/:id`
-
-Detail redirects shall preserve the record ID. Redirect handlers shall not render the old Admin workspace first or create loops. After internal links are migrated, old Admin URL literals should remain only in the compatibility route definitions/redirect components and any intentional historical documentation.
+Remove the old `/admin/people*`, `/admin/organizations*`, and `/admin/funding*` routes. Internal links shall use only the canonical navbar URLs; no redirect compatibility layer is required.
 
 ### REQ-NAV-008 — Preserve authorization and data invariants
 
@@ -131,9 +102,9 @@ Do not broaden server authorization as part of moving the UI. In particular:
 
 - clients remain unable to read CRM records;
 - organization-wide contact and organization reads remain staff-only;
-- current admin-only contact/organization mutations and audit reads remain admin-only;
-- case relationship mutations continue to require their existing stored case capability or admin boundary; and
-- every grant/funding read and mutation remains operations-admin-only.
+- permitted non-client accounts may manage contact, organization, grant, and funding data;
+- case relationship mutations continue to require their existing stored case capability; and
+- login-account linking remains operations-admin-only.
 
 No schema migration or data copy is expected. Existing audit, archive-not-delete, linked-account ownership, and void-not-delete behavior must remain unchanged.
 
@@ -145,7 +116,7 @@ Use **Contacts** consistently in navigation and page headings; “person/people�
 
 ## Likely implementation areas
 
-- `src/app.rs`: canonical routes and compatibility redirects.
+- `src/app.rs`: canonical routes and removal of old Admin routes.
 - `src/components/layout.rs`: role-aware desktop/mobile links and responsive breakpoint/layout.
 - `src/pages/admin.rs`: remove the three non-operational workspaces and simplify Admin navigation.
 - `src/pages/contacts.rs` and `src/pages/people.rs`: consolidate directory/detail behavior and route wrappers.
@@ -158,12 +129,12 @@ Use **Contacts** consistently in navigation and page headings; “person/people�
 ## Acceptance criteria
 
 1. An admin sees direct Contacts, Organizations, Funding, and Admin entries in desktop and collapsed navigation; Admin itself contains only Cases and Users.
-2. A volunteer sees Contacts and Organizations, but not Funding or Admin. They can use the current volunteer-authorized Contact functions and read Organizations without being shown admin-only controls.
+2. A permitted volunteer sees and can fully manage Contacts, Organizations, and Funding, but does not gain Admin dashboard access.
 3. A client sees none of the three links and cannot open their canonical routes or call their backing APIs successfully.
 4. `/contacts` is the only contact directory; `/contacts/:id` combines the current outreach/category/communication capabilities with authorized structured CRM detail, without a competing People workspace.
-5. `/organizations` and `/organizations/:id` are useful read-only destinations for volunteers and retain full management for admins.
-6. `/funding` and `/funding/:id` retain the complete existing admin-only grant/funding workflow without Admin tabs or Admin page titles.
-7. All six old Admin list/detail URLs redirect to the matching canonical route and preserve detail IDs.
+5. `/organizations` and `/organizations/:id` provide full management to permitted non-client accounts.
+6. `/funding` and `/funding/:id` provide the complete grant/funding workflow to permitted non-client accounts without Admin tabs or Admin page titles.
+7. The six old Admin list/detail routes are removed and may return the normal 404.
 8. Internal links no longer send users through old Admin CRM URLs.
 9. Direct authorization checks confirm that route movement did not grant any role new server-side data access.
 10. At mobile, intermediate, and wide desktop widths, the navbar and all moved list/detail pages have no horizontal clipping or unreachable controls; active states and Back links are correct.
@@ -172,7 +143,7 @@ Use **Contacts** consistently in navigation and page headings; “person/people�
 
 - Run formatting checks and `etc/dev.sh -- cargo check --no-default-features --features ssr`.
 - Run `etc/dev.sh build`, then `etc/dev.sh run`, and wait for `MH_READY`.
-- Browser-check all canonical list/detail routes and old redirects as a seeded site admin, operations admin, volunteer, and client.
+- Browser-check all canonical list/detail routes as a seeded site admin, operations admin, volunteer, and client.
 - Exercise contact search/filter/pagination, category management, communication logging, structured admin detail, organization read/admin management, and grant/funding list/detail mutations.
 - Call representative Contacts, Organizations, Grants, and Funding server functions directly for denied roles to verify backend boundaries, not just hidden navigation.
 - Check desktop, intermediate, and mobile widths, keyboard navigation, active-link styling, Back behavior, and browser console errors.

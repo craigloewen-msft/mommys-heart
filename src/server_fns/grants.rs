@@ -5,8 +5,8 @@
 //! integer minor units (cents) end to end — never a float, which cannot hold a
 //! currency amount exactly.
 //!
-//! Grants and [`crate::server_fns::funding`] are back-office records: operations
-//! admins and above only, not volunteers.
+//! Grants and [`crate::server_fns::funding`] use the shared information-management
+//! grant for all non-client accounts.
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -247,10 +247,10 @@ pub async fn list_grants(
     limit: i64,
 ) -> Result<Page<Grant>, ServerFnError> {
     use crate::server::db::grants;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     grants::page(&filters, offset, limit)
         .await
         .map_err(ServerFnError::new)
@@ -261,20 +261,20 @@ pub async fn list_grants(
 #[server(prefix = "/api")]
 pub async fn load_grant_totals() -> Result<GrantTotals, ServerFnError> {
     use crate::server::db::grants;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     grants::totals().await.map_err(ServerFnError::new)
 }
 
 #[server(prefix = "/api")]
 pub async fn load_grant(id: String) -> Result<Option<Grant>, ServerFnError> {
     use crate::server::db::grants;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     grants::get(&id).await.map_err(ServerFnError::new)
 }
 
@@ -282,10 +282,10 @@ pub async fn load_grant(id: String) -> Result<Option<Grant>, ServerFnError> {
 #[server(prefix = "/api")]
 pub async fn search_grant_options(query: String) -> Result<Vec<(String, String)>, ServerFnError> {
     use crate::server::db::grants;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     grants::search_options(&query, 10)
         .await
         .map_err(ServerFnError::new)
@@ -294,10 +294,10 @@ pub async fn search_grant_options(query: String) -> Result<Vec<(String, String)>
 #[server(prefix = "/api")]
 pub async fn create_grant(input: GrantInput) -> Result<String, ServerFnError> {
     use crate::server::db::grants;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     let validated = input.validate().map_err(ServerFnError::new)?;
     grants::create(&validated, &user.id, &user.full_name())
         .await
@@ -307,10 +307,10 @@ pub async fn create_grant(input: GrantInput) -> Result<String, ServerFnError> {
 #[server(prefix = "/api")]
 pub async fn update_grant(id: String, input: GrantInput) -> Result<(), ServerFnError> {
     use crate::server::db::grants;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     let validated = input.validate().map_err(ServerFnError::new)?;
     grants::update(&id, &validated, &user.id, &user.full_name())
         .await

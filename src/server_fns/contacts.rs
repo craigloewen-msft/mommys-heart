@@ -76,6 +76,10 @@ pub struct Contact {
     pub archived: bool,
     /// The account this person signs in with, when they have one.
     pub user_id: String,
+    /// Whether account-owned identity fields are locked, even when account
+    /// identifiers and private values are withheld from this viewer.
+    #[serde(default)]
+    pub account_linked: bool,
     /// Read-only snapshots of the linked account, owned by `users`.
     pub linked_email: String,
     pub linked_role: Option<AccountRole>,
@@ -104,7 +108,7 @@ impl Contact {
     }
 
     pub fn has_account(&self) -> bool {
-        !self.user_id.is_empty()
+        self.account_linked || !self.user_id.is_empty()
     }
 }
 
@@ -200,10 +204,16 @@ pub async fn list_contacts(
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
-    contacts::page(&filters, offset, limit)
-        .await
-        .map_err(ServerFnError::new)
+    contacts::page(
+        &filters,
+        offset,
+        limit,
+        user.role.has_operations_admin_permissions(),
+    )
+    .await
+    .map_err(ServerFnError::new)
 }
 
 #[server(prefix = "/api")]
@@ -212,8 +222,11 @@ pub async fn load_contact(id: String) -> Result<Option<Contact>, ServerFnError> 
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
-    contacts::get(&id).await.map_err(ServerFnError::new)
+    contacts::get(&id, user.role.has_operations_admin_permissions())
+        .await
+        .map_err(ServerFnError::new)
 }
 
 /// Server-side typeahead search over active contacts for relationship pickers.
@@ -225,22 +238,21 @@ pub async fn search_active_contacts(
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
     contacts::search_active(&query, 10)
         .await
         .map_err(ServerFnError::new)
 }
 
-/// Creating and editing a person is administrative: the directory lives under
-/// Admin. Any staff account may still *read* contacts, because the case
-/// people-picker needs them.
+/// Creating and editing a person requires the shared information-management grant.
 #[server(prefix = "/api")]
 pub async fn create_contact(input: ContactInput) -> Result<String, ServerFnError> {
     use crate::server::db::contacts;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     let input = input.validate().map_err(ServerFnError::new)?;
     contacts::create(&input, &user.id, &user.full_name())
         .await
@@ -250,25 +262,24 @@ pub async fn create_contact(input: ContactInput) -> Result<String, ServerFnError
 #[server(prefix = "/api")]
 pub async fn update_contact(id: String, input: ContactInput) -> Result<(), ServerFnError> {
     use crate::server::db::contacts;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     let input = input.validate().map_err(ServerFnError::new)?;
     contacts::update(&id, &input, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
 }
 
-/// Archiving is an administrative action: it removes someone from every picker,
-/// so it is not left to any staff account.
+/// Archiving removes someone from every picker and requires information access.
 #[server(prefix = "/api")]
 pub async fn set_contact_archived(id: String, archived: bool) -> Result<(), ServerFnError> {
     use crate::server::db::contacts;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     contacts::set_archived(&id, archived, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)
@@ -292,6 +303,7 @@ pub async fn unlinked_accounts() -> Result<Vec<LinkableAccount>, ServerFnError> 
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     contacts::unlinked_accounts()
         .await
@@ -308,6 +320,7 @@ pub async fn set_contact_account(id: String, user_id: String) -> Result<(), Serv
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     let target = user_id.trim();
     contacts::set_account(
@@ -328,10 +341,10 @@ pub async fn set_contact_organization(
     organization_id: String,
 ) -> Result<(), ServerFnError> {
     use crate::server::db::contacts;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
     let target = organization_id.trim();
     contacts::set_organization(
         &contact_id,

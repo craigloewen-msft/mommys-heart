@@ -84,6 +84,27 @@ where
     .into_any()
 }
 
+/// Show information areas only when the current role and stored grant allow it.
+pub fn require_information_management_access<F>(state: AppState, content: F) -> AnyView
+where
+    F: Fn() -> AnyView + Send + 'static,
+{
+    (move || {
+        if state.is_authenticated() {
+            if state.has_information_management_access() {
+                content()
+            } else {
+                view! { <Redirect path="/cases" /> }.into_any()
+            }
+        } else if !state.auth_resolved.get() {
+            view! { <Loading label="Loading\u{2026}" /> }.into_any()
+        } else {
+            view! { <Redirect path="/login" /> }.into_any()
+        }
+    })
+    .into_any()
+}
+
 /// Show `content` only to site administrators. Other authenticated users return
 /// to `/cases`; signed-out visitors return to `/login`.
 pub fn require_site_admin<F>(state: AppState, content: F) -> AnyView
