@@ -231,7 +231,9 @@ pub async fn add_contact_category(
         .map_err(ServerFnError::new)
 }
 
-#[server(prefix = "/api")]
+// JSON input: the URL codec drops empty vectors, so an unfiltered search would
+// arrive with `category_ids` missing entirely.
+#[server(prefix = "/api", input = leptos::server_fn::codec::Json)]
 pub async fn search_contacts(
     query: String,
     category_ids: Vec<String>,
@@ -266,7 +268,9 @@ pub async fn get_contact(contact_id: String) -> Result<ContactDetails, ServerFnE
         .ok_or_else(|| ServerFnError::new("Contact not found."))
 }
 
-#[server(prefix = "/api")]
+// JSON input for the same reason: a contact saved with no categories selected
+// would otherwise lose the `category_ids` field on the way to the server.
+#[server(prefix = "/api", input = leptos::server_fn::codec::Json)]
 pub async fn save_contact(
     contact_id: Option<String>,
     input: ContactInput,
