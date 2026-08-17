@@ -5,6 +5,7 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
+use crate::components::contact_form::ContactTypeSelector;
 use crate::components::guard::require_information_management_access;
 use crate::components::layout::Layout;
 use crate::pages::people::ContactDetail;
@@ -13,7 +14,7 @@ use crate::server_fns::contact_directory::{
     save_contact, search_contacts, set_contact_categories, CommunicationKind, Contact,
     ContactCategory, ContactDetails, ContactInput,
 };
-use crate::server_fns::contacts::ContactType;
+use crate::server_fns::contacts::{ContactType, MAX_TYPES};
 use crate::server_fns::err_text;
 use crate::server_fns::organizations::{list_organizations, OrganizationFilters};
 use crate::state::AppState;
@@ -39,6 +40,7 @@ impl ContactDraft {
                 phone: contact.phone.clone(),
                 address: contact.address.clone(),
                 website: contact.website.clone(),
+                types: contact.types.clone(),
                 category_ids: contact
                     .categories
                     .iter()
@@ -187,9 +189,27 @@ fn DirectoryContactEditor(
                     />
                 </label>
             </div>
+            <div class="mt-5">
+                <ContactTypeSelector
+                    selected=Signal::derive(move || draft.get().input.types)
+                    on_toggle=Callback::new(move |contact_type| {
+                        draft.update(|draft| {
+                            let types = &mut draft.input.types;
+                            if let Some(index) = types.iter().position(|item| *item == contact_type) {
+                                types.remove(index);
+                            } else if types.len() < MAX_TYPES {
+                                types.push(contact_type);
+                            }
+                        });
+                    })
+                />
+            </div>
             <Show when=move || show_categories>
                 <div class="mt-5">
-                    <p class=LABEL>"Categories, subcategories, and tags (select multiple)"</p>
+                    <p class=LABEL>"Categories, subcategories, and tags (optional)"</p>
+                    <p class="mb-2 text-xs text-slate-500">
+                        "Use these organization-defined groupings for more specific classification."
+                    </p>
                     <div class="max-h-64 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-2">
                         {category_checks}
                     </div>
@@ -259,7 +279,10 @@ pub(crate) fn ContactOutreachPanel(
         spawn_local(async move {
             match get_contact(id.get_value()).await {
                 Ok(found) => {
-                    selected_categories.set(
+                    let Some(is_editing) = editing_contact.try_get_untracked() else {
+                        return;
+                    };
+                    selected_categories.try_set(
                         found
                             .contact
                             .categories
@@ -267,17 +290,22 @@ pub(crate) fn ContactOutreachPanel(
                             .map(|category| category.id.clone())
                             .collect(),
                     );
-                    if !editing_contact.get_untracked() {
-                        contact_draft.set(ContactDraft::from_contact(&found.contact));
+                    if !is_editing {
+                        contact_draft.try_set(ContactDraft::from_contact(&found.contact));
                     }
-                    details.set(Some(found));
-                    error.set(String::new());
+                    details.try_set(Some(found));
+                    error.try_set(String::new());
                 }
-                Err(err) => error.set(err_text(err)),
+                Err(err) => {
+                    error.try_set(err_text(err));
+                }
             }
-            if categories.get_untracked().is_empty() {
+            if categories
+                .try_get_untracked()
+                .is_some_and(|items| items.is_empty())
+            {
                 if let Ok(items) = list_contact_categories().await {
-                    categories.set(items);
+                    categories.try_set(items);
                 }
             }
         });
@@ -724,6 +752,20 @@ fn ContactsDirectory() -> impl IntoView {
                     .join(" at ");
                 let archived = contact.archived;
                 let has_account = contact.has_account;
+                let type_badges = contact
+                    .types
+                    .iter()
+                    .map(|contact_type| {
+                        view! {
+                            <span class=format!(
+                                "rounded-full px-2 py-0.5 text-[0.68rem] {}",
+                                contact_type.badge_classes(),
+                            )>
+                                {contact_type.label()}
+                            </span>
+                        }
+                    })
+                    .collect_view();
                 let tags = contact
                     .categories
                     .iter()
@@ -745,6 +787,7 @@ fn ContactsDirectory() -> impl IntoView {
                         <div class="mt-1 flex flex-wrap gap-1">
                             {archived.then(|| view! { <span class="rounded-full bg-slate-700/40 px-2 py-0.5 text-[0.68rem] text-slate-300">"Archived"</span> })}
                             {has_account.then(|| view! { <span class="rounded-full bg-primary-500/15 px-2 py-0.5 text-[0.68rem] text-primary-300">"Has account"</span> })}
+                            {type_badges}
                         </div>
 
                         {(!subtitle.is_empty()).then(|| view! {
@@ -805,7 +848,10 @@ fn ContactsDirectory() -> impl IntoView {
                 <summary class="cursor-pointer px-4 py-3 text-sm font-medium text-slate-300">
                     "Manage categories and tags"
                 </summary>
-                <div class="grid gap-3 border-t border-slate-800 p-4 sm:grid-cols-[1fr_1fr_auto]">
+                <p class="border-t border-slate-800 px-4 pt-4 text-xs text-slate-500">
+                    "Categories and tags are optional, organization-defined groupings. Required contact types are edited on each contact."
+                </p>
+                <div class="grid gap-3 border-slate-800 p-4 sm:grid-cols-[1fr_1fr_auto]">
                     <input
                         class=INPUT
                         placeholder="New category or tag name"
@@ -863,6 +909,9 @@ fn ContactsDirectory() -> impl IntoView {
                                 <option value=item.slug()>{item.label()}</option>
                             }).collect_view()}
                         </select>
+                        <p class="mt-1 text-xs text-slate-500">
+                            "Matches contacts that include the selected type."
+                        </p>
                     </label>
                     <label class="block">
                         <span class=LABEL>"Organization"</span>

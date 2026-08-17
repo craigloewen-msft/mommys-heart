@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::server_fns::contacts::{
-    create_contact, update_contact, Contact, ContactInput, ContactType,
+    create_contact, update_contact, Contact, ContactInput, ContactType, MAX_TYPES,
 };
 use crate::server_fns::err_text;
 use crate::server_fns::organizations::{search_active_organizations, ActiveOrganizationSummary};
@@ -13,6 +13,54 @@ use crate::server_fns::organizations::{search_active_organizations, ActiveOrgani
 const INPUT: &str =
     "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-primary-500 focus:outline-none";
 const LABEL: &str = "text-xs font-medium text-slate-400";
+
+/// The fixed broad roles shared by every contact create and edit workflow.
+#[component]
+pub fn ContactTypeSelector(
+    selected: Signal<Vec<ContactType>>,
+    on_toggle: Callback<ContactType>,
+) -> impl IntoView {
+    view! {
+        <fieldset>
+            <legend class=LABEL>"Contact types *"</legend>
+            <p class="mt-1 text-xs text-slate-500">
+                "Choose 1 to 6 broad roles. Types are required and fixed; categories and tags are optional, organization-defined groupings."
+            </p>
+            <div class="mt-2 flex flex-wrap gap-2">
+                {ContactType::ALL
+                    .iter()
+                    .map(|contact_type| {
+                        let contact_type = *contact_type;
+                        let is_selected = move || selected.get().contains(&contact_type);
+                        let at_limit = move || {
+                            !is_selected() && selected.get().len() >= MAX_TYPES
+                        };
+                        view! {
+                            <button
+                                type="button"
+                                on:click=move |_| on_toggle.run(contact_type)
+                                aria-pressed=move || is_selected().to_string()
+                                prop:disabled=at_limit
+                                class=move || {
+                                    if is_selected() {
+                                        "rounded-full border border-primary-500/40 bg-primary-500/15 px-3 py-1 text-xs font-medium text-primary-200"
+                                    } else {
+                                        "rounded-full border border-slate-700 px-3 py-1 text-xs font-medium text-slate-400 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                                    }
+                                }
+                            >
+                                {contact_type.label()}
+                            </button>
+                        }
+                    })
+                    .collect_view()}
+            </div>
+            <p class="mt-2 text-xs text-slate-500" aria-live="polite">
+                {move || format!("{} of {MAX_TYPES} selected", selected.get().len())}
+            </p>
+        </fieldset>
+    }
+}
 
 /// Edits `contact` when given, otherwise creates a new person. `on_saved`
 /// receives the contact id so the caller can close the form and refresh.
@@ -81,16 +129,6 @@ pub fn ContactForm(
             }
         });
     });
-
-    let toggle_type = move |t: ContactType| {
-        types.update(|list| {
-            if let Some(index) = list.iter().position(|item| *item == t) {
-                list.remove(index);
-            } else {
-                list.push(t);
-            }
-        });
-    };
 
     let submit = move |_| {
         if busy.get_untracked() {
@@ -235,34 +273,18 @@ pub fn ContactForm(
                 </p>
             </Show>
 
-            <div>
-                <span class=LABEL>"Contact types"</span>
-                <div class="mt-2 flex flex-wrap gap-2">
-                    {ContactType::ALL
-                        .iter()
-                        .map(|t| {
-                            let t = *t;
-                            let selected = move || types.get().contains(&t);
-                            view! {
-                                <button
-                                    type="button"
-                                    on:click=move |_| toggle_type(t)
-                                    aria-pressed=move || selected().to_string()
-                                    class=move || {
-                                        if selected() {
-                                            "rounded-full border border-primary-500/40 bg-primary-500/15 px-3 py-1 text-xs font-medium text-primary-200"
-                                        } else {
-                                            "rounded-full border border-slate-700 px-3 py-1 text-xs font-medium text-slate-400 hover:bg-slate-800"
-                                        }
-                                    }
-                                >
-                                    {t.label()}
-                                </button>
-                            }
-                        })
-                        .collect_view()}
-                </div>
-            </div>
+            <ContactTypeSelector
+                selected=Signal::derive(move || types.get())
+                on_toggle=Callback::new(move |contact_type| {
+                    types.update(|items| {
+                        if let Some(index) = items.iter().position(|item| *item == contact_type) {
+                            items.remove(index);
+                        } else if items.len() < MAX_TYPES {
+                            items.push(contact_type);
+                        }
+                    });
+                })
+            />
 
             <label class="block">
                 <span class=LABEL>"Notes"</span>

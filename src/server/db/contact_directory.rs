@@ -44,7 +44,7 @@ const DIRECTORY_COLUMNS: &str = "c.id,
      CASE WHEN u.id IS NULL THEN c.email ELSE u.email END AS email,
      CASE WHEN u.id IS NULL THEN c.phone ELSE u.phone END AS phone,
      CASE WHEN u.id IS NULL THEN c.address ELSE u.home_address END AS address,
-     c.website, c.archived, (u.id IS NOT NULL) AS has_account, c.updated_at,
+     c.website, c.types, c.archived, (u.id IS NOT NULL) AS has_account, c.updated_at,
      category.id AS category_id, category.name AS category_name,
      category.parent_id, coalesce(parent.name, '') AS parent_name";
 
@@ -54,7 +54,7 @@ const SAFE_DIRECTORY_COLUMNS: &str = "c.id,
          o.name, ''
      ) AS full_name,
      c.job_title AS title, coalesce(o.name, '') AS organization,
-     c.email, c.phone, c.address, c.website, c.archived,
+     c.email, c.phone, c.address, c.website, c.types, c.archived,
      (u.id IS NOT NULL) AS has_account, c.updated_at,
      category.id AS category_id, category.name AS category_name,
      category.parent_id, coalesce(parent.name, '') AS parent_name";
@@ -107,6 +107,7 @@ struct ContactRow {
     phone: String,
     address: String,
     website: String,
+    types: Vec<String>,
     archived: bool,
     has_account: bool,
     updated_at: chrono::DateTime<chrono::Utc>,
@@ -138,6 +139,11 @@ fn fold_contacts(rows: Vec<ContactRow>) -> Vec<Contact> {
                 phone: row.phone,
                 address: row.address,
                 website: row.website,
+                types: row
+                    .types
+                    .iter()
+                    .filter_map(|slug| ContactType::from_slug(slug))
+                    .collect(),
                 categories: Vec::new(),
                 archived: row.archived,
                 has_account: row.has_account,
@@ -451,6 +457,19 @@ pub async fn save(
     }
 
     let (first_name, last_name) = split_name(&input.full_name);
+    // Validate canonical contact fields before organization resolution can write.
+    PersonInput {
+        first_name: first_name.clone(),
+        last_name: last_name.clone(),
+        email: input.email.clone(),
+        phone: input.phone.clone(),
+        address: input.address.clone(),
+        job_title: input.title.clone(),
+        types: input.types.clone(),
+        ..Default::default()
+    }
+    .validate()
+    .map_err(sqlx::Error::Protocol)?;
 
     let id = match contact_id {
         Some(id) => {
@@ -476,7 +495,7 @@ pub async fn save(
                 organization_id,
                 preferred_name: existing.preferred_name,
                 mobile: existing.mobile,
-                types: existing.types,
+                types: input.types.clone(),
                 source: existing.source,
                 description: existing.description,
                 do_not_contact: existing.do_not_contact,
@@ -496,7 +515,7 @@ pub async fn save(
                 address: input.address.clone(),
                 job_title: input.title.clone(),
                 organization_id,
-                types: vec![ContactType::Other],
+                types: input.types.clone(),
                 source: DIRECTORY_SOURCE.to_string(),
                 ..Default::default()
             };

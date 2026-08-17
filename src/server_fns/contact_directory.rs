@@ -8,6 +8,8 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "ssr")]
+use crate::server_fns::contacts::validate_contact_types;
 use crate::server_fns::contacts::ContactType;
 use crate::server_fns::pagination::Page;
 
@@ -43,6 +45,7 @@ pub struct ContactInput {
     pub phone: String,
     pub address: String,
     pub website: String,
+    pub types: Vec<ContactType>,
     pub category_ids: Vec<String>,
 }
 
@@ -56,6 +59,7 @@ pub struct Contact {
     pub phone: String,
     pub address: String,
     pub website: String,
+    pub types: Vec<ContactType>,
     pub categories: Vec<ContactCategory>,
     pub archived: bool,
     pub has_account: bool,
@@ -145,6 +149,7 @@ fn validate_input(mut input: ContactInput) -> Result<ContactInput, ServerFnError
     input.phone = input.phone.trim().to_string();
     input.address = input.address.trim().to_string();
     input.website = input.website.trim().to_string();
+    input.types = validate_contact_types(&input.types).map_err(ServerFnError::new)?;
     input.category_ids = input
         .category_ids
         .into_iter()

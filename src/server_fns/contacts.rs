@@ -112,6 +112,24 @@ impl Contact {
     }
 }
 
+/// Normalize one contact's broad CRM classifications and enforce the shared
+/// storage limit.
+pub fn validate_contact_types(input: &[ContactType]) -> Result<Vec<ContactType>, String> {
+    let mut types = Vec::new();
+    for contact_type in input {
+        if !types.contains(contact_type) {
+            types.push(*contact_type);
+        }
+    }
+    if types.is_empty() {
+        return Err("Choose at least one contact type.".into());
+    }
+    if types.len() > MAX_TYPES {
+        return Err(format!("Choose at most {MAX_TYPES} contact types."));
+    }
+    Ok(types)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ContactInput {
     pub first_name: String,
@@ -135,18 +153,7 @@ impl ContactInput {
     /// Mirrors the database `CHECK`s so a bad value produces a readable message
     /// rather than a constraint violation.
     pub fn validate(&self) -> Result<Self, String> {
-        let mut types = Vec::new();
-        for t in &self.types {
-            if !types.contains(t) {
-                types.push(*t);
-            }
-        }
-        if types.is_empty() {
-            return Err("Choose at least one contact type.".into());
-        }
-        if types.len() > MAX_TYPES {
-            return Err(format!("Choose at most {MAX_TYPES} contact types."));
-        }
+        let types = validate_contact_types(&self.types)?;
 
         let cleaned = Self {
             first_name: clean_text(&self.first_name, "first name", MAX_NAME)?,
