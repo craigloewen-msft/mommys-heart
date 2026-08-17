@@ -91,7 +91,7 @@ fn CaseContactRow(
 ) -> impl IntoView {
     let row_id = StoredValue::new(person.id.clone());
     let name = person.contact_name.clone();
-    let href = format!("/admin/people/{}", person.contact_id);
+    let href = format!("/contacts/{}", person.contact_id);
     let meta = {
         let mut parts = vec![if person.organization_name.is_empty() {
             "No organization".to_string()

@@ -78,18 +78,22 @@ pub async fn list_audit_page(
         // CRM history is back-office reading: operations admins and above, and
         // never a client, who cannot see the underlying records at all.
         AuditScope::Contact => {
+            crate::server::permissions::require_information_management_access(&user)?;
             require_operations_admin(&user)?;
             Entity::Contact
         }
         AuditScope::Organization => {
+            crate::server::permissions::require_information_management_access(&user)?;
             require_operations_admin(&user)?;
             Entity::Organization
         }
         AuditScope::Grant => {
+            crate::server::permissions::require_information_management_access(&user)?;
             require_operations_admin(&user)?;
             Entity::Grant
         }
         AuditScope::Funding => {
+            crate::server::permissions::require_information_management_access(&user)?;
             require_operations_admin(&user)?;
             Entity::Funding
         }

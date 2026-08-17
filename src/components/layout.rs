@@ -103,6 +103,9 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let toggle_menu = move |_| menu_open.update(|open| *open = !*open);
     let close_menu = move |_| menu_open.set(false);
     let has_operations_admin_permissions = role.has_operations_admin_permissions();
+    let has_information_management_access = user.has_information_management_access();
+    let has_information_management_admin_access =
+        has_operations_admin_permissions && has_information_management_access;
 
     view! {
         <div class="min-h-screen bg-slate-950 text-slate-100">
@@ -118,11 +121,19 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                             </span>
                         </A>
 
-                        <nav class="hidden md:flex items-center gap-1">
+                        <nav class="hidden xl:flex items-center gap-1">
                             <NavLink href="/cases" label="Cases" />
                             <NavLink href="/inbox" label="Case Chat" badge=NavBadge::UnreadMessages />
-                            {if role.has_volunteer_privileges() {
-                                view! { <NavLink href="/contacts" label="Contacts" /> }.into_any()
+                            {if has_information_management_access {
+                                view! {
+                                    <NavLink href="/contacts" label="Contacts" />
+                                    <NavLink href="/organizations" label="Organizations" />
+                                }.into_any()
+                            } else {
+                                ().into_any()
+                            }}
+                            {if has_information_management_admin_access {
+                                view! { <NavLink href="/funding" label="Funding" /> }.into_any()
                             } else {
                                 ().into_any()
                             }}
@@ -161,7 +172,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                             <button
                                 on:click=toggle_menu
                                 aria-label="Toggle navigation menu"
-                                class="md:hidden grid h-9 w-9 place-items-center rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
+                                class="xl:hidden grid h-9 w-9 place-items-center rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
                             >
                                 {move || if menu_open.get() { "\u{2715}" } else { "\u{2630}" }}
                             </button>
@@ -169,15 +180,23 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                     </div>
 
                     <nav
-                        class="md:hidden overflow-hidden flex flex-col gap-1 transition-all"
+                        class="xl:hidden overflow-hidden flex flex-col gap-1 transition-all"
                         class:hidden=move || !menu_open.get()
                         style="padding-bottom: 0.75rem"
                         on:click=close_menu
                     >
                         <NavLink href="/cases" label="Cases" />
                         <NavLink href="/inbox" label="Case Chat" badge=NavBadge::UnreadMessages />
-                        {if role.has_volunteer_privileges() {
-                            view! { <NavLink href="/contacts" label="Contacts" /> }.into_any()
+                        {if has_information_management_access {
+                            view! {
+                                <NavLink href="/contacts" label="Contacts" />
+                                <NavLink href="/organizations" label="Organizations" />
+                            }.into_any()
+                        } else {
+                            ().into_any()
+                        }}
+                        {if has_information_management_admin_access {
+                            view! { <NavLink href="/funding" label="Funding" /> }.into_any()
                         } else {
                             ().into_any()
                         }}

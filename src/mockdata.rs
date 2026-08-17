@@ -172,6 +172,7 @@ pub fn users() -> Vec<(User, String)> {
                 ),
                 home_address: format!("{} {} Street, Springfield", 100 + i * 7, su.last),
                 role: su.role,
+                information_management_access: su.role.has_volunteer_privileges(),
                 assigned_cases: su
                     .assignments
                     .iter()

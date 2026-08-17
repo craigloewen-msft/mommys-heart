@@ -7,9 +7,12 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
+use leptos_router::hooks::use_params_map;
 
 use crate::components::change_log::ChangeLog;
 use crate::components::contact_form::ContactForm;
+use crate::components::guard::require_information_management_access;
+use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::components::organization_properties::OrganizationPropertiesPanel;
 use crate::helpers::format::badge_pill;
@@ -30,6 +33,22 @@ const PANEL: &str = "rounded-xl border border-slate-800 bg-slate-900 p-5";
 const INPUT: &str =
     "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-primary-500 focus:outline-none";
 const LABEL: &str = "text-xs font-medium text-slate-400";
+
+/// Canonical top-level Organizations list/detail page.
+#[component]
+pub fn OrganizationsPage() -> impl IntoView {
+    let state = expect_context::<AppState>();
+    let params = use_params_map();
+    require_information_management_access(state, move || {
+        let selected_id = params.read().get("id").filter(|id| !id.trim().is_empty());
+        view! {
+            <Layout title="Organizations".to_string()>
+                <ManageOrganizations selected_id=selected_id />
+            </Layout>
+        }
+        .into_any()
+    })
+}
 
 /// The Organizations workspace: the directory, or one organization.
 #[component]
@@ -102,7 +121,7 @@ fn OrganizationDirectory() -> impl IntoView {
         }
         list.into_iter()
             .map(|org| {
-                let href = format!("/admin/organizations/{}", org.id);
+                let href = format!("/organizations/{}", org.id);
                 let kind = org.kind;
                 let archived = org.archived;
                 let count = org.contact_count;
@@ -146,7 +165,7 @@ fn OrganizationDirectory() -> impl IntoView {
                 </Show>
             </div>
 
-            <Show when=move || creating.get()>
+            <Show when=move || is_admin && creating.get()>
                 <div class="mt-4 border-t border-slate-800 pt-4">
                     <OrganizationForm
                         organization=None
@@ -360,7 +379,9 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                 .into_any()
             }}
 
-            <OrganizationPropertiesPanel organization_id=id.get_value() />
+            <Show when=move || is_admin>
+                <OrganizationPropertiesPanel organization_id=id.get_value() />
+            </Show>
 
             {move || organization.get().map(|org| view! {
                 <OrganizationPeoplePanel
@@ -370,6 +391,7 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                     total=contact_total
                     window=contact_window
                     reload
+                    can_manage=is_admin
                 />
             })}
 
@@ -383,7 +405,7 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                                 return view! { <p class="text-sm text-slate-500">"No grants are linked to this organization."</p> }.into_any();
                             }
                             list.into_iter().map(|grant| {
-                                let href = format!("/admin/funding/{}", grant.id);
+                                let href = format!("/funding/{}", grant.id);
                                 let status = grant.status;
                                 view! {
                                     <A href=href attr:class="block rounded-lg border border-slate-800 bg-slate-950 p-3 hover:border-primary-500/40">
@@ -413,7 +435,7 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                 </div>
             </Show>
 
-            <A href="/admin/organizations" attr:class="inline-block text-sm text-primary-400 hover:text-primary-300">
+            <A href="/organizations" attr:class="inline-block text-sm text-primary-400 hover:text-primary-300">
                 "\u{2190} Back to organizations"
             </A>
         </div>
@@ -428,6 +450,7 @@ fn OrganizationPeoplePanel(
     total: RwSignal<i64>,
     window: RwSignal<i64>,
     reload: RwSignal<u32>,
+    can_manage: bool,
 ) -> impl IntoView {
     let id = StoredValue::new(organization_id);
     let name = StoredValue::new(organization_name);
@@ -461,7 +484,7 @@ fn OrganizationPeoplePanel(
             return view! { <p class="text-sm text-slate-500">"No people are filed under this organization."</p> }.into_any();
         }
         list.into_iter().map(|person| {
-            let href = format!("/admin/people/{}", person.id);
+            let href = format!("/contacts/{}", person.id);
             let person_id = person.id.clone();
             let title = person.job_title.clone();
             let archived = person.archived;
@@ -483,10 +506,16 @@ fn OrganizationPeoplePanel(
                         {(!title.is_empty()).then(|| view! { <span class="ml-2 text-xs text-slate-500">{title}</span> })}
                         {archived.then(|| view! { <span class=badge_pill("bg-slate-700/40 text-slate-300 ring-1 ring-slate-600")>"Archived"</span> })}
                     </div>
-                    <button type="button" on:click=unlink prop:disabled=move || busy.get()
-                        class="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 disabled:opacity-50">
-                        "Remove"
-                    </button>
+                    {if can_manage {
+                        view! {
+                        <button type="button" on:click=unlink prop:disabled=move || busy.get()
+                            class="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 disabled:opacity-50">
+                            "Remove"
+                        </button>
+                        }.into_any()
+                    } else {
+                        ().into_any()
+                    }}
                 </div>
             }
         }).collect_view().into_any()
@@ -513,19 +542,23 @@ fn OrganizationPeoplePanel(
                     <h3 class="text-sm font-semibold text-slate-200">"People here"</h3>
                     <p class="mt-1 text-xs text-slate-500">"Create a person here or file an existing person under this organization."</p>
                 </div>
-                <div class="flex gap-2">
-                    <button type="button" on:click=move |_| { creating.update(|value| *value = !*value); linking.set(false); }
-                        class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800">
-                        {move || if creating.get() { "Cancel" } else { "+ New person here" }}
-                    </button>
-                    <button type="button" on:click=move |_| { linking.update(|value| *value = !*value); creating.set(false); }
-                        class="rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-600">
-                        {move || if linking.get() { "Cancel" } else { "File existing person" }}
-                    </button>
-                </div>
+                {if can_manage {
+                    view! { <div class="flex gap-2">
+                        <button type="button" on:click=move |_| { creating.update(|value| *value = !*value); linking.set(false); }
+                            class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800">
+                            {move || if creating.get() { "Cancel" } else { "+ New person here" }}
+                        </button>
+                        <button type="button" on:click=move |_| { linking.update(|value| *value = !*value); creating.set(false); }
+                            class="rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-600">
+                            {move || if linking.get() { "Cancel" } else { "File existing person" }}
+                        </button>
+                    </div> }.into_any()
+                } else {
+                    ().into_any()
+                }}
             </div>
 
-            <Show when=move || creating.get()>
+            <Show when=move || can_manage && creating.get()>
                 <div class="mt-4 border-t border-slate-800 pt-4">
                     <ContactForm
                         contact=None
@@ -539,7 +572,7 @@ fn OrganizationPeoplePanel(
                 </div>
             </Show>
 
-            <Show when=move || linking.get()>
+            <Show when=move || can_manage && linking.get()>
                 <div class="mt-4 space-y-2 border-t border-slate-800 pt-4">
                     <label class="block">
                         <span class=LABEL>"Search active people"</span>

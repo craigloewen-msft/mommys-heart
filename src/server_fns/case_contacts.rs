@@ -100,6 +100,7 @@ pub async fn list_case_contacts(case_id: String) -> Result<Vec<CaseContact>, Ser
     use crate::server::permissions::{require_case_view_or_admin_read, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
     require_case_view_or_admin_read(&user, &case_id).await?;
     case_contacts::list(&case_id)
@@ -114,6 +115,7 @@ pub async fn list_contact_cases(contact_id: String) -> Result<Vec<ContactCaseLin
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     case_contacts::list_for_contact(&contact_id, &user.id)
         .await
@@ -129,6 +131,7 @@ pub async fn search_editable_cases(
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     cases::search_editable(&query, &user.id, 10)
         .await
@@ -148,6 +151,7 @@ pub async fn add_case_contact(
     use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
     require_cap(&user, &case_id, CaseCapability::EditCase).await?;
     case_contacts::add(
@@ -176,6 +180,7 @@ pub async fn update_case_contact(
     use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
     let case_id = case_contacts::case_id(&id)
         .await
@@ -202,6 +207,7 @@ pub async fn remove_case_contact(id: String) -> Result<(), ServerFnError> {
     use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
     let case_id = case_contacts::case_id(&id)
         .await

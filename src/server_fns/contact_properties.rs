@@ -91,6 +91,7 @@ pub async fn list_contact_properties(
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     contact_properties::list(&contact_id)
         .await
@@ -109,6 +110,7 @@ pub async fn set_contact_properties(
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     let cleaned = clean(properties);
     validate(&cleaned).map_err(ServerFnError::new)?;
@@ -126,6 +128,7 @@ pub async fn add_missing_contact_property_defaults(
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     contact_properties::add_missing_defaults(&contact_id, &user.id, &user.full_name())
         .await

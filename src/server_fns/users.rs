@@ -100,6 +100,8 @@ pub struct UserSummary {
     pub first_name: String,
     pub last_name: String,
     pub role: AccountRole,
+    /// Stored grant for the shared Contacts, Organizations, and Funding areas.
+    pub information_management_access: bool,
 }
 
 impl UserSummary {
@@ -108,6 +110,11 @@ impl UserSummary {
         format!("{} {}", self.first_name, self.last_name)
             .trim()
             .to_string()
+    }
+
+    /// Whether this account's role and stored grant both allow information access.
+    pub fn has_information_management_access(&self) -> bool {
+        self.role.has_volunteer_privileges() && self.information_management_access
     }
 }
 
@@ -204,6 +211,8 @@ pub struct User {
     pub phone: String,
     pub home_address: String,
     pub role: AccountRole,
+    /// Stored grant for the shared Contacts, Organizations, and Funding areas.
+    pub information_management_access: bool,
     /// Cases this user is assigned to, with the capabilities they hold on each.
     #[serde(default)]
     pub assigned_cases: Vec<CaseAssignment>,
@@ -215,6 +224,11 @@ impl User {
         format!("{} {}", self.first_name, self.last_name)
             .trim()
             .to_string()
+    }
+
+    /// Whether this account's role and stored grant both allow information access.
+    pub fn has_information_management_access(&self) -> bool {
+        self.role.has_volunteer_privileges() && self.information_management_access
     }
 
     /// This user's capabilities on a given case (empty if not assigned).
@@ -239,6 +253,7 @@ impl From<User> for UserSummary {
             first_name: user.first_name,
             last_name: user.last_name,
             role: user.role,
+            information_management_access: user.information_management_access,
         }
     }
 }
@@ -364,6 +379,22 @@ pub async fn set_user_role(user_id: String, role: AccountRole) -> Result<(), Ser
                 ServerFnError::new(error)
             }
         })
+}
+
+/// Grant or revoke access to Contacts, Organizations, and Funding information.
+#[server(prefix = "/api")]
+pub async fn set_information_management_access(
+    user_id: String,
+    enabled: bool,
+) -> Result<(), ServerFnError> {
+    use crate::server::db::users;
+    use crate::server::permissions::{require_site_admin, require_user};
+
+    let actor = require_user().await?;
+    require_site_admin(&actor)?;
+    users::set_information_management_access(user_id.trim(), enabled, &actor.id, &actor.full_name())
+        .await
+        .map_err(ServerFnError::new)
 }
 
 /// Assign a user to a case with an explicit set of capabilities.

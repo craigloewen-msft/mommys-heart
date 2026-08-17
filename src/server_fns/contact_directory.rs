@@ -8,6 +8,9 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::server_fns::contacts::ContactType;
+use crate::server_fns::pagination::Page;
+
 #[cfg(feature = "ssr")]
 const MAX_SHORT: usize = 300;
 #[cfg(feature = "ssr")]
@@ -54,6 +57,8 @@ pub struct Contact {
     pub address: String,
     pub website: String,
     pub categories: Vec<ContactCategory>,
+    pub archived: bool,
+    pub has_account: bool,
     pub updated_at: String,
 }
 
@@ -179,6 +184,7 @@ pub async fn list_contact_categories() -> Result<Vec<ContactCategory>, ServerFnE
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_directory_access(&user)?;
     directory::list_categories()
         .await
@@ -194,6 +200,7 @@ pub async fn add_contact_category(
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_directory_access(&user)?;
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 100 {
@@ -237,11 +244,17 @@ pub async fn add_contact_category(
 pub async fn search_contacts(
     query: String,
     category_ids: Vec<String>,
-) -> Result<Vec<Contact>, ServerFnError> {
+    contact_type: Option<ContactType>,
+    organization_id: String,
+    include_archived: bool,
+    offset: i64,
+    limit: i64,
+) -> Result<Page<Contact>, ServerFnError> {
     use crate::server::db::contact_directory as directory;
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_directory_access(&user)?;
     let mut category_ids: Vec<String> = category_ids
         .into_iter()
@@ -250,9 +263,17 @@ pub async fn search_contacts(
         .collect();
     category_ids.sort();
     category_ids.dedup();
-    directory::search(query.trim(), &category_ids)
-        .await
-        .map_err(ServerFnError::new)
+    directory::search_page(
+        query.trim(),
+        &category_ids,
+        contact_type,
+        organization_id.trim(),
+        include_archived,
+        offset,
+        limit,
+    )
+    .await
+    .map_err(ServerFnError::new)
 }
 
 #[server(prefix = "/api")]
@@ -261,6 +282,7 @@ pub async fn get_contact(contact_id: String) -> Result<ContactDetails, ServerFnE
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_directory_access(&user)?;
     directory::get(contact_id.trim())
         .await
@@ -279,6 +301,7 @@ pub async fn save_contact(
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_directory_access(&user)?;
     let input = validate_input(input)?;
     let contact_id = contact_id
@@ -293,6 +316,34 @@ pub async fn save_contact(
         .ok_or_else(|| ServerFnError::new("Contact could not be loaded after saving."))
 }
 
+/// Replace one contact's categories without changing their identity fields.
+#[server(prefix = "/api", input = leptos::server_fn::codec::Json)]
+pub async fn set_contact_categories(
+    contact_id: String,
+    category_ids: Vec<String>,
+) -> Result<ContactDetails, ServerFnError> {
+    use crate::server::db::contact_directory as directory;
+    use crate::server::permissions::require_user;
+
+    let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
+    let mut category_ids = category_ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    category_ids.sort();
+    category_ids.dedup();
+    let contact_id = contact_id.trim();
+    directory::set_categories(contact_id, &category_ids, &user.id, &user.full_name())
+        .await
+        .map_err(ServerFnError::new)?;
+    directory::get(contact_id)
+        .await
+        .map_err(ServerFnError::new)?
+        .ok_or_else(|| ServerFnError::new("Contact not found."))
+}
+
 #[server(prefix = "/api")]
 pub async fn add_contact_communication(
     contact_id: String,
@@ -303,6 +354,7 @@ pub async fn add_contact_communication(
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_directory_access(&user)?;
     let contact_id = contact_id.trim();
     let body = body.trim();

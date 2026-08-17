@@ -236,6 +236,18 @@ impl AppState {
             .unwrap_or(false)
     }
 
+    /// Whether the current role and stored grant allow information access.
+    pub fn has_information_management_access(&self) -> bool {
+        self.current_user_summary
+            .get()
+            .is_some_and(|user| user.has_information_management_access())
+    }
+
+    /// Whether the account may use the admin-only Funding workflow.
+    pub fn has_information_management_admin_access(&self) -> bool {
+        self.has_operations_admin_permissions() && self.has_information_management_access()
+    }
+
     pub fn is_site_admin(&self) -> bool {
         self.role().map(|r| r.is_site_admin()).unwrap_or(false)
     }

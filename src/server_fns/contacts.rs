@@ -200,6 +200,7 @@ pub async fn list_contacts(
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
     contacts::page(&filters, offset, limit)
         .await
@@ -212,6 +213,7 @@ pub async fn load_contact(id: String) -> Result<Option<Contact>, ServerFnError> 
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
     contacts::get(&id).await.map_err(ServerFnError::new)
 }
@@ -225,6 +227,7 @@ pub async fn search_active_contacts(
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
     contacts::search_active(&query, 10)
         .await
@@ -240,6 +243,7 @@ pub async fn create_contact(input: ContactInput) -> Result<String, ServerFnError
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     let input = input.validate().map_err(ServerFnError::new)?;
     contacts::create(&input, &user.id, &user.full_name())
@@ -253,6 +257,7 @@ pub async fn update_contact(id: String, input: ContactInput) -> Result<(), Serve
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     let input = input.validate().map_err(ServerFnError::new)?;
     contacts::update(&id, &input, &user.id, &user.full_name())
@@ -268,6 +273,7 @@ pub async fn set_contact_archived(id: String, archived: bool) -> Result<(), Serv
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     contacts::set_archived(&id, archived, &user.id, &user.full_name())
         .await
@@ -292,6 +298,7 @@ pub async fn unlinked_accounts() -> Result<Vec<LinkableAccount>, ServerFnError> 
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     contacts::unlinked_accounts()
         .await
@@ -308,6 +315,7 @@ pub async fn set_contact_account(id: String, user_id: String) -> Result<(), Serv
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     let target = user_id.trim();
     contacts::set_account(
@@ -331,6 +339,7 @@ pub async fn set_contact_organization(
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     let target = organization_id.trim();
     contacts::set_organization(

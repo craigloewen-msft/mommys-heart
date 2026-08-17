@@ -115,7 +115,7 @@ After task 00028's canonical navigation is in place:
 - show Funding only when the account has operations-admin permissions and this permission;
 - apply equivalent reactive route guards to list and detail routes;
 - denied authenticated users are redirected to `/cases` without briefly rendering protected content;
-- old Admin compatibility URLs continue redirecting to canonical URLs, whose guards then enforce access; and
+- old Admin information routes remain removed; and
 - desktop and collapsed/mobile navigation make the same decision.
 
 Hide or neutralize embedded entry points when denied, including contact links/panels on cases and profiles and related contact/organization/funding links. A hidden link is not a substitute for the server checks in REQ-IMA-004.
@@ -130,7 +130,7 @@ Verify the contact consolidation from task 00028 while adding the gate:
 - `/contacts/:id` is the only contact detail destination;
 - there is no separate “People”/Admin contact tab or duplicated persistence model;
 - category/tag filtering and management, communication history, structured contact fields, contact types, organization relationships, source/notes/do-not-contact state, properties, related cases, linked account state, archive behavior, and audit history remain available according to the intersection of role and the new permission; and
-- internal links use canonical `/contacts` URLs, with legacy `/admin/people*` present only as compatibility redirects.
+- internal links use canonical `/contacts` URLs, with no legacy `/admin/people*` routes.
 
 Do not regress bounded/paginated loading, audit behavior, archive-not-delete semantics, linked-account ownership, or responsive behavior delivered by task 00028.
 
@@ -171,5 +171,5 @@ Update concise current documentation and module comments that describe access as
 - Browser-check permitted and denied sessions for site admin, operations admin, volunteer, and client roles, including refresh and a mobile viewport.
 - Exercise the unified Contacts list/detail, Organizations list/detail, Funding list/grant detail, related pickers, case-contact panels, and scoped change logs.
 - Attempt representative protected server functions directly as denied users to verify backend enforcement rather than navigation hiding alone.
-- Confirm legacy Admin URLs redirect to canonical routes and cannot bypass their guards.
+- Confirm old Admin information URLs are absent and canonical routes enforce their guards.
 - Do not add permanent Cargo tests; this repository does not use them.

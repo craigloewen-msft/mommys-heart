@@ -78,6 +78,7 @@ pub async fn list_organization_properties(
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     organization_properties::list(&organization_id)
         .await
@@ -94,6 +95,7 @@ pub async fn set_organization_properties(
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     let cleaned = clean(properties);
     validate(&cleaned).map_err(ServerFnError::new)?;
@@ -111,6 +113,7 @@ pub async fn add_missing_organization_property_defaults(
     use crate::server::permissions::{require_operations_admin, require_user};
 
     let user = require_user().await?;
+    crate::server::permissions::require_information_management_access(&user)?;
     require_operations_admin(&user)?;
     organization_properties::add_missing_defaults(&organization_id, &user.id, &user.full_name())
         .await

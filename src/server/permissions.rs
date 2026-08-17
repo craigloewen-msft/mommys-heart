@@ -54,6 +54,22 @@ pub fn require_operations_admin(user: &User) -> Result<(), ServerFnError> {
     }
 }
 
+/// Whether the account's role and stored grant allow the information areas.
+pub fn has_information_management_access(user: &User) -> bool {
+    user.has_information_management_access()
+}
+
+/// Reject unless Contacts, Organizations, and Funding access has been granted.
+pub fn require_information_management_access(user: &User) -> Result<(), ServerFnError> {
+    if has_information_management_access(user) {
+        Ok(())
+    } else {
+        Err(ServerFnError::new(
+            "Access to contacts, organizations, and funding information has not been granted.",
+        ))
+    }
+}
+
 /// Reject unless the caller may manage the target user's case assignments and
 /// capabilities. Site admins may manage anyone; operations admins may manage
 /// only themselves.

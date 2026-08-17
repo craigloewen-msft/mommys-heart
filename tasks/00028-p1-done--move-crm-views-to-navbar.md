@@ -20,7 +20,7 @@ Admin shall return to its operational purpose: Cases, Users, and Admin tools.
    - Organizations: readable by volunteers and admins; management remains admin-only.
    - Funding/grants: operations admins and site admins only.
    - Clients: no Contacts, Organizations, or Funding navigation or route access.
-3. **Old Admin URLs redirect.** Existing bookmarks and links under `/admin/people`, `/admin/organizations`, and `/admin/funding`, including detail URLs, shall resolve to the corresponding canonical route.
+3. **Old Admin URLs are removed.** Existing `/admin/people`, `/admin/organizations`, and `/admin/funding` URLs may return the normal 404; clean canonical routing is preferred over compatibility redirects.
 
 ## Current-state findings
 
@@ -81,7 +81,7 @@ The merged experience shall preserve the useful behavior of both current views:
 - organization links, contact types, source, notes, and do-not-contact state;
 - outreach/communication history;
 - contact properties, related cases, linked account state, archive controls, and change history for roles already authorized to use them; and
-- stable `/contacts/:id` detail links that can be refreshed, bookmarked, and reached from old Admin detail URLs.
+- stable `/contacts/:id` detail links that can be refreshed and bookmarked.
 
 Present one coherent directory/detail flow rather than stacking both existing pages unchanged. Extract or reorganize shared components and server projections where needed so there is one source of UI behavior per concern.
 
@@ -112,18 +112,9 @@ Move the Funding/grant list and detail pages to `/funding` and `/funding/:id`, l
 
 Preserve all existing grant and funding behavior and server authorization, including totals, forms, ledger records, voiding, audit history, and detail Back navigation. Volunteers and clients shall still be refused by both the route guard and direct server-function calls.
 
-### REQ-NAV-007 — Backward-compatible redirects
+### REQ-NAV-007 — Remove old Admin routes
 
-Keep redirect-only handlers for:
-
-- `/admin/people` → `/contacts`
-- `/admin/people/:id` → `/contacts/:id`
-- `/admin/organizations` → `/organizations`
-- `/admin/organizations/:id` → `/organizations/:id`
-- `/admin/funding` → `/funding`
-- `/admin/funding/:id` → `/funding/:id`
-
-Detail redirects shall preserve the record ID. Redirect handlers shall not render the old Admin workspace first or create loops. After internal links are migrated, old Admin URL literals should remain only in the compatibility route definitions/redirect components and any intentional historical documentation.
+Remove the old `/admin/people*`, `/admin/organizations*`, and `/admin/funding*` routes. Internal links shall use only the canonical navbar URLs; no redirect compatibility layer is required.
 
 ### REQ-NAV-008 — Preserve authorization and data invariants
 
@@ -145,7 +136,7 @@ Use **Contacts** consistently in navigation and page headings; “person/people�
 
 ## Likely implementation areas
 
-- `src/app.rs`: canonical routes and compatibility redirects.
+- `src/app.rs`: canonical routes and removal of old Admin routes.
 - `src/components/layout.rs`: role-aware desktop/mobile links and responsive breakpoint/layout.
 - `src/pages/admin.rs`: remove the three non-operational workspaces and simplify Admin navigation.
 - `src/pages/contacts.rs` and `src/pages/people.rs`: consolidate directory/detail behavior and route wrappers.
@@ -163,7 +154,7 @@ Use **Contacts** consistently in navigation and page headings; “person/people�
 4. `/contacts` is the only contact directory; `/contacts/:id` combines the current outreach/category/communication capabilities with authorized structured CRM detail, without a competing People workspace.
 5. `/organizations` and `/organizations/:id` are useful read-only destinations for volunteers and retain full management for admins.
 6. `/funding` and `/funding/:id` retain the complete existing admin-only grant/funding workflow without Admin tabs or Admin page titles.
-7. All six old Admin list/detail URLs redirect to the matching canonical route and preserve detail IDs.
+7. The six old Admin list/detail routes are removed and may return the normal 404.
 8. Internal links no longer send users through old Admin CRM URLs.
 9. Direct authorization checks confirm that route movement did not grant any role new server-side data access.
 10. At mobile, intermediate, and wide desktop widths, the navbar and all moved list/detail pages have no horizontal clipping or unreachable controls; active states and Back links are correct.
@@ -172,7 +163,7 @@ Use **Contacts** consistently in navigation and page headings; “person/people�
 
 - Run formatting checks and `etc/dev.sh -- cargo check --no-default-features --features ssr`.
 - Run `etc/dev.sh build`, then `etc/dev.sh run`, and wait for `MH_READY`.
-- Browser-check all canonical list/detail routes and old redirects as a seeded site admin, operations admin, volunteer, and client.
+- Browser-check all canonical list/detail routes as a seeded site admin, operations admin, volunteer, and client.
 - Exercise contact search/filter/pagination, category management, communication logging, structured admin detail, organization read/admin management, and grant/funding list/detail mutations.
 - Call representative Contacts, Organizations, Grants, and Funding server functions directly for denied roles to verify backend boundaries, not just hidden navigation.
 - Check desktop, intermediate, and mobile widths, keyboard navigation, active-link styling, Back behavior, and browser console errors.
