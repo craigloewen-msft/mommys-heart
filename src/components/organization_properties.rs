@@ -15,12 +15,12 @@ const PANEL: &str = "rounded-xl border border-slate-800 bg-slate-900 p-5";
 const INPUT: &str =
     "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-primary-500 focus:outline-none";
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Row {
     id: usize,
-    key: RwSignal<String>,
-    value: RwSignal<String>,
-    section: RwSignal<String>,
+    key: String,
+    value: String,
+    section: String,
 }
 
 #[component]
@@ -58,9 +58,9 @@ pub fn OrganizationPropertiesPanel(organization_id: String) -> impl IntoView {
         next_row_id.set(row_id + 1);
         Row {
             id: row_id,
-            key: RwSignal::new(key),
-            value: RwSignal::new(value),
-            section: RwSignal::new(section),
+            key,
+            value,
+            section,
         }
     };
 
@@ -87,9 +87,9 @@ pub fn OrganizationPropertiesPanel(organization_id: String) -> impl IntoView {
             .get_untracked()
             .into_iter()
             .map(|row| OrganizationProperty {
-                key: row.key.get_untracked(),
-                value: row.value.get_untracked(),
-                section: row.section.get_untracked(),
+                key: row.key,
+                value: row.value,
+                section: row.section,
             })
             .collect();
         saving.set(true);
@@ -189,33 +189,59 @@ pub fn OrganizationPropertiesPanel(organization_id: String) -> impl IntoView {
         view! {
             <div class="space-y-2">
                 <For each=move || rows.get() key=|row| row.id let:row>
-                    <div class="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
-                        <input
-                            class=INPUT
-                            placeholder="Property"
-                            prop:value=move || row.key.get()
-                            on:input=move |e| row.key.set(event_target_value(&e))
-                        />
-                        <input
-                            class=INPUT
-                            placeholder="Value"
-                            prop:value=move || row.value.get()
-                            on:input=move |e| row.value.set(event_target_value(&e))
-                        />
-                        <input
-                            class=INPUT
-                            placeholder="Section"
-                            prop:value=move || row.section.get()
-                            on:input=move |e| row.section.set(event_target_value(&e))
-                        />
-                        <button
-                            type="button"
-                            on:click=move |_| rows.update(|list| list.retain(|r| r.id != row.id))
-                            class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 hover:bg-slate-800"
-                        >
-                            "Remove"
-                        </button>
-                    </div>
+                    {
+                        let row_id = row.id;
+                        let field_value = move |field: fn(&Row) -> &String| {
+                            rows.with(|list| {
+                                list.iter()
+                                    .find(|candidate| candidate.id == row_id)
+                                    .map(field)
+                                    .cloned()
+                                    .unwrap_or_default()
+                            })
+                        };
+                        view! {
+                            <div class="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+                                <input
+                                    class=INPUT
+                                    placeholder="Property"
+                                    prop:value=move || field_value(|row| &row.key)
+                                    on:input=move |e| rows.update(|list| {
+                                        if let Some(row) = list.iter_mut().find(|row| row.id == row_id) {
+                                            row.key = event_target_value(&e);
+                                        }
+                                    })
+                                />
+                                <input
+                                    class=INPUT
+                                    placeholder="Value"
+                                    prop:value=move || field_value(|row| &row.value)
+                                    on:input=move |e| rows.update(|list| {
+                                        if let Some(row) = list.iter_mut().find(|row| row.id == row_id) {
+                                            row.value = event_target_value(&e);
+                                        }
+                                    })
+                                />
+                                <input
+                                    class=INPUT
+                                    placeholder="Section"
+                                    prop:value=move || field_value(|row| &row.section)
+                                    on:input=move |e| rows.update(|list| {
+                                        if let Some(row) = list.iter_mut().find(|row| row.id == row_id) {
+                                            row.section = event_target_value(&e);
+                                        }
+                                    })
+                                />
+                                <button
+                                    type="button"
+                                    on:click=move |_| rows.update(|list| list.retain(|row| row.id != row_id))
+                                    class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 hover:bg-slate-800"
+                                >
+                                    "Remove"
+                                </button>
+                            </div>
+                        }
+                    }
                 </For>
                 <button
                     type="button"
