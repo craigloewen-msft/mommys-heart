@@ -8,17 +8,18 @@ need to pick ports or configure anything:
 
 ```bash
 etc/dev.sh build      # containers + compile the app (slow the first time)
-etc/dev.sh run        # cargo leptos watch, on this checkout's port
+etc/dev.sh run        # run that build in the foreground on this checkout's port
 ```
 
 Those two are the whole workflow. Both start this checkout's containers first,
 so stopped containers come back automatically, and `run` prints the URL it is
 serving on.
 
-**`run` does not build.** If the project has not been built it exits
-immediately with `dev: not built yet — run 'etc/dev.sh build' first`.
-Building is a separate step on purpose: a cold `cargo leptos` build takes many
-minutes, and hiding that inside the run command makes startup unbounded.
+**`run` does not build or watch.** Run `build`, then start `run` and wait for
+`MH_READY`. Test against that foreground process, stop it before editing, then
+rebuild and start a fresh run for the next test pass. When `run` ends it stops
+this checkout's containers but preserves their data. If artifacts are missing,
+`run` exits immediately with `dev: not built yet — run 'etc/dev.sh build' first`.
 
 ### Readiness signal (for IDEs and automated harnesses)
 
@@ -34,8 +35,8 @@ Wait for `MH_READY`; treat `MH_FAILED` or process exit as immediate failure.
 Run `etc/dev.sh build` to completion first, then a ~120s timeout is plenty.
 
 Run one-off commands against the same instance with `--`. These automatically
-get their own build directory (`target/oneshot`), so they never disturb a
-running `cargo leptos watch`:
+get their own build directory (`target/oneshot`), so their SSR-only artifacts do
+not invalidate the SSR+hydrate artifacts created by `build`:
 
 ```bash
 etc/dev.sh -- cargo run --no-default-features --features ssr -- seed
@@ -49,21 +50,14 @@ etc/dev.sh -- cargo check --no-default-features --features ssr
 ```
 
 Running a bare `cargo check` in the repo root still works, but it shares
-`target/` with the watcher. Because the two build different feature sets
-(ssr binary vs hydrate wasm lib) they invalidate each other's fingerprints, so
+`target/` with cargo-leptos. Because the two build different feature sets (SSR
+binary vs hydrate WASM lib), they invalidate each other's fingerprints, so
 alternating between them makes both noticeably slower.
 
-**If `cargo leptos watch` stops picking up edits, check `.gitignore` first.**
-cargo-leptos builds its watch list from `.gitignore`, so any pattern that
-matches your checkout's own source files makes the watcher go silently deaf.
-This is why the `.phoenix` entry is anchored as `/.phoenix` — unanchored, it
-matched agent worktrees living under `.phoenix/worktrees/`, and edits inside
-them never triggered a rebuild.
-
 The only other commands are `etc/dev.sh reset` (wipe the database back to fresh
-seed data) and `etc/dev.sh clean` (remove this checkout's containers, volumes
-and `.env.local` — run it before deleting a worktree). `etc/dev.sh --help`
-lists them all.
+seed data) and `etc/dev.sh clean` (remove every Mommy's Heart dev instance,
+volume, generated `.env.local`, and port reservation). `etc/dev.sh --help` lists
+them all.
 
 ## Cargo tests
 

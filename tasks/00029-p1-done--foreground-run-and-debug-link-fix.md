@@ -32,6 +32,10 @@ applies the requested behavior to the current entry point.
 - Keep the existing foreground console and `MH_READY` / `MH_FAILED` socket-based
   readiness contract. SIGINT/SIGTERM must still reach the app and leave no
   orphaned process.
+- When `run` exits for any reason, stop this checkout's database and storage
+  containers while preserving their volumes/data. `clean` globally removes all
+  Mommy's Heart dev containers, app data volumes, generated environment files,
+  and port reservations.
 - Set development debug info to Cargo's reduced/limited level (`debug = 1`) in
   the repository profile. This keeps line tables useful for source locations,
   breakpoints, stack traces, and ordinary line-level debugging while omitting the
@@ -61,6 +65,11 @@ Update `etc/dev.sh`:
   forwarding.
 - Correct stale internal comments and generated `.env.local` comments that still
   name the deleted `dev-db.sh` / `dev-run.sh` scripts.
+- Install cleanup before startup so normal termination, signals, failed
+  preflight, and early app exit all stop the current instance's containers.
+- Make `clean` discover and remove all `mh-db-*` / `mh-storage-*` containers,
+  Mommy's Heart data volumes, generated env files referenced by reservations,
+  and every reservation while leaving unrelated containers/volumes/files alone.
 
 After this change, the process model is:
 
@@ -129,3 +138,27 @@ app, `run` holds the foreground console for exactly that build without watching
 or recompiling, and stopping it cleanly ends the app. Normal checked-in
 development settings link successfully below the DWARF 4 GiB boundary while
 retaining useful line-level debugging, with no per-command workaround required.
+
+## Outcome
+
+Implemented the explicit build/run lifecycle and linker fix:
+
+- `run` now launches only the existing development SSR binary, keeps it in the
+  foreground, preserves `MH_READY` / `MH_FAILED`, and never invokes a compiler or
+  watcher;
+- every `run` exit stops that checkout's database and storage containers while
+  retaining their volumes, and `clean` removes all Mommy's Heart dev instances,
+  app volumes, generated env files, and port reservations;
+- development builds use reduced debug information (`debug = 1`) rather than
+  full DWARF, avoiding the 4 GiB relocation overflow while retaining line-level
+  source debugging; and
+- maintained agent and README guidance documents the build, run, stop, edit,
+  rebuild loop.
+
+Verification completed with shell/format/diff checks, a full SSR+WASM build with
+no debug environment override, a native isolated link, SSR and hydrate compile
+checks, HTTP/browser smoke testing with a clean console, foreground process-tree
+inspection, a no-watch source-content probe, normal and early-failure shutdown
+checks, and an isolated fake-backend test of global cleanup. The full build tree
+was 4.9 GiB; its SSR binary was 348 MB and app rlib 367 MB, versus the observed
+40 GiB tree and 3.94 GB rlib produced with full debug metadata.

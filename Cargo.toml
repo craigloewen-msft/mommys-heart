@@ -132,6 +132,10 @@ bin-default-features = false
 lib-features = ["hydrate"]
 lib-default-features = false
 
+# Full DWARF exceeds the linker's 4 GiB debug-section relocation limit.
+[profile.dev]
+debug = 1
+
 [profile.release]
 opt-level = "s"
 lto = true
