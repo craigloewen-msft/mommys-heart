@@ -168,11 +168,10 @@ pub async fn search_active_organizations(
 #[server(prefix = "/api")]
 pub async fn create_organization(input: OrganizationInput) -> Result<String, ServerFnError> {
     use crate::server::db::organizations;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
     crate::server::permissions::require_information_management_access(&user)?;
-    require_operations_admin(&user)?;
     let input = input.validate().map_err(ServerFnError::new)?;
     organizations::create(&input, &user.id, &user.full_name())
         .await
@@ -185,11 +184,10 @@ pub async fn update_organization(
     input: OrganizationInput,
 ) -> Result<(), ServerFnError> {
     use crate::server::db::organizations;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
     crate::server::permissions::require_information_management_access(&user)?;
-    require_operations_admin(&user)?;
     let input = input.validate().map_err(ServerFnError::new)?;
     organizations::update(&id, &input, &user.id, &user.full_name())
         .await
@@ -201,11 +199,10 @@ pub async fn update_organization(
 #[server(prefix = "/api")]
 pub async fn set_organization_archived(id: String, archived: bool) -> Result<(), ServerFnError> {
     use crate::server::db::organizations;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
     crate::server::permissions::require_information_management_access(&user)?;
-    require_operations_admin(&user)?;
     organizations::set_archived(&id, archived, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)

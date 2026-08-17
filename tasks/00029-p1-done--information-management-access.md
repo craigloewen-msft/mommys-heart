@@ -6,7 +6,7 @@ Give site administrators one per-user switch labeled:
 
 > **Can manage contacts, organizations, and funding information**
 
-The switch is an additional access gate over the unified navbar information areas. It does not replace account roles, grant a higher role, or create separate permissions for each feature.
+The switch is the feature-level authority for managing the unified Contacts, Organizations, grants, and Funding areas. It does not grant Admin dashboard access or override case-specific capabilities.
 
 ## Dependency
 
@@ -24,7 +24,7 @@ If task 00028 has not landed when implementation begins, rebase onto it or wait 
 
 1. There is exactly **one** permission toggle, not separate Contacts, Organizations, Funding, view, or edit permissions.
 2. Only **site administrators** may grant or revoke it.
-3. The permission is additive to existing role checks and never elevates an account role.
+3. The permission authorizes full information management for non-client accounts without changing their account role or granting Admin dashboard access.
 4. Contacts has one canonical workspace in the navbar; the former Contact Directory and Admin People experiences stay consolidated.
 5. Because all three related areas share one permission, their contact, organization, and grant pickers may work normally whenever the user is otherwise authorized for the workflow.
 
@@ -35,18 +35,18 @@ Let the stored permission be called `information management access` in requireme
 | Account role | Permission denied | Permission granted |
 |---|---|---|
 | Client | No Contacts, Organizations, or Funding access | Still no access; the permission does not elevate the client role |
-| Volunteer | No access to these three information areas | Unified Contacts access and the existing volunteer-level Organization access; no admin-only management or Funding access |
-| Operations admin | No access to these three information areas | Full role-authorized Contacts, Organizations, grants, and Funding workflows |
-| Site admin | No feature access, but can still use Admin → Users to restore access | Full role-authorized workflows and ability to grant/revoke the permission |
+| Volunteer | No access to these information areas | Full Contacts, Organizations, grants, and Funding management |
+| Operations admin | No access to these information areas | Full Contacts, Organizations, grants, and Funding management |
+| Site admin | No feature access, but can still use Admin → Users to restore access | Full information management and ability to grant/revoke the permission |
 
-Existing role and case-capability restrictions remain authoritative inside the permitted area. For example:
+The grant authorizes contact and organization creation/editing/archiving, custom properties, connected business records, audit history, grants, and funding changes. Two narrower boundaries remain independent:
 
-- a permitted volunteer keeps the contact actions already intended for volunteers and read-only Organization behavior, but does not gain admin-only archive, account-linking, property, audit, grant, or funding powers;
-- Funding and grants still require operations-admin permissions in addition to this switch;
-- case mutations still require their existing stored case capability where applicable; and
-- Admin → Cases and Admin → Users remain role-controlled and usable by an otherwise authorized admin even when this information permission is denied.
+- case-contact mutations still require the caller's stored case capability; and
+- linking a contact to a sign-in account remains operations-admin-only because it exposes private account records.
 
-The permission is independent of role changes. Promoting, demoting, or re-promoting an account shall not silently overwrite an explicit grant or denial. A stored grant on an ineligible role has no effect until the role is also eligible.
+Admin → Cases and Admin → Users remain role-controlled and are not granted by this switch.
+
+The permission is independent of role changes. Promoting, demoting, or re-promoting an account shall not silently overwrite an explicit grant or denial. A stored grant has no effect for client accounts.
 
 ## Requirements
 
@@ -82,22 +82,17 @@ A site admin may change their own switch. Denying it must not remove their acces
 
 Add centralized server-side helpers for checking/requiring the permission and use them consistently with the existing role/case guards.
 
-The required decision is always an intersection, never an either/or bypass:
-
-```text
-existing role or case authorization
-AND
-information management permission
-```
+Information-domain operations require an eligible non-client account and the information-management grant. Case-linked operations additionally require their existing case capability; contact-to-account linking additionally retains its operations-admin boundary.
 
 Do not scatter raw boolean checks through server functions where a shared helper can express the rule. Error messages should state that access to contacts, organizations, and funding information has not been granted, without leaking record existence.
 
 ### REQ-IMA-004 — Protect all feature entry points on the server
 
-Apply the additional permission gate to authenticated server functions that expose or mutate these information domains, while retaining every stricter existing role/capability check:
+Apply the permission gate to authenticated server functions that expose or mutate these information domains:
 
 - the unified contact directory, contact detail, categories/tags, and communication history;
-- structured contacts, contact properties, archive state, account links, organization links, and contact search/picker endpoints;
+- structured contacts, contact properties, archive state, organization links, and contact search/picker endpoints;
+- contact-to-account linking, additionally restricted to operations administrators;
 - organizations, organization properties, and organization search/picker endpoints;
 - grants, grant search/picker endpoints, funding records, rollups, recording, and voiding;
 - contact-, organization-, grant-, and funding-scoped audit history; and
@@ -112,7 +107,7 @@ When a server function is shared by two permitted workflows, keep it shared; the
 After task 00028's canonical navigation is in place:
 
 - show Contacts and Organizations only when the signed-in account has both an eligible non-client role and this permission;
-- show Funding only when the account has operations-admin permissions and this permission;
+- show Funding whenever the eligible non-client account has this permission;
 - apply equivalent reactive route guards to list and detail routes;
 - denied authenticated users are redirected to `/cases` without briefly rendering protected content;
 - old Admin information routes remain removed; and
@@ -154,10 +149,10 @@ Update concise current documentation and module comments that describe access as
 2. Grants/revocations are visible in the target user's audit log with the correct actor, and no-op saves do not create duplicate entries.
 3. Existing eligible users retain access after migration, existing clients remain denied, new registrations are denied, and seeded staff accounts can exercise the features.
 4. A denied operations admin still reaches Admin → Cases and Admin → Users but sees no Contacts, Organizations, or Funding navigation and cannot open their canonical routes or call representative backing APIs.
-5. A permitted operations/site admin receives the complete role-authorized Contacts, Organizations, grants, and Funding experience.
-6. A permitted volunteer can use the volunteer-authorized portions of unified Contacts and Organizations but cannot gain Funding or admin-only mutations; a denied volunteer receives none of the three information areas.
+5. Every permitted non-client account receives the complete Contacts, Organizations, grants, and Funding experience.
+6. A permitted volunteer can fully manage Contacts, Organizations, grants, and Funding; a denied volunteer receives none of these information areas.
 7. A client receives none of these features even if the boolean is stored as granted.
-8. Direct calls to contact, organization, grant, funding, scoped-audit, property, picker, and case-contact endpoints enforce both their prior authorization and the new permission.
+8. Direct calls to contact, organization, grant, funding, scoped-audit, property, picker, and case-contact endpoints enforce the information permission and any case/account-specific boundary.
 9. `/contacts` and `/contacts/:id` remain the only contact workspace/detail experience; no duplicate People destination is reintroduced.
 10. Login, MFA completion, session restoration, refresh, desktop nav, and mobile nav all reflect the same permission value.
 11. Revocation blocks the user's next protected server call without requiring session deletion or password reset.

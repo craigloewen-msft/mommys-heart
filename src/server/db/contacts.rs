@@ -31,6 +31,7 @@ struct ContactRow {
     description: String,
     do_not_contact: bool,
     archived: bool,
+    account_linked: bool,
     user_id: Option<String>,
     linked_email: Option<String>,
     linked_role: Option<String>,
@@ -63,6 +64,7 @@ impl From<ContactRow> for Contact {
             description: row.description,
             do_not_contact: row.do_not_contact,
             archived: row.archived,
+            account_linked: row.account_linked,
             user_id: row.user_id.unwrap_or_default(),
             linked_email: row.linked_email.unwrap_or_default(),
             linked_role: row.linked_role.as_deref().and_then(AccountRole::from_slug),
@@ -117,10 +119,20 @@ const SELECT_COLUMNS: &str = "c.id,
      CASE WHEN u.id IS NULL THEN c.address ELSE u.home_address END AS address,
      c.job_title, c.organization_id,
      o.name AS organization_name, c.types, o.archived AS organization_archived,
-     c.source, c.description, c.do_not_contact, c.archived, c.user_id,
+     c.source, c.description, c.do_not_contact, c.archived,
+     (c.user_id IS NOT NULL) AS account_linked, c.user_id,
      u.email AS linked_email, u.role AS linked_role,
      EXISTS (SELECT 1 FROM contact_account_conflicts conflict
              WHERE conflict.contact_id = c.id) AS has_account_field_conflict";
+
+/// CRM-owned values only: account linkage and private account projections are withheld.
+const SAFE_SELECT_COLUMNS: &str = "c.id, c.first_name, c.last_name, c.preferred_name,
+     c.email, c.phone, c.mobile, c.address, c.job_title, c.organization_id,
+     o.name AS organization_name, c.types, o.archived AS organization_archived,
+     c.source, c.description, c.do_not_contact, c.archived,
+     (c.user_id IS NOT NULL) AS account_linked,
+     NULL::text AS user_id, NULL::text AS linked_email, NULL::text AS linked_role,
+     false AS has_account_field_conflict";
 
 const FROM_JOINS: &str = "FROM contacts c
      LEFT JOIN organizations o ON o.id = c.organization_id
@@ -163,10 +175,16 @@ pub async fn page(
     filters: &ContactFilters,
     offset: i64,
     limit: i64,
+    include_account_projection: bool,
 ) -> Result<Page<Contact>, sqlx::Error> {
     let keyword = filters.keyword.trim();
     let contact_type = filters.contact_type.map(|t| t.slug()).unwrap_or_default();
     let organization_id = filters.organization_id.trim();
+    let select_columns = if include_account_projection {
+        SELECT_COLUMNS
+    } else {
+        SAFE_SELECT_COLUMNS
+    };
 
     let where_sql = "WHERE ($1 OR NOT c.archived)
            AND ($2 = '' OR $2 = ANY(c.types))
@@ -188,7 +206,7 @@ pub async fn page(
         .await?;
 
     let rows = sqlx::query_as::<_, ContactRow>(&format!(
-        "SELECT {SELECT_COLUMNS} {FROM_JOINS} {where_sql}
+        "SELECT {select_columns} {FROM_JOINS} {where_sql}
          ORDER BY c.archived ASC, lower(c.last_name) ASC, lower(c.first_name) ASC
          OFFSET $5 LIMIT $6"
     ))
@@ -207,9 +225,17 @@ pub async fn page(
     })
 }
 
-pub async fn get(id: &str) -> Result<Option<Contact>, sqlx::Error> {
+pub async fn get(
+    id: &str,
+    include_account_projection: bool,
+) -> Result<Option<Contact>, sqlx::Error> {
+    let select_columns = if include_account_projection {
+        SELECT_COLUMNS
+    } else {
+        SAFE_SELECT_COLUMNS
+    };
     let row = sqlx::query_as::<_, ContactRow>(&format!(
-        "SELECT {SELECT_COLUMNS} {FROM_JOINS} WHERE c.id = $1"
+        "SELECT {select_columns} {FROM_JOINS} WHERE c.id = $1"
     ))
     .bind(id)
     .fetch_optional(pool())

@@ -65,6 +65,9 @@ pub async fn list_audit_page(
     const MAX_LIMIT: i64 = 200;
 
     let user = require_user().await?;
+    let include_restricted = has_volunteer_access(&user);
+    let restrict_contact_history =
+        matches!(scope, AuditScope::Contact) && !user.role.has_operations_admin_permissions();
     let entity = match scope {
         AuditScope::User => {
             require_site_admin(&user)?;
@@ -75,39 +78,41 @@ pub async fn list_audit_page(
             require_case_view_or_admin_read(&user, &entity_id).await?;
             Entity::Case
         }
-        // CRM history is back-office reading: operations admins and above, and
-        // never a client, who cannot see the underlying records at all.
+        // Information history follows the same per-user grant as its records.
         AuditScope::Contact => {
             crate::server::permissions::require_information_management_access(&user)?;
-            require_operations_admin(&user)?;
             Entity::Contact
         }
         AuditScope::Organization => {
             crate::server::permissions::require_information_management_access(&user)?;
-            require_operations_admin(&user)?;
             Entity::Organization
         }
         AuditScope::Grant => {
             crate::server::permissions::require_information_management_access(&user)?;
-            require_operations_admin(&user)?;
             Entity::Grant
         }
         AuditScope::Funding => {
             crate::server::permissions::require_information_management_access(&user)?;
-            require_operations_admin(&user)?;
             Entity::Funding
         }
     };
 
-    audit::page(
+    let mut page = audit::page(
         entity,
         &entity_id,
         &start,
         &end,
         offset.max(0),
         limit.clamp(1, MAX_LIMIT),
-        has_volunteer_access(&user),
+        include_restricted,
+        restrict_contact_history,
     )
     .await
-    .map_err(ServerFnError::new)
+    .map_err(ServerFnError::new)?;
+    if !user.role.has_operations_admin_permissions() {
+        for entry in &mut page.items {
+            entry.actor_user_id.clear();
+        }
+    }
+    Ok(page)
 }

@@ -70,6 +70,7 @@ pub async fn page(
     offset: i64,
     limit: i64,
     include_restricted: bool,
+    restrict_contact_history: bool,
 ) -> Result<Page<ChangeLogEntry>, sqlx::Error> {
     let pool = pool();
 
@@ -79,7 +80,8 @@ pub async fn page(
          WHERE entity_type = $1 AND entity_id = $2
            AND ($3 = '' OR left(at, 10) >= $3)
            AND ($4 = '' OR left(at, 10) <= $4)
-           AND ($5 OR COALESCE(visibility, 'shared') <> $6)",
+           AND ($5 OR COALESCE(visibility, 'shared') <> $6)
+           AND (NOT $7 OR field NOT IN ('case link', 'account link'))",
     )
     .bind(entity.as_str())
     .bind(entity_id)
@@ -87,6 +89,7 @@ pub async fn page(
     .bind(end)
     .bind(include_restricted)
     .bind(Visibility::VolunteerOnly.slug())
+    .bind(restrict_contact_history)
     .fetch_one(pool)
     .await?;
 
@@ -97,8 +100,9 @@ pub async fn page(
            AND ($3 = '' OR left(at, 10) >= $3)
            AND ($4 = '' OR left(at, 10) <= $4)
            AND ($5 OR COALESCE(visibility, 'shared') <> $6)
+           AND (NOT $7 OR field NOT IN ('case link', 'account link'))
          ORDER BY seq DESC
-         LIMIT $7 OFFSET $8",
+         LIMIT $8 OFFSET $9",
     )
     .bind(entity.as_str())
     .bind(entity_id)
@@ -106,6 +110,7 @@ pub async fn page(
     .bind(end)
     .bind(include_restricted)
     .bind(Visibility::VolunteerOnly.slug())
+    .bind(restrict_contact_history)
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)

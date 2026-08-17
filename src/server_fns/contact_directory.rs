@@ -271,6 +271,7 @@ pub async fn search_contacts(
         include_archived,
         offset,
         limit,
+        user.role.has_operations_admin_permissions(),
     )
     .await
     .map_err(ServerFnError::new)
@@ -284,10 +285,13 @@ pub async fn get_contact(contact_id: String) -> Result<ContactDetails, ServerFnE
     let user = require_user().await?;
     crate::server::permissions::require_information_management_access(&user)?;
     require_directory_access(&user)?;
-    directory::get(contact_id.trim())
-        .await
-        .map_err(ServerFnError::new)?
-        .ok_or_else(|| ServerFnError::new("Contact not found."))
+    directory::get(
+        contact_id.trim(),
+        user.role.has_operations_admin_permissions(),
+    )
+    .await
+    .map_err(ServerFnError::new)?
+    .ok_or_else(|| ServerFnError::new("Contact not found."))
 }
 
 // JSON input for the same reason: a contact saved with no categories selected
@@ -310,7 +314,7 @@ pub async fn save_contact(
     let id = directory::save(contact_id.as_deref(), &input, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)?;
-    directory::get(&id)
+    directory::get(&id, user.role.has_operations_admin_permissions())
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("Contact could not be loaded after saving."))
@@ -338,7 +342,7 @@ pub async fn set_contact_categories(
     directory::set_categories(contact_id, &category_ids, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)?;
-    directory::get(contact_id)
+    directory::get(contact_id, user.role.has_operations_admin_permissions())
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("Contact not found."))
@@ -369,7 +373,7 @@ pub async fn add_contact_communication(
     directory::add_communication(contact_id, kind, body, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)?;
-    directory::get(contact_id)
+    directory::get(contact_id, user.role.has_operations_admin_permissions())
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("Contact not found."))

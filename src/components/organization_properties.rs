@@ -26,10 +26,7 @@ struct Row {
 #[component]
 pub fn OrganizationPropertiesPanel(organization_id: String) -> impl IntoView {
     let state = expect_context::<AppState>();
-    let can_edit = state
-        .current_user_summary
-        .get_untracked()
-        .is_some_and(|user| user.role.has_operations_admin_permissions());
+    let can_edit = state.has_information_management_access();
     let id = StoredValue::new(organization_id);
     let saved = RwSignal::new(Vec::<OrganizationProperty>::new());
     let rows = RwSignal::new(Vec::<Row>::new());

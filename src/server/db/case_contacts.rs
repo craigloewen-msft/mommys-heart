@@ -112,6 +112,19 @@ pub async fn list_for_contact(
          FROM case_contacts cc
          JOIN cases ca ON ca.id = cc.case_id
          WHERE cc.contact_id = $1
+           AND (
+               EXISTS (
+                   SELECT 1 FROM case_assignments visible
+                   WHERE visible.case_id = ca.id
+                     AND visible.user_id = $2
+                     AND visible.capability = 'view_case'
+               )
+               OR EXISTS (
+                   SELECT 1 FROM users viewer
+                   WHERE viewer.id = $2
+                     AND viewer.role IN ('operations_admin', 'site_admin')
+               )
+           )
          ORDER BY ca.id, cc.is_primary DESC, cc.seq DESC",
     )
     .bind(contact_id)
@@ -172,14 +185,16 @@ async fn audit_link_in(
         Visibility::VolunteerOnly,
     )
     .await?;
+    // Keep the contact-scoped log free of case identifiers; case visibility is
+    // governed by case capabilities and the detailed entry already lives there.
     audit::record_in_transaction(
         tx,
         audit::Entity::Contact,
         contact_id,
         actor,
-        "case link",
+        "case relationship",
         "",
-        &format!("{} {} as {}", action, case_id, role.label().to_lowercase()),
+        action,
     )
     .await
 }

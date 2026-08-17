@@ -3,10 +3,6 @@
 //! Rendered on the admin person detail view. Reads follow the admin-read path;
 //! each mutation still resolves the stored case and requires `EditCase` there.
 
-use leptos::prelude::*;
-use leptos::task::spawn_local;
-use leptos_router::components::A;
-
 use crate::components::case_contacts::{CaseLinkFields, INPUT, LABEL, PANEL};
 use crate::helpers::format::badge_pill;
 use crate::server_fns::case_contacts::{
@@ -14,11 +10,12 @@ use crate::server_fns::case_contacts::{
     update_case_contact, CaseContactRole, ContactCaseLink, EditableCaseSummary,
 };
 use crate::server_fns::err_text;
+use leptos::prelude::*;
+use leptos::task::spawn_local;
 
 #[component]
 fn ContactCaseRow(link: ContactCaseLink, on_changed: Callback<()>) -> impl IntoView {
     let row_id = StoredValue::new(link.id.clone());
-    let href = format!("/admin/cases/{}", link.case_id);
     let role_badge = link.role;
     let status = link.case_status;
     let primary = link.is_primary;
@@ -101,9 +98,9 @@ fn ContactCaseRow(link: ContactCaseLink, on_changed: Callback<()>) -> impl IntoV
             <div class="flex flex-wrap items-start justify-between gap-3">
                 <div class="min-w-0">
                     <div class="flex flex-wrap items-center gap-2">
-                        <A href=href attr:class="text-sm font-semibold text-slate-100 hover:text-primary-300">
+                        <span class="text-sm font-semibold text-slate-100">
                             {link.case_name.clone()}
-                        </A>
+                        </span>
                         <span class=badge_pill(status.badge_classes())>{status.label()}</span>
                         <span class=badge_pill(role_badge.badge_classes())>{role_badge.label()}</span>
                         <Show when=move || primary>

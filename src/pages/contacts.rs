@@ -224,10 +224,7 @@ pub(crate) fn ContactOutreachPanel(
 ) -> impl IntoView {
     let id = StoredValue::new(contact_id);
     let state = expect_context::<AppState>();
-    let can_edit_directory_fields = state
-        .current_user_summary
-        .get_untracked()
-        .is_some_and(|user| !user.role.has_operations_admin_permissions());
+    let can_edit_directory_fields = state.has_information_management_access();
     let details = RwSignal::new(None::<ContactDetails>);
     let categories = RwSignal::new(Vec::<ContactCategory>::new());
     let selected_categories = RwSignal::new(Vec::<String>::new());

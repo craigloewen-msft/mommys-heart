@@ -75,11 +75,10 @@ pub async fn list_organization_properties(
     organization_id: String,
 ) -> Result<Vec<OrganizationProperty>, ServerFnError> {
     use crate::server::db::organization_properties;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
     crate::server::permissions::require_information_management_access(&user)?;
-    require_operations_admin(&user)?;
     organization_properties::list(&organization_id)
         .await
         .map_err(ServerFnError::new)
@@ -92,11 +91,10 @@ pub async fn set_organization_properties(
     properties: Vec<OrganizationProperty>,
 ) -> Result<(), ServerFnError> {
     use crate::server::db::organization_properties;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
     crate::server::permissions::require_information_management_access(&user)?;
-    require_operations_admin(&user)?;
     let cleaned = clean(properties);
     validate(&cleaned).map_err(ServerFnError::new)?;
     organization_properties::replace(&organization_id, cleaned, &user.id, &user.full_name())
@@ -110,11 +108,10 @@ pub async fn add_missing_organization_property_defaults(
     organization_id: String,
 ) -> Result<(), ServerFnError> {
     use crate::server::db::organization_properties;
-    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::permissions::require_user;
 
     let user = require_user().await?;
     crate::server::permissions::require_information_management_access(&user)?;
-    require_operations_admin(&user)?;
     organization_properties::add_missing_defaults(&organization_id, &user.id, &user.full_name())
         .await
         .map_err(ServerFnError::new)

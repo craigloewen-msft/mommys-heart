@@ -48,6 +48,17 @@ const DIRECTORY_COLUMNS: &str = "c.id,
      category.id AS category_id, category.name AS category_name,
      category.parent_id, coalesce(parent.name, '') AS parent_name";
 
+const SAFE_DIRECTORY_COLUMNS: &str = "c.id,
+     coalesce(
+         nullif(btrim(coalesce(nullif(c.preferred_name, ''), c.first_name) || ' ' || c.last_name), ''),
+         o.name, ''
+     ) AS full_name,
+     c.job_title AS title, coalesce(o.name, '') AS organization,
+     c.email, c.phone, c.address, c.website, c.archived,
+     (u.id IS NOT NULL) AS has_account, c.updated_at,
+     category.id AS category_id, category.name AS category_name,
+     category.parent_id, coalesce(parent.name, '') AS parent_name";
+
 /// The name the directory displays, composed the same way the projection does so
 /// a two-word query matches what the reader sees.
 const DISPLAY_NAME_SQL: &str = "btrim(
@@ -56,6 +67,9 @@ const DISPLAY_NAME_SQL: &str = "btrim(
      || ' '
      || CASE WHEN u.id IS NULL THEN c.last_name ELSE u.last_name END
  )";
+
+const SAFE_DISPLAY_NAME_SQL: &str =
+    "btrim(coalesce(nullif(c.preferred_name, ''), c.first_name) || ' ' || c.last_name)";
 
 const DIRECTORY_JOINS: &str = "FROM contacts c
      LEFT JOIN organizations o ON o.id = c.organization_id
@@ -224,17 +238,27 @@ pub async fn search_page(
     include_archived: bool,
     offset: i64,
     limit: i64,
+    include_account_projection: bool,
 ) -> Result<Page<Contact>, sqlx::Error> {
     let pattern = format!("%{query}%");
     let offset = offset.max(0);
     let limit = limit.clamp(1, 100);
+    let (directory_columns, display_name_sql, account_search_sql) = if include_account_projection {
+        (
+            DIRECTORY_COLUMNS,
+            DISPLAY_NAME_SQL,
+            "OR u.first_name ILIKE $2 OR u.last_name ILIKE $2 OR u.email ILIKE $2",
+        )
+    } else {
+        (SAFE_DIRECTORY_COLUMNS, SAFE_DISPLAY_NAME_SQL, "")
+    };
     let filter = format!(
         "WHERE (
              $1 = '' OR c.first_name ILIKE $2 OR c.last_name ILIKE $2
-             OR c.preferred_name ILIKE $2 OR u.first_name ILIKE $2 OR u.last_name ILIKE $2
-             OR {DISPLAY_NAME_SQL} ILIKE $2
+             OR c.preferred_name ILIKE $2 {account_search_sql}
+             OR {display_name_sql} ILIKE $2
              OR c.job_title ILIKE $2 OR o.name ILIKE $2
-             OR c.email ILIKE $2 OR u.email ILIKE $2 OR c.phone ILIKE $2
+             OR c.email ILIKE $2 OR c.phone ILIKE $2
              OR c.mobile ILIKE $2 OR c.address ILIKE $2 OR c.website ILIKE $2
          )
          AND (
@@ -288,7 +312,7 @@ pub async fn search_page(
     }
 
     let rows = sqlx::query_as::<_, ContactRow>(&format!(
-        "SELECT {DIRECTORY_COLUMNS}
+        "SELECT {directory_columns}
          {DIRECTORY_JOINS}
          WHERE c.id = ANY($1::text[])
          ORDER BY lower(c.last_name), lower(c.first_name), lower(coalesce(o.name, '')),
@@ -303,9 +327,17 @@ pub async fn search_page(
     })
 }
 
-pub async fn get(contact_id: &str) -> Result<Option<ContactDetails>, sqlx::Error> {
+pub async fn get(
+    contact_id: &str,
+    include_account_projection: bool,
+) -> Result<Option<ContactDetails>, sqlx::Error> {
+    let directory_columns = if include_account_projection {
+        DIRECTORY_COLUMNS
+    } else {
+        SAFE_DIRECTORY_COLUMNS
+    };
     let rows = sqlx::query_as::<_, ContactRow>(&format!(
-        "SELECT {DIRECTORY_COLUMNS}
+        "SELECT {directory_columns}
          {DIRECTORY_JOINS}
          WHERE c.id = $1
          ORDER BY category.name"
@@ -422,7 +454,9 @@ pub async fn save(
 
     let id = match contact_id {
         Some(id) => {
-            let existing = contacts::get(id).await?.ok_or(sqlx::Error::RowNotFound)?;
+            let existing = contacts::get(id, true)
+                .await?
+                .ok_or(sqlx::Error::RowNotFound)?;
             // A linked person's name, email, phone and address are owned by their
             // account, so editing them here would be silently discarded.
             if existing.has_account() {

@@ -601,7 +601,7 @@ pub fn UserCard(
                     })>{status}</span>
                 </div>
                 <p class="mt-1 text-xs text-slate-500">
-                    "This grant is additional to the account role. It never gives a volunteer admin-only powers or gives a client access."
+                    "This grant enables Contacts, Organizations, and Funding management. It does not grant Admin dashboard or case permissions, and it never gives a client access."
                 </p>
                 {if is_site_admin {
                     view! {

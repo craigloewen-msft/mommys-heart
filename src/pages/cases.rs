@@ -2071,7 +2071,7 @@ pub fn CaseDetail(
                 view! {
                     <CaseContactsPanel
                         case_id=case_sv.get_value()
-                        can_edit=can_edit && has_operations_admin_permissions
+                        can_edit=can_edit && has_information_management_access
                     />
                 }
                 .into_any()

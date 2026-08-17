@@ -113,9 +113,10 @@ attorneys, court clerks, board members, and emergency contacts.
   title, an optional organization, one or more contact types, a source, notes, a
   do-not-contact flag, and an active/archived state.
 - A contact may link to at most one user, enforced by a partial unique index.
-  The linked account's email and role are shown read-only and remain owned by
-  `users`. Unlinking leaves the account able to sign in exactly as before;
-  deleting an account nulls the link instead of erasing the person.
+  Account-owned fields and link controls are visible only to operations/site
+  admins and remain owned by `users`. Unlinking leaves the account able to sign
+  in exactly as before; deleting an account nulls the link instead of erasing the
+  person.
 - The directory searches name, email, phone, and organization, and filters by
   type, organization, and archived state — all evaluated in SQL with server-side
   pagination.
@@ -213,23 +214,23 @@ extended in place so existing rows survived.
   rollup.
 - Per-grant rollups (received, remaining, over-funded) and portfolio totals are
   computed in SQL, so they cannot drift from the ledger.
-- Grants and funding are operations-admin and above. Volunteers are refused.
+- Grants and funding require the per-user information-management grant. Permitted volunteers and administrators can view and change them; clients are refused.
 
 ### Access summary
 
 | Object | Client | Volunteer | Operations / site admin |
 | --- | --- | --- | --- |
-| Contacts, organizations | none | narrow staff reads used by case work | all, plus archive and account/organization linking |
-| Contact and organization properties | none | none | all |
-| Case contacts | none | `ViewCase` to read, `EditCase` to edit from case work | same, plus person-side admin workflow |
-| Grants, funding | none | none | all |
+| Contacts, organizations | none | full management when granted; sign-in account linking excluded | full management when granted |
+| Contact and organization properties | none | full management when granted | full management when granted |
+| Case contacts | none | information grant plus `ViewCase` to read and `EditCase` to edit | same, plus admin case inspection |
+| Grants, funding | none | full management when granted | full management when granted |
 
-Every CRM server function rejects a client account.
+Every information server function rejects a client account.
 
-The whole CRM is managed from one place: **Admin**, whose tabs are Cases, Users,
-People, Organizations, and Funding. Volunteers keep *read* access to contacts
-and organizations because the case people-picker needs it, but the directory
-itself is admin-only, so they are redirected away from `/admin/people`.
+Contacts, Organizations, and Funding are top-level navbar areas governed by one
+site-admin-assigned information-management grant. Admin remains focused on Cases,
+Users, and operational tools. Linking a contact to a sign-in account stays
+operations-admin-only because it exposes private account records.
 
 **Limits, stated on purpose:** no field-level sensitivity or break-glass access,
 no email campaigns or donor receipts, no accounting or payment-processor
@@ -248,8 +249,9 @@ migrated into contact records.
   full funding details include notes and void attribution.
 - CRM collections expose totals/load-more or bounded server-side relationship
   search rather than presenting a fixed first page as complete.
-- Linked account identity fields are projected from the account and read-only on
-  the CRM form; preserved disagreements are recorded for review.
+- Linked account identity fields are projected only for operations/site admins
+  and remain read-only on the CRM form; preserved disagreements are recorded for
+  review.
 - New CRM audit and funding writes record both stable actor account ID and the
   historical display-name snapshot.
 - Registration and password reset share one password policy. Password reset

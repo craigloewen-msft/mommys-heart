@@ -29,10 +29,8 @@ const INPUT: &str =
 #[component]
 pub fn ContactDetail(contact_id: String) -> impl IntoView {
     let state = expect_context::<AppState>();
-    let is_admin = state
-        .current_user_summary
-        .get_untracked()
-        .is_some_and(|user| user.role.has_operations_admin_permissions());
+    let can_manage = state.has_information_management_access();
+    let can_manage_accounts = state.has_operations_admin_permissions();
     let id = StoredValue::new(contact_id);
 
     let contact = RwSignal::new(None::<Contact>);
@@ -117,7 +115,7 @@ pub fn ContactDetail(contact_id: String) -> impl IntoView {
                                         .collect_view()}
                                 </div>
                             </div>
-                            <Show when=move || is_admin>
+                            <Show when=move || can_manage>
                                 <div class="flex shrink-0 gap-2">
                                     <button
                                         type="button"
@@ -154,7 +152,7 @@ pub fn ContactDetail(contact_id: String) -> impl IntoView {
                         </Show>
                     </div>
 
-                    <Show when=move || is_admin>
+                    <Show when=move || can_manage>
                         <ContactPropertiesPanel contact_id=id.get_value() />
                     </Show>
 
@@ -169,9 +167,11 @@ pub fn ContactDetail(contact_id: String) -> impl IntoView {
                         </div>
                     </Show>
 
-                    <Show when=move || is_admin>
+                    <Show when=move || can_manage>
                         <ContactCasesPanel contact_id=id.get_value() />
+                    </Show>
 
+                    <Show when=move || can_manage_accounts>
                         <AccountLink
                             contact=linked.clone()
                             can_manage=true
@@ -179,7 +179,7 @@ pub fn ContactDetail(contact_id: String) -> impl IntoView {
                         />
                     </Show>
 
-                    <Show when=move || is_admin>
+                    <Show when=move || can_manage>
                         <div class=PANEL>
                             <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
                             <div class="mt-3">
@@ -390,14 +390,14 @@ fn ContactSummary(contact: Contact) -> impl IntoView {
         }
     };
 
-    let account = if contact.has_account() {
+    let account = if contact.linked_email.is_empty() {
+        String::new()
+    } else {
         let role = contact
             .linked_role
             .map(|r| r.label().to_string())
             .unwrap_or_default();
         format!("{} ({role})", contact.linked_email)
-    } else {
-        String::new()
     };
 
     view! {
@@ -428,7 +428,7 @@ fn ContactSummary(contact: Contact) -> impl IntoView {
             {row("Mobile", contact.mobile.clone())}
             {row("Address", contact.address.clone())}
             {row("Source", contact.source.clone())}
-            {row("Sign-in account", account)}
+            {(!account.is_empty()).then(|| row("Sign-in account", account))}
             {row("Notes", contact.description.clone())}
         </dl>
     }

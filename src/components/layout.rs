@@ -80,7 +80,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let state = expect_context::<AppState>();
     let navigate = use_navigate();
 
-    let user = state.current_user_summary.get_untracked();
+    let user = state.current_user_summary.get();
     if user.is_none() {
         return view! { <Redirect path="/login" /> }.into_any();
     }
@@ -103,9 +103,6 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let toggle_menu = move |_| menu_open.update(|open| *open = !*open);
     let close_menu = move |_| menu_open.set(false);
     let has_operations_admin_permissions = role.has_operations_admin_permissions();
-    let has_information_management_access = user.has_information_management_access();
-    let has_information_management_admin_access =
-        has_operations_admin_permissions && has_information_management_access;
 
     view! {
         <div class="min-h-screen bg-slate-950 text-slate-100">
@@ -124,16 +121,12 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                         <nav class="hidden xl:flex items-center gap-1">
                             <NavLink href="/cases" label="Cases" />
                             <NavLink href="/inbox" label="Case Chat" badge=NavBadge::UnreadMessages />
-                            {if has_information_management_access {
+                            {move || if state.has_information_management_access() {
                                 view! {
                                     <NavLink href="/contacts" label="Contacts" />
                                     <NavLink href="/organizations" label="Organizations" />
+                                    <NavLink href="/funding" label="Funding" />
                                 }.into_any()
-                            } else {
-                                ().into_any()
-                            }}
-                            {if has_information_management_admin_access {
-                                view! { <NavLink href="/funding" label="Funding" /> }.into_any()
                             } else {
                                 ().into_any()
                             }}
@@ -187,16 +180,12 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                     >
                         <NavLink href="/cases" label="Cases" />
                         <NavLink href="/inbox" label="Case Chat" badge=NavBadge::UnreadMessages />
-                        {if has_information_management_access {
+                        {move || if state.has_information_management_access() {
                             view! {
                                 <NavLink href="/contacts" label="Contacts" />
                                 <NavLink href="/organizations" label="Organizations" />
+                                <NavLink href="/funding" label="Funding" />
                             }.into_any()
-                        } else {
-                            ().into_any()
-                        }}
-                        {if has_information_management_admin_access {
-                            view! { <NavLink href="/funding" label="Funding" /> }.into_any()
                         } else {
                             ().into_any()
                         }}

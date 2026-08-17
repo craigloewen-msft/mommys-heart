@@ -1,8 +1,7 @@
 //! The organization directory and detail views.
 //!
-//! These render inside the Admin workspace, so they carry no page shell or
-//! guard of their own. Any staff account may *read* an organization server-side
-//! (the contact form files people under one); managing them is administrative.
+//! The top-level page owns the information-management guard. Every permitted
+//! non-client account may create, edit, archive, and connect organization data.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -62,10 +61,7 @@ pub fn ManageOrganizations(selected_id: Option<String>) -> impl IntoView {
 #[component]
 fn OrganizationDirectory() -> impl IntoView {
     let state = expect_context::<AppState>();
-    let is_admin = state
-        .current_user_summary
-        .get_untracked()
-        .is_some_and(|user| user.role.has_operations_admin_permissions());
+    let can_manage = state.has_information_management_access();
 
     let keyword = RwSignal::new(String::new());
     let kind_filter = RwSignal::new(String::new());
@@ -154,7 +150,7 @@ fn OrganizationDirectory() -> impl IntoView {
                         "Funders, partner agencies, providers, courts, and employers."
                     </p>
                 </div>
-                <Show when=move || is_admin>
+                <Show when=move || can_manage>
                     <button
                         type="button"
                         on:click=move |_| creating.update(|c| *c = !*c)
@@ -165,7 +161,7 @@ fn OrganizationDirectory() -> impl IntoView {
                 </Show>
             </div>
 
-            <Show when=move || is_admin && creating.get()>
+            <Show when=move || can_manage && creating.get()>
                 <div class="mt-4 border-t border-slate-800 pt-4">
                     <OrganizationForm
                         organization=None
@@ -236,10 +232,7 @@ fn OrganizationDirectory() -> impl IntoView {
 #[component]
 fn OrganizationDetail(organization_id: String) -> impl IntoView {
     let state = expect_context::<AppState>();
-    let is_admin = state
-        .current_user_summary
-        .get_untracked()
-        .is_some_and(|user| user.role.has_operations_admin_permissions());
+    let can_manage = state.has_information_management_access();
     let id = StoredValue::new(organization_id);
 
     let organization = RwSignal::new(None::<Organization>);
@@ -276,7 +269,7 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                 contacts.set(page.items);
                 contact_total.set(page.total);
             }
-            if is_admin {
+            if can_manage {
                 let filters = GrantFilters {
                     funder_organization_id: id.get_value(),
                     ..Default::default()
@@ -329,7 +322,7 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                                     <span class=badge_pill("bg-slate-700/40 text-slate-300 ring-1 ring-slate-600")>"Archived"</span>
                                 </Show>
                             </div>
-                            <Show when=move || is_admin>
+                            <Show when=move || can_manage>
                                 <div class="flex shrink-0 gap-2">
                                     <button
                                         type="button"
@@ -379,7 +372,7 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                 .into_any()
             }}
 
-            <Show when=move || is_admin>
+            <Show when=move || can_manage>
                 <OrganizationPropertiesPanel organization_id=id.get_value() />
             </Show>
 
@@ -391,11 +384,11 @@ fn OrganizationDetail(organization_id: String) -> impl IntoView {
                     total=contact_total
                     window=contact_window
                     reload
-                    can_manage=is_admin
+                    can_manage=can_manage
                 />
             })}
 
-            <Show when=move || is_admin>
+            <Show when=move || can_manage>
                 <div class=PANEL>
                     <h3 class="text-sm font-semibold text-slate-200">"Grants"</h3>
                     <div class="mt-3 space-y-2">

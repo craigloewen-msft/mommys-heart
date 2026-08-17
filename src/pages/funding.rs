@@ -1,7 +1,6 @@
 //! The funding workspace: grants and the money received against them.
 //!
-//! Back office only — every server function here requires operations-admin
-//! permissions, so volunteers and clients never reach it.
+//! Available to every non-client account granted information-management access.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -9,7 +8,7 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
 use crate::components::change_log::ChangeLog;
-use crate::components::guard::require_information_management_admin;
+use crate::components::guard::require_information_management_access;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::helpers::format::badge_pill;
@@ -37,7 +36,7 @@ const LABEL: &str = "text-xs font-medium text-slate-400";
 pub fn FundingPage() -> impl IntoView {
     let state = expect_context::<AppState>();
     let params = use_params_map();
-    require_information_management_admin(state, move || {
+    require_information_management_access(state, move || {
         let selected_id = params.read().get("id").filter(|id| !id.trim().is_empty());
         view! {
             <Layout title="Funding".to_string()>

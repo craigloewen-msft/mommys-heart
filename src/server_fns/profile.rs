@@ -233,7 +233,7 @@ pub async fn load_profile(user_id: String) -> Result<UserProfile, ServerFnError>
         None
     };
 
-    // The linked contact is available only with both admin and information access.
+    // The reverse account link remains an account-administration detail.
     let person = if has_operations_admin_permissions && has_information_management_access {
         contacts::for_user(&record.id)
             .await
