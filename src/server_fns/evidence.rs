@@ -26,6 +26,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::helpers::visibility::Visibility;
 
+/// Shared copy for every temporarily disabled evidence surface.
+pub const EVIDENCE_UNAVAILABLE_MESSAGE: &str =
+    "Evidence is under construction and temporarily unavailable. Please check back later.";
+
+/// Keep the existing implementation intact while refusing every interaction.
+pub fn ensure_evidence_available() -> Result<(), ServerFnError> {
+    Err(ServerFnError::new(EVIDENCE_UNAVAILABLE_MESSAGE))
+}
+
 /// A file on a case: a named entry, plus the bytes behind it once they exist.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Evidence {
@@ -112,6 +121,7 @@ const ALLOWED_MIME: &[&str] = &[
 /// never leaves an orphaned blob or row.
 #[server(prefix = "/api", input = MultipartFormData)]
 pub async fn upload_evidence(data: MultipartData) -> Result<String, ServerFnError> {
+    ensure_evidence_available()?;
     use crate::server::db::{case_folders, evidence as db};
     use crate::server::permissions::{require_cap, require_user, require_visibility};
     use crate::server::storage;
@@ -357,6 +367,7 @@ pub async fn add_case_file(
     name: String,
     description: String,
 ) -> Result<String, ServerFnError> {
+    ensure_evidence_available()?;
     use crate::server::db::{case_folders, evidence as db, pool};
     use crate::server::permissions::{require_cap, require_user, require_visibility};
     use crate::server_fns::capabilities::CaseCapability;
@@ -415,6 +426,7 @@ pub async fn move_case_evidence(
     evidence_id: String,
     folder_id: String,
 ) -> Result<(), ServerFnError> {
+    ensure_evidence_available()?;
     use crate::server::db::{case_folders, evidence as db};
     use crate::server::permissions::{require_cap, require_user, require_visibility};
     use crate::server_fns::capabilities::CaseCapability;
@@ -460,6 +472,7 @@ pub async fn delete_case_evidence(
     case_id: String,
     evidence_id: String,
 ) -> Result<(), ServerFnError> {
+    ensure_evidence_available()?;
     use crate::server::db::evidence as db;
     use crate::server::permissions::{require_cap, require_user, require_visibility};
     use crate::server::storage;
@@ -595,6 +608,14 @@ mod download {
         AuthUser(user): AuthUser,
         Path((case_id, evidence_id)): Path<(String, String)>,
     ) -> Response {
+        let _ = (&user, &case_id, &evidence_id);
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            super::EVIDENCE_UNAVAILABLE_MESSAGE,
+        )
+            .into_response();
+
+        #[allow(unreachable_code)]
         if let Err(e) = require_case_evidence_read_or_admin(&user, &case_id).await {
             return (StatusCode::FORBIDDEN, e.to_string()).into_response();
         }

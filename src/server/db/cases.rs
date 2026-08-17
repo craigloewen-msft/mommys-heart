@@ -1,8 +1,8 @@
 //! Cases, sub properties of evidence and case_properties are their own files
 
 use crate::server::db::{
-    audit, capabilities, case_folders, case_notes, case_properties, channels, evidence, ids,
-    now_stamp, pool, terms_acceptances, users,
+    audit, capabilities, case_folders, case_notes, case_properties, channels, ids, now_stamp, pool,
+    terms_acceptances, users,
 };
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
@@ -381,9 +381,8 @@ pub async fn get_summaries_by_ids(ids: &[String]) -> Result<Vec<CaseSummary>, sq
         .collect())
 }
 
-/// A single case by id, fully hydrated (properties, evidence, and its newest
-/// notes) including the capabilities `user_id` holds on it, or `None` if no
-/// such case exists.
+/// A single case by id, hydrated without the temporarily unavailable evidence
+/// data, including the capabilities `user_id` holds on it.
 pub async fn get(
     id: &str,
     user_id: &str,
@@ -403,8 +402,8 @@ pub async fn get(
     // notes. Structured staff-only notes are loaded through `case_notes` APIs.
     let notes = case_notes::legacy_notes_for_case(id).await?;
 
-    let evidence = evidence::get_case_evidence(id, has_volunteer_access).await?;
-    let folders = case_folders::list(id, has_volunteer_access).await?;
+    let evidence = Vec::new();
+    let folders = Vec::new();
     let properties = case_properties::get_case_properties(id, has_volunteer_access).await?;
     let terms_accepted = terms_acceptances::for_case(id).await?.map(|acceptance| {
         format!(
