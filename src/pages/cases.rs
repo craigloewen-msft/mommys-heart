@@ -10,17 +10,15 @@ use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::components::profile_link::ProfileLink;
-use crate::helpers::format::human_size;
 use crate::helpers::sections;
 use crate::helpers::visibility::Visibility;
 use crate::pages::case_notes::CaseNotesPanel;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::capabilities::CaseCapability;
-use crate::server_fns::case_folders::{self, CaseFolder};
 use crate::server_fns::case_properties::{self, CaseProperty};
 use crate::server_fns::cases::{self, Case, CaseStatus, CaseSummary};
 use crate::server_fns::err_text;
-use crate::server_fns::evidence::{self, Evidence};
+use crate::server_fns::evidence::EVIDENCE_UNAVAILABLE_MESSAGE;
 use crate::server_fns::users::{search_users, AccountRole, UserSummary};
 use crate::state::AppState;
 
@@ -36,16 +34,6 @@ struct PropRow {
     value: RwSignal<String>,
     section: RwSignal<String>,
     visibility: Visibility,
-}
-
-/// The "add a file" form for the folder currently open in the file browser.
-#[derive(Clone, Copy)]
-struct FileForm {
-    name: RwSignal<String>,
-    description: RwSignal<String>,
-    error: RwSignal<String>,
-    busy: RwSignal<bool>,
-    file_ref: NodeRef<leptos::html::Input>,
 }
 
 /// The case's properties arranged for display: visibility first, then section.
@@ -91,120 +79,8 @@ fn group_case_properties(case: &Case) -> Vec<(Visibility, Vec<(String, Vec<CaseP
         .collect()
 }
 
-/// The chain of folders from the top-level folder down to `folder` itself.
-fn folder_ancestry(folders: &[CaseFolder], folder: &CaseFolder) -> Vec<CaseFolder> {
-    let mut chain = vec![folder.clone()];
-    let mut parent_id = folder.parent_id.clone();
-    while let Some(id) = parent_id {
-        let Some(parent) = folders.iter().find(|f| f.id == id) else {
-            break;
-        };
-        parent_id = parent.parent_id.clone();
-        chain.push(parent.clone());
-    }
-    chain.reverse();
-    chain
-}
-
-/// A folder's full path for display, e.g. `Intake / Service Agreement`.
-fn folder_path_label(folders: &[CaseFolder], folder: &CaseFolder) -> String {
-    folder_ancestry(folders, folder)
-        .iter()
-        .map(|f| f.name.clone())
-        .collect::<Vec<_>>()
-        .join(" / ")
-}
-
 fn badge(classes: &str) -> String {
     format!("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {classes}")
-}
-
-/// Client-side (WASM) evidence upload: reads the chosen file from an
-/// `<input type="file">`, performs a friendly size pre-check, and hands the
-/// multipart form to the
-/// [`upload_evidence`](crate::server_fns::evidence::upload_evidence) server
-/// function. The server re-validates every byte — the pre-check is purely for
-/// fast UX feedback.
-///
-/// `fields` are the accompanying text parts, which decide where the bytes land:
-/// an `evidence_id` puts them into an existing entry, a `folder_id` (plus
-/// `name`) creates a new one in that folder. Returns `Ok(None)` when no file was
-/// chosen, so callers can decide whether that is an error or simply means
-/// "create the entry with nothing in it".
-#[cfg(feature = "hydrate")]
-async fn upload_evidence_file(
-    file_ref: NodeRef<leptos::html::Input>,
-    fields: &[(&str, &str)],
-) -> Result<Option<()>, String> {
-    use crate::server_fns::evidence::upload_evidence;
-    use leptos::server_fn::codec::MultipartData;
-
-    const MAX_BYTES: f64 = 25.0 * 1024.0 * 1024.0;
-
-    let Some(input) = file_ref.get_untracked() else {
-        return Ok(None);
-    };
-    let Some(file) = input.files().and_then(|f| f.get(0)) else {
-        return Ok(None);
-    };
-
-    if file.size() > MAX_BYTES {
-        return Err("File is too large; the limit is 25 MB.".to_string());
-    }
-
-    let filename = file.name();
-    let form = web_sys::FormData::new().map_err(|_| "Could not prepare the upload.".to_string())?;
-    form.append_with_blob_and_filename("file", file.as_ref(), &filename)
-        .map_err(|_| "Could not attach the file.".to_string())?;
-    for (key, value) in fields {
-        form.append_with_str(key, value)
-            .map_err(|_| "Could not prepare the upload.".to_string())?;
-    }
-
-    upload_evidence(MultipartData::from(form))
-        .await
-        .map(|_id| Some(()))
-        .map_err(crate::server_fns::err_text)
-}
-
-/// Add a file to a folder: upload the chosen file if there is one, or — when the
-/// picker was left empty — create the entry with nothing in it, for somebody to
-/// upload into later.
-///
-/// The two paths differ only in whether bytes were provided, so the caller does
-/// not have to decide up front which one it wants.
-async fn add_file_entry(
-    folder_id: &str,
-    name: &str,
-    description: &str,
-    file_ref: NodeRef<leptos::html::Input>,
-) -> Result<(), String> {
-    #[cfg(feature = "hydrate")]
-    {
-        let uploaded = upload_evidence_file(
-            file_ref,
-            &[
-                ("folder_id", folder_id),
-                ("name", name),
-                ("description", description),
-            ],
-        )
-        .await?;
-        if uploaded.is_some() {
-            return Ok(());
-        }
-    }
-    #[cfg(not(feature = "hydrate"))]
-    let _ = file_ref;
-
-    evidence::add_case_file(
-        folder_id.to_string(),
-        name.to_string(),
-        description.to_string(),
-    )
-    .await
-    .map(|_id| ())
-    .map_err(err_text)
 }
 
 /// A short label summarizing a user's access to a case from their capabilities.
@@ -608,9 +484,7 @@ pub fn CaseDetail(
     let is_client = matches!(role, Some(AccountRole::Client));
     let can_note = caps.contains(&CaseCapability::AddNotes) && accepts_changes;
     let can_view_evidence = caps.contains(&CaseCapability::ViewEvidence);
-    let can_upload_evidence = caps.contains(&CaseCapability::UploadEvidence) && accepts_changes;
-    let can_delete_evidence = caps.contains(&CaseCapability::DeleteEvidence) && accepts_changes;
-    let can_manage_case_information = can_edit || can_upload_evidence || can_delete_evidence;
+    let can_manage_case_information = can_edit;
     let has_stored_write_capability = caps.iter().any(|cap| cap.is_write());
     let can_read_case_material = admin_read || can_view_evidence;
 
@@ -698,28 +572,8 @@ pub fn CaseDetail(
     let props_error = RwSignal::new(String::new());
     let row_seq = RwSignal::new(0usize);
 
-    // --- file browser ---
-    // The folder currently open, or `None` for the top of the tree (where the
-    // only things to see are the case's two standing folders). It is owned by
-    // the page rather than this component because every mutation reloads the
-    // case list and rebuilds this panel — uploading a file should leave you
-    // looking at the folder you put it in.
-    let current_folder = open_folder;
-    let new_folder_name = RwSignal::new(String::new());
-    let folder_error = RwSignal::new(String::new());
-    // Deleting is destructive and irreversible, so each row asks to be confirmed
-    // before anything is sent. Folder and file ids share this signal.
-    let pending_delete: RwSignal<Option<String>> = RwSignal::new(None);
-    let delete_busy = RwSignal::new(false);
-    let file_form = owner.with_value(|o| {
-        o.with(|| FileForm {
-            name: RwSignal::new(String::new()),
-            description: RwSignal::new(String::new()),
-            error: RwSignal::new(String::new()),
-            busy: RwSignal::new(false),
-            file_ref: NodeRef::new(),
-        })
-    });
+    // Keep the shared case-detail signature stable while evidence is unavailable.
+    let _ = open_folder;
 
     let make_row =
         move |key: String, value: String, section: String, visibility: Visibility| -> PropRow {
@@ -866,497 +720,6 @@ pub fn CaseDetail(
                 .collect_view()
                 .into_any()
         }
-    };
-
-    // --- Files: the case's folder tree ---
-    // Adding a file always happens inside the folder that is currently open,
-    // which is why there is no folder picker here: the browser you are looking
-    // at *is* the choice.
-    let add_file = move |folder_id: String| {
-        let form = file_form;
-        let name = form.name.get_untracked().trim().to_string();
-        let description = form.description.get_untracked().trim().to_string();
-        form.error.set(String::new());
-        if name.is_empty() {
-            form.error.set("Give the file a name.".to_string());
-            return;
-        }
-        if form.busy.get_untracked() {
-            return;
-        }
-        form.busy.set(true);
-        spawn_local(async move {
-            let result = add_file_entry(&folder_id, &name, &description, form.file_ref).await;
-            match result {
-                Ok(()) => {
-                    form.name.set(String::new());
-                    form.description.set(String::new());
-                    if let Some(input) = form.file_ref.get_untracked() {
-                        input.set_value("");
-                    }
-                    reload.update(|n| *n += 1);
-                }
-                Err(msg) => form.error.set(msg),
-            }
-            form.busy.set(false);
-        });
-    };
-
-    let add_folder = move |parent_id: String| {
-        let name = new_folder_name.get_untracked().trim().to_string();
-        folder_error.set(String::new());
-        spawn_local(async move {
-            match case_folders::create_case_folder(parent_id, name).await {
-                Ok(_) => {
-                    new_folder_name.set(String::new());
-                    reload.update(|n| *n += 1);
-                }
-                Err(e) => folder_error.set(err_text(e)),
-            }
-        });
-    };
-
-    let delete_folder = move |folder: CaseFolder| {
-        folder_error.set(String::new());
-        delete_busy.set(true);
-        spawn_local(async move {
-            match case_folders::delete_case_folder(folder.id).await {
-                Ok(()) => reload.update(|n| *n += 1),
-                Err(e) => folder_error.set(err_text(e)),
-            }
-            delete_busy.set(false);
-            pending_delete.set(None);
-        });
-    };
-
-    let move_file = move |evidence_id: String, folder_id: String| {
-        folder_error.set(String::new());
-        spawn_local(async move {
-            match evidence::move_case_evidence(evidence_id, folder_id).await {
-                Ok(()) => reload.update(|n| *n += 1),
-                Err(e) => folder_error.set(err_text(e)),
-            }
-        });
-    };
-
-    // Uploading into an entry that already exists: its own file input is the
-    // handle, and the server takes the name and the folder from the stored row
-    // rather than from this request.
-    let upload_into = move |evidence_id: String, file_ref: NodeRef<leptos::html::Input>| {
-        let _ = (&evidence_id, file_ref);
-        #[cfg(feature = "hydrate")]
-        spawn_local(async move {
-            if upload_evidence_file(file_ref, &[("evidence_id", &evidence_id)])
-                .await
-                .is_ok()
-            {
-                reload.update(|n| *n += 1);
-            }
-        });
-    };
-
-    let delete_file = move |evidence_id: String| {
-        let case_id = case_sv.get_value();
-        folder_error.set(String::new());
-        delete_busy.set(true);
-        spawn_local(async move {
-            match evidence::delete_case_evidence(case_id, evidence_id).await {
-                Ok(_) => reload.update(|n| *n += 1),
-                Err(e) => folder_error.set(err_text(e)),
-            }
-            delete_busy.set(false);
-            pending_delete.set(None);
-        });
-    };
-
-    // One file's row: its name and description, then either the download and
-    // details of the file it holds, or an upload control for the file it is
-    // still waiting on.
-    let file_row = move |e: Evidence, folders: Vec<CaseFolder>| {
-        let evidence_id = e.id.clone();
-        let confirm_id = StoredValue::new(evidence_id.clone());
-        // The row header is tight (name + folder picker), so the confirm gets a
-        // full-width bar of its own underneath rather than squeezing in there.
-        let confirming = move || {
-            confirm_id.with_value(|id| pending_delete.get().as_deref() == Some(id.as_str()))
-        };
-        let delete_btn = if can_delete_evidence {
-            let id = evidence_id.clone();
-            view! {
-                {move || {
-                    if confirming() {
-                        return ().into_any();
-                    }
-                    let id = id.clone();
-                    view! {
-                        <button
-                            type="button"
-                            title="Delete"
-                            aria-label="Delete"
-                            on:click=move |_| {
-                                folder_error.set(String::new());
-                                pending_delete.set(Some(id.clone()));
-                            }
-                            class="shrink-0 rounded-md px-1.5 py-1 text-sm text-slate-600 hover:bg-rose-500/10 hover:text-rose-300"
-                        >
-                            "\u{1f5d1}"
-                        </button>
-                    }
-                        .into_any()
-                }}
-            }
-            .into_any()
-        } else {
-            ().into_any()
-        };
-
-        // Moving a file is a plain folder picker: the folder it lands in is also
-        // what decides who can see it, so this is the same control for both.
-        let move_control = if can_upload_evidence && folders.len() > 1 {
-            let id = evidence_id.clone();
-            let current = e.folder_id.clone();
-            let options = folders
-                .iter()
-                .map(|f| {
-                    let label = folder_path_label(&folders, f);
-                    let selected = f.id == current;
-                    view! {
-                        <option value=f.id.clone() selected=selected>
-                            {label}
-                        </option>
-                    }
-                })
-                .collect_view();
-            view! {
-                <select
-                    title="Move this file to another folder"
-                    on:change=move |ev| move_file(id.clone(), event_target_value(&ev))
-                    class="shrink-0 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-300"
-                >
-                    {options}
-                </select>
-            }
-            .into_any()
-        } else {
-            ().into_any()
-        };
-
-        let body = if e.has_file {
-            let download_url = format!("/api/cases/{}/evidence/{}/download", e.case_id, e.id);
-            let details = format!(
-                "{} · {} · uploaded by {} · {}",
-                e.content_type.clone(),
-                human_size(e.size_bytes),
-                e.uploaded_by.clone(),
-                e.uploaded_at.clone(),
-            );
-            view! {
-                <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                    <a
-                        href=download_url
-                        download=e.original_filename.clone()
-                        class="rounded-lg border border-primary-500/40 px-2 py-1 font-medium text-primary-300 hover:bg-primary-500/10"
-                    >
-                        "Download"
-                    </a>
-                    <span>{details}</span>
-                </div>
-            }
-            .into_any()
-        } else if can_upload_evidence {
-            let file_input: NodeRef<leptos::html::Input> =
-                owner.with_value(|o| o.with(NodeRef::new));
-            let id = evidence_id.clone();
-            view! {
-                <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                    <span class=badge("bg-slate-700/40 text-slate-300")>"Waiting for a file"</span>
-                    <input
-                        node_ref=file_input
-                        type="file"
-                        accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
-                        on:change=move |_| upload_into(id.clone(), file_input)
-                        class="block text-xs text-slate-300 file:mr-2 file:rounded-lg file:border-0 file:bg-slate-800 file:px-2 file:py-1 file:text-xs file:font-medium file:text-slate-200 hover:file:bg-slate-700"
-                    />
-                </div>
-            }
-            .into_any()
-        } else {
-            view! {
-                <p class="mt-1 text-xs text-slate-500">"Not provided yet."</p>
-            }
-            .into_any()
-        };
-
-        let description = e.description.clone();
-        let confirm_name = e.name.clone();
-        let confirm_delete_id = evidence_id.clone();
-        let confirm_bar = if can_delete_evidence {
-            view! {
-                {move || {
-                    if !confirming() {
-                        return ().into_any();
-                    }
-                    let id = confirm_delete_id.clone();
-                    let name = confirm_name.clone();
-                    view! {
-                        <div class="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2">
-                            <span class="min-w-0 text-xs text-rose-200">
-                                {format!("Delete \"{name}\"? This cannot be undone.")}
-                            </span>
-                            <div class="flex shrink-0 items-center gap-2">
-                                <button
-                                    type="button"
-                                    on:click=move |_| pending_delete.set(None)
-                                    class="rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
-                                >
-                                    "Cancel"
-                                </button>
-                                <button
-                                    type="button"
-                                    prop:disabled=move || delete_busy.get()
-                                    on:click=move |_| {
-                                        if !delete_busy.get_untracked() {
-                                            delete_file(id.clone());
-                                        }
-                                    }
-                                    class="rounded-md bg-rose-500/15 px-2 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 disabled:opacity-60"
-                                >
-                                    "Delete"
-                                </button>
-                            </div>
-                        </div>
-                    }
-                        .into_any()
-                }}
-            }
-            .into_any()
-        } else {
-            ().into_any()
-        };
-        view! {
-            <div class="group rounded-lg border border-slate-800 bg-slate-950 p-3 transition-colors hover:border-slate-700 hover:bg-slate-900/60">
-                <div class="flex items-start justify-between gap-2">
-                    <p class="min-w-0 truncate text-sm font-medium text-slate-200 transition-colors group-hover:text-slate-100">
-                        "\u{1f4c4} " {e.name.clone()}
-                    </p>
-                    <div class="flex shrink-0 items-center gap-2">{move_control} {delete_btn}</div>
-                </div>
-                <Show when={
-                    let d = description.clone();
-                    move || !d.is_empty()
-                }>
-                    <p class="text-sm text-slate-400">{description.clone()}</p>
-                </Show>
-                {body} {confirm_bar}
-            </div>
-        }
-        .into_any()
-    };
-
-    // One sub-folder inside the open folder: click to go in, plus the delete
-    // that only applies once it has been emptied.
-    let folder_row = move |folder: CaseFolder, file_count: usize, child_count: usize| {
-        let open = {
-            let id = folder.id.clone();
-            move |_| current_folder.set(Some(id.clone()))
-        };
-        let contents = match (file_count, child_count) {
-            (0, 0) => "Empty".to_string(),
-            (files, 0) => format!("{files} file{}", if files == 1 { "" } else { "s" }),
-            (0, folders) => format!("{folders} folder{}", if folders == 1 { "" } else { "s" }),
-            (files, folders) => format!(
-                "{files} file{} · {folders} folder{}",
-                if files == 1 { "" } else { "s" },
-                if folders == 1 { "" } else { "s" }
-            ),
-        };
-        let confirm_id = StoredValue::new(folder.id.clone());
-        let confirming = move || {
-            confirm_id.with_value(|id| pending_delete.get().as_deref() == Some(id.as_str()))
-        };
-        let delete_btn = if can_delete_evidence && !folder.is_root() {
-            let id = folder.id.clone();
-            let has_contents = file_count > 0 || child_count > 0;
-            view! {
-                {move || {
-                    if confirming() {
-                        return ().into_any();
-                    }
-                    let id = id.clone();
-                    if has_contents {
-                        // A folder with anything in it cannot be deleted; the
-                        // control stays visible so the rule is discoverable.
-                        view! {
-                            <button
-                                type="button"
-                                disabled=true
-                                title="Empty this folder before deleting it"
-                                aria-label="Empty this folder before deleting it"
-                                class="shrink-0 cursor-not-allowed rounded-md px-1.5 py-1 text-sm text-slate-700 opacity-50"
-                            >
-                                "\u{1f5d1}"
-                            </button>
-                        }
-                            .into_any()
-                    } else {
-                        view! {
-                            <button
-                                type="button"
-                                title="Delete"
-                                aria-label="Delete"
-                                on:click=move |_| {
-                                    folder_error.set(String::new());
-                                    pending_delete.set(Some(id.clone()));
-                                }
-                                class="shrink-0 rounded-md px-1.5 py-1 text-sm text-slate-600 hover:bg-rose-500/10 hover:text-rose-300"
-                            >
-                                "\u{1f5d1}"
-                            </button>
-                        }
-                            .into_any()
-                    }
-                }}
-            }
-            .into_any()
-        } else {
-            ().into_any()
-        };
-        // The confirm sits on its own line under the row so it never crowds the
-        // folder name.
-        let confirm_bar = if can_delete_evidence && !folder.is_root() {
-            let f = folder.clone();
-            let name = folder.name.clone();
-            view! {
-                {move || {
-                    if !confirming() {
-                        return ().into_any();
-                    }
-                    let f = f.clone();
-                    let name = name.clone();
-                    view! {
-                        <div class="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2">
-                            <span class="min-w-0 text-xs text-rose-200">
-                                {format!("Delete \"{name}\"? This cannot be undone.")}
-                            </span>
-                            <div class="flex shrink-0 items-center gap-2">
-                                <button
-                                    type="button"
-                                    on:click=move |_| pending_delete.set(None)
-                                    class="rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
-                                >
-                                    "Cancel"
-                                </button>
-                                <button
-                                    type="button"
-                                    prop:disabled=move || delete_busy.get()
-                                    on:click=move |_| {
-                                        if !delete_busy.get_untracked() {
-                                            delete_folder(f.clone());
-                                        }
-                                    }
-                                    class="rounded-md bg-rose-500/15 px-2 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 disabled:opacity-60"
-                                >
-                                    "Delete"
-                                </button>
-                            </div>
-                        </div>
-                    }
-                        .into_any()
-                }}
-            }
-            .into_any()
-        } else {
-            ().into_any()
-        };
-        let restricted = folder.visibility.is_restricted();
-        view! {
-            <div class="group rounded-lg border border-slate-800 bg-slate-950 p-3 transition-colors hover:border-primary-500/40 hover:bg-slate-900">
-                <div class="flex items-center justify-between gap-2">
-                    <button
-                        on:click=open
-                        class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
-                    >
-                        <span class="text-base transition-transform group-hover:scale-110">
-                            {if restricted { "\u{1f512}" } else { "\u{1f4c1}" }}
-                        </span>
-                        <span class="min-w-0">
-                            <span class="block truncate text-sm font-medium text-slate-200 transition-colors group-hover:text-primary-300">
-                                {folder.name.clone()}
-                            </span>
-                            <span class="block text-xs text-slate-500">{contents}</span>
-                        </span>
-                    </button>
-                    {delete_btn}
-                </div>
-                {confirm_bar}
-            </div>
-        }
-        .into_any()
-    };
-
-    // Adding to the open folder: a new sub-folder, or a file (with or without
-    // the bytes to go in it yet).
-    let folder_tools = move |folder: CaseFolder, target_label: String| {
-        if !can_upload_evidence {
-            return ().into_any();
-        }
-        let form = file_form;
-        let folder_id = folder.id.clone();
-        let new_folder_parent = folder.id.clone();
-        view! {
-            <div class="mt-4 space-y-4 border-t border-slate-800 pt-4">
-                <div class="flex flex-col gap-2 sm:flex-row">
-                    <input
-                        class=input_class
-                        placeholder="New folder name"
-                        prop:value=move || new_folder_name.get()
-                        on:input=move |ev| new_folder_name.set(event_target_value(&ev))
-                    />
-                    <button
-                        on:click=move |_| add_folder(new_folder_parent.clone())
-                        class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
-                    >
-                        "+ New folder"
-                    </button>
-                </div>
-                <div class="space-y-2">
-                    <input
-                        class=input_class
-                        placeholder="File name (e.g. Intake letter)"
-                        prop:value=move || form.name.get()
-                        on:input=move |ev| form.name.set(event_target_value(&ev))
-                    />
-                    <input
-                        class=input_class
-                        placeholder="Extra information (optional)"
-                        prop:value=move || form.description.get()
-                        on:input=move |ev| form.description.set(event_target_value(&ev))
-                    />
-                    <input
-                        node_ref=form.file_ref
-                        type="file"
-                        accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
-                        class="block w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-200 hover:file:bg-slate-700"
-                    />
-                    <button
-                        on:click=move |_| add_file(folder_id.clone())
-                        prop:disabled=move || form.busy.get()
-                        class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
-                    >
-                        {move || if form.busy.get() { "Saving…" } else { "Add file" }}
-                    </button>
-                    <p class="text-xs text-slate-500">
-                        "Saved in " {target_label}
-                        ". Leave the picker empty to just list what the case is waiting on. \
-                         PDF, images, or Office documents · up to 25 MB"
-                    </p>
-                    <Show when=move || !form.error.get().is_empty()>
-                        <p class="text-xs text-rose-400">{move || form.error.get()}</p>
-                    </Show>
-                </div>
-            </div>
-        }
-        .into_any()
     };
 
     // The rendering of one visibility: its sections, each listing that section's
@@ -1553,140 +916,30 @@ pub fn CaseDetail(
         .into_any()
     };
 
-    // Evidence: the case's folder tree, browsed one folder at a time.
-    //
-    // The top of the tree is the case's two standing folders — the team's own
-    // record and the one shared with the client — so the audience of anything
-    // put away here is decided by the folder it goes in, not by a setting
-    // somebody has to remember to change. A client simply never sees the
-    // volunteer-only ones.
+    // Evidence is intentionally unavailable while its replacement is designed.
     let evidence_panel = move || {
         if !can_read_case_material {
             return ().into_any();
         }
-        let Some(c) = live_case() else {
-            return ().into_any();
-        };
-        let folders = c.folders.clone();
-        let open = current_folder
-            .get()
-            .and_then(|id| folders.iter().find(|f| f.id == id).cloned());
-        let open_id = open.as_ref().map(|f| f.id.clone());
-
-        // Breadcrumbs back up the tree; the first one steps out to the top.
-        let mut trail = vec![("Evidence".to_string(), None)];
-        if let Some(folder) = &open {
-            for ancestor in folder_ancestry(&folders, folder) {
-                trail.push((ancestor.name.clone(), Some(ancestor.id.clone())));
-            }
-        }
-        let last = trail.len() - 1;
-        let crumbs = trail
-            .into_iter()
-            .enumerate()
-            .map(|(i, (label, target))| {
-                let is_current = i == last;
-                let separator = (i > 0)
-                    .then(|| view! { <span class="text-slate-600">"/"</span> }.into_any())
-                    .unwrap_or_else(|| ().into_any());
-                let crumb = if is_current {
-                    view! { <span class="font-medium text-slate-200">{label}</span> }.into_any()
-                } else {
-                    view! {
-                        <button
-                            on:click=move |_| current_folder.set(target.clone())
-                            class="text-slate-400 hover:text-slate-200"
-                        >
-                            {label}
-                        </button>
-                    }
-                    .into_any()
-                };
-                view! {
-                    <span class="flex items-center gap-2">{separator} {crumb}</span>
-                }
-                .into_any()
-            })
-            .collect_view();
-
-        let child_folders: Vec<CaseFolder> = folders
-            .iter()
-            .filter(|f| f.parent_id == open_id)
-            .cloned()
-            .collect();
-        let files: Vec<Evidence> = match &open_id {
-            Some(id) => c
-                .evidence
-                .iter()
-                .filter(|e| &e.folder_id == id)
-                .cloned()
-                .collect(),
-            None => Vec::new(),
-        };
-
-        let folder_rows = child_folders
-            .iter()
-            .map(|f| {
-                let file_count = c.evidence.iter().filter(|e| e.folder_id == f.id).count();
-                let child_count = folders
-                    .iter()
-                    .filter(|other| other.parent_id.as_deref() == Some(f.id.as_str()))
-                    .count();
-                folder_row(f.clone(), file_count, child_count)
-            })
-            .collect_view();
-        let is_empty = child_folders.is_empty() && files.is_empty();
-        let file_rows = files
-            .into_iter()
-            .map(|e| file_row(e, folders.clone()))
-            .collect_view();
-
-        let empty_note = if is_empty {
-            view! {
-                <p class="text-sm text-slate-500">"This folder is empty."</p>
-            }
-            .into_any()
-        } else {
-            ().into_any()
-        };
-
-        let tools = match &open {
-            Some(folder) => {
-                let label = folder_path_label(&folders, folder);
-                folder_tools(folder.clone(), label)
-            }
-            // The top-level folders are the case's own filing scheme; a file has
-            // to go inside one of them, so there is nothing to add out here.
-            None => view! {
-                <p class="mt-4 border-t border-slate-800 pt-4 text-xs text-slate-500">
-                    "Open a folder to add files to it."
-                </p>
-            }
-            .into_any(),
-        };
-
-        let blurb = if is_client {
-            "The documents your case team has shared with you."
-        } else {
-            "Everything filed on this case. A file's folder decides who can see it."
-        };
         view! {
-            <div>
+            <section aria-labelledby="evidence-heading">
                 <div class="mb-3">
-                    <h2 class="text-lg font-semibold text-slate-100">"Evidence"</h2>
-                    <p class="mt-1 text-sm text-slate-500">{blurb}</p>
+                    <h2 id="evidence-heading" class="text-lg font-semibold text-slate-100">
+                        "Evidence"
+                    </h2>
                 </div>
-                <div class=panel>
-                    <div class="flex flex-wrap items-center gap-2 text-sm">{crumbs}</div>
-                    <div class="mt-3 space-y-2">
-                        {folder_rows} {file_rows} {empty_note}
+                <div class="rounded-xl border border-amber-400 bg-amber-50 p-4">
+                    <div class="flex items-start gap-3">
+                        <span aria-hidden="true" class="text-xl">"🚧"</span>
+                        <div>
+                            <h3 class="font-semibold text-amber-900">"Under construction"</h3>
+                            <p class="mt-1 text-sm text-amber-800">
+                                {EVIDENCE_UNAVAILABLE_MESSAGE}
+                            </p>
+                        </div>
                     </div>
-                    <Show when=move || !folder_error.get().is_empty()>
-                        <p class="mt-3 text-sm text-rose-400">{move || folder_error.get()}</p>
-                    </Show>
-                    {tools}
                 </div>
-            </div>
+            </section>
         }
         .into_any()
     };
@@ -1802,7 +1055,7 @@ pub fn CaseDetail(
                             .into_any()
                     } else {
                         view! {
-                            <Show when=move || !can_edit && !can_note && !can_upload_evidence>
+                            <Show when=move || !can_edit && !can_note>
                                 <p class="mt-2 text-xs text-slate-500">
                                     "You have view-only access to this case."
                                 </p>

@@ -80,6 +80,7 @@ pub fn clean_name(raw: &str) -> Result<String, String> {
 /// folder can only ever be made somewhere the caller can already see.
 #[server(prefix = "/api")]
 pub async fn create_case_folder(parent_id: String, name: String) -> Result<String, ServerFnError> {
+    crate::server_fns::evidence::ensure_evidence_available()?;
     use crate::server::db::case_folders as db;
     use crate::server::permissions::{require_cap, require_user, require_visibility};
     use crate::server_fns::capabilities::CaseCapability;
@@ -129,6 +130,7 @@ pub async fn create_case_folder(parent_id: String, name: String) -> Result<Strin
 /// paperwork they meant to keep, and the files still have their own delete.
 #[server(prefix = "/api")]
 pub async fn delete_case_folder(folder_id: String) -> Result<(), ServerFnError> {
+    crate::server_fns::evidence::ensure_evidence_available()?;
     use crate::server::db::case_folders as db;
     use crate::server::permissions::{require_cap, require_user, require_visibility};
     use crate::server_fns::capabilities::CaseCapability;
