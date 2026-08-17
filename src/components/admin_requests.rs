@@ -28,6 +28,7 @@ fn active_heading(kind: AdminRequestKind) -> &'static str {
     match kind {
         AdminRequestKind::CaseCapabilities => "Active case-permission requests",
         AdminRequestKind::Role => "Active role requests",
+        AdminRequestKind::InformationAccess => "Active information-access requests",
     }
 }
 
@@ -35,6 +36,7 @@ fn history_heading(kind: AdminRequestKind) -> &'static str {
     match kind {
         AdminRequestKind::CaseCapabilities => "Case-permission request history",
         AdminRequestKind::Role => "Role request history",
+        AdminRequestKind::InformationAccess => "Information-access request history",
     }
 }
 
@@ -44,10 +46,16 @@ fn active_empty_text(kind: AdminRequestKind, is_site_admin: bool) -> &'static st
             "No case-permission requests are waiting for review."
         }
         (AdminRequestKind::Role, true) => "No role requests are waiting for review.",
+        (AdminRequestKind::InformationAccess, true) => {
+            "No information-access requests are waiting for review."
+        }
         (AdminRequestKind::CaseCapabilities, false) => {
             "You have no active case-permission requests."
         }
         (AdminRequestKind::Role, false) => "You have no active role requests.",
+        (AdminRequestKind::InformationAccess, false) => {
+            "You have no active information-access requests."
+        }
     }
 }
 
@@ -55,6 +63,9 @@ fn history_empty_text(kind: AdminRequestKind) -> &'static str {
     match kind {
         AdminRequestKind::CaseCapabilities => "No case-permission requests have been decided yet.",
         AdminRequestKind::Role => "No role requests have been decided yet.",
+        AdminRequestKind::InformationAccess => {
+            "No information-access requests have been decided yet."
+        }
     }
 }
 
@@ -62,6 +73,7 @@ fn active_loading_text(kind: AdminRequestKind) -> &'static str {
     match kind {
         AdminRequestKind::CaseCapabilities => "Loading case-permission requests...",
         AdminRequestKind::Role => "Loading role requests...",
+        AdminRequestKind::InformationAccess => "Loading information-access requests...",
     }
 }
 
@@ -69,6 +81,7 @@ fn history_loading_text(kind: AdminRequestKind) -> &'static str {
     match kind {
         AdminRequestKind::CaseCapabilities => "Loading case-permission history...",
         AdminRequestKind::Role => "Loading role request history...",
+        AdminRequestKind::InformationAccess => "Loading information-access history...",
     }
 }
 
@@ -103,6 +116,9 @@ pub fn AdminRequestCenter(
             AdminRequestKind::Role => {
                 state.admin_role_request_pending.track();
             }
+            AdminRequestKind::InformationAccess => {
+                state.admin_information_request_pending.track();
+            }
         }
         if !state.is_authenticated() {
             return;
@@ -130,6 +146,12 @@ pub fn AdminRequestCenter(
                             AdminRequestKind::Role => {
                                 if state.admin_role_request_pending.get_untracked() != count {
                                     state.admin_role_request_pending.set(count);
+                                }
+                            }
+                            AdminRequestKind::InformationAccess => {
+                                if state.admin_information_request_pending.get_untracked() != count
+                                {
+                                    state.admin_information_request_pending.set(count);
                                 }
                             }
                         }

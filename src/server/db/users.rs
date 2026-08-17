@@ -447,35 +447,34 @@ pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(
     tx.commit().await
 }
 
-/// Grant or revoke the shared information-area permission and audit the change.
-pub async fn set_information_management_access(
+/// Change the shared information-area permission inside an existing transaction.
+pub async fn set_information_management_access_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: &str,
     enabled: bool,
     actor_user_id: &str,
     actor: &str,
 ) -> Result<(), sqlx::Error> {
-    let mut tx = pool().begin().await?;
     let current: Option<bool> = sqlx::query_scalar(
         "SELECT information_management_access FROM users WHERE id = $1 FOR UPDATE",
     )
     .bind(user_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
     let Some(current) = current else {
         return Err(sqlx::Error::RowNotFound);
     };
     if current == enabled {
-        tx.commit().await?;
         return Ok(());
     }
 
     sqlx::query("UPDATE users SET information_management_access = $2 WHERE id = $1")
         .bind(user_id)
         .bind(enabled)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     audit::record_in_transaction_by(
-        &mut tx,
+        tx,
         audit::Entity::User,
         user_id,
         actor_user_id,
@@ -484,7 +483,18 @@ pub async fn set_information_management_access(
         if current { "granted" } else { "denied" },
         if enabled { "granted" } else { "denied" },
     )
-    .await?;
+    .await
+}
+
+/// Grant or revoke the shared information-area permission and audit the change.
+pub async fn set_information_management_access(
+    user_id: &str,
+    enabled: bool,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    set_information_management_access_in(&mut tx, user_id, enabled, actor_user_id, actor).await?;
     tx.commit().await
 }
 

@@ -61,6 +61,8 @@ pub fn UserCard(
     let information_enabled = RwSignal::new(current_information_access);
     let information_busy = RwSignal::new(false);
     let information_feedback = RwSignal::new(None::<Result<String, String>>);
+    let information_request_note = RwSignal::new(String::new());
+    let information_note_id = StoredValue::new(format!("information-note-{user_id}"));
 
     let apply_information_access = move |_| {
         if information_busy.get_untracked()
@@ -90,6 +92,35 @@ pub fn UserCard(
                             }
                         });
                     }
+                }
+                Err(message) => information_feedback.set(Some(Err(message))),
+            }
+            information_busy.set(false);
+        });
+    };
+
+    let request_information_access = move |_| {
+        if information_busy.get_untracked()
+            || current_information_access
+            || !current_role.has_volunteer_privileges()
+        {
+            return;
+        }
+        information_busy.set(true);
+        information_feedback.set(None);
+        spawn_local(async move {
+            let result = crate::server_fns::admin_requests::request_user_information_access(
+                information_target.get_value(),
+                information_request_note.get_untracked(),
+            )
+            .await
+            .map(|_| "Information access request submitted.".to_string())
+            .map_err(err_text);
+            match result {
+                Ok(message) => {
+                    information_feedback.set(Some(Ok(message)));
+                    information_request_note.set(String::new());
+                    state.refresh_badges();
                 }
                 Err(message) => information_feedback.set(Some(Err(message))),
             }
@@ -630,13 +661,48 @@ pub fn UserCard(
                         </div>
                     }
                     .into_any()
-                } else {
+                } else if !current_information_access && current_role.has_volunteer_privileges() {
                     view! {
-                        <p class="mt-4 text-sm text-slate-500">
-                            "Only a site admin can grant or revoke this access."
-                        </p>
+                        <div class="mt-4 space-y-3">
+                            <p class="text-sm text-slate-500">
+                                "Operations admins can request this grant for site-admin approval."
+                            </p>
+                            <div>
+                                <label
+                                    class="block text-xs font-medium text-slate-400"
+                                    for=information_note_id.get_value()
+                                >
+                                    "Request note"
+                                </label>
+                                <textarea
+                                    id=information_note_id.get_value()
+                                    rows="2"
+                                    maxlength="1000"
+                                    class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+                                    placeholder="Optional context for the site admin"
+                                    prop:disabled=move || information_busy.get()
+                                    prop:value=move || information_request_note.get()
+                                    on:input=move |event| information_request_note.set(event_target_value(&event))
+                                ></textarea>
+                            </div>
+                            <button
+                                type="button"
+                                on:click=request_information_access
+                                prop:disabled=move || information_busy.get()
+                                class="rounded-lg border border-primary-500/50 px-3 py-2 text-sm font-semibold text-primary-300 hover:bg-primary-500/10 disabled:opacity-50"
+                            >
+                                {move || if information_busy.get() { "Submitting…" } else { "Request access" }}
+                            </button>
+                        </div>
                     }
                     .into_any()
+                } else {
+                    let message = if current_role.has_volunteer_privileges() {
+                        "This access is already granted. Only a site admin can revoke it."
+                    } else {
+                        "Client accounts are not eligible for information access."
+                    };
+                    view! { <p class="mt-4 text-sm text-slate-500">{message}</p> }.into_any()
                 }}
                 <Show when=move || information_feedback.get().is_some()>
                     {move || information_feedback.get().map(|feedback| match feedback {

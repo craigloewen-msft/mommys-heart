@@ -13,7 +13,8 @@ const SELECT_REQUEST: &str = "SELECT r.id, r.kind, r.status, r.requested_by,
             r.target_user_id,
             trim(concat(tu.first_name, ' ', tu.last_name)) AS target_user_name,
             r.case_id, c.name AS case_name, r.previous_role AS current_role, r.requested_role,
-            r.current_capabilities, r.requested_capabilities, r.request_note,
+            r.current_capabilities, r.requested_capabilities,
+            r.current_information_access, r.requested_information_access, r.request_note,
             to_char(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
             NULLIF(trim(concat(db.first_name, ' ', db.last_name)), '') AS decided_by_name,
             r.decision_note,
@@ -40,6 +41,8 @@ struct RequestRow {
     requested_role: Option<String>,
     current_capabilities: Option<Vec<String>>,
     requested_capabilities: Option<Vec<String>>,
+    current_information_access: Option<bool>,
+    requested_information_access: Option<bool>,
     request_note: String,
     created_at: String,
     decided_by_name: Option<String>,
@@ -76,6 +79,8 @@ impl TryFrom<RequestRow> for AdminRequest {
             requested_role: parse_role(row.requested_role)?,
             current_capabilities: parse_capabilities(row.current_capabilities)?,
             requested_capabilities: parse_capabilities(row.requested_capabilities)?,
+            current_information_access: row.current_information_access,
+            requested_information_access: row.requested_information_access,
             request_note: row.request_note,
             created_at: row.created_at,
             decided_by_name: row.decided_by_name,
@@ -130,6 +135,7 @@ impl From<sqlx::Error> for Error {
             if database.constraint().is_some_and(|constraint| {
                 constraint == "admin_requests_pending_role_target_idx"
                     || constraint == "admin_requests_pending_case_target_idx"
+                    || constraint == "admin_requests_pending_information_target_idx"
             }) {
                 return Self::DuplicatePending;
             }
@@ -393,6 +399,48 @@ pub async fn create_case_capabilities(
     Ok(requests)
 }
 
+pub async fn create_information_access(
+    requester_id: &str,
+    target_user_id: &str,
+    note: &str,
+) -> Result<AdminRequest, Error> {
+    let mut tx = pool().begin().await?;
+    let target: Option<(String, bool)> = sqlx::query_as(
+        "SELECT role, information_management_access FROM users WHERE id = $1 FOR SHARE",
+    )
+    .bind(target_user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (role, current_access) = target.ok_or(Error::NotFound)?;
+    let role = AccountRole::from_slug(&role)
+        .ok_or_else(|| Error::InvalidData(format!("unknown account role {role:?}")))?;
+    if !role.has_volunteer_privileges() {
+        return Err(Error::InvalidData(
+            "Information access cannot be requested for a client account.".to_string(),
+        ));
+    }
+    if current_access {
+        return Err(Error::NoChange);
+    }
+
+    let id = ids::next(&mut *tx, "ar").await?;
+    sqlx::query(
+        "INSERT INTO admin_requests
+             (id, kind, requested_by, target_user_id, current_information_access,
+              requested_information_access, request_note)
+         VALUES ($1, 'information_access', $2, $3, $4, true, $5)",
+    )
+    .bind(&id)
+    .bind(requester_id)
+    .bind(target_user_id)
+    .bind(current_access)
+    .bind(note)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    get(&id).await
+}
+
 pub async fn decide(
     request_id: &str,
     approve: bool,
@@ -427,9 +475,12 @@ pub async fn decide(
         Option<String>,
         Option<Vec<String>>,
         Option<Vec<String>>,
+        Option<bool>,
+        Option<bool>,
     )> = sqlx::query_as(
         "SELECT kind, status, target_user_id, case_id, previous_role, requested_role,
-                current_capabilities, requested_capabilities
+                current_capabilities, requested_capabilities, current_information_access,
+                requested_information_access
          FROM admin_requests WHERE id = $1 FOR UPDATE",
     )
     .bind(request_id)
@@ -444,6 +495,8 @@ pub async fn decide(
         requested_role,
         current_caps,
         requested_caps,
+        current_information_access,
+        requested_information_access,
     )) = locked
     else {
         return Err(Error::NotFound);
@@ -518,6 +571,35 @@ pub async fn decide(
                     &format!("case:{case_id}"),
                     &capability_text(current_caps.as_deref()),
                     &capability_text(requested_caps.as_deref()),
+                )
+                .await?;
+            }
+            "information_access" => {
+                let requested_access = requested_information_access.ok_or_else(|| {
+                    Error::InvalidData("Information-access request has no requested value.".into())
+                })?;
+                let actual: Option<(String, bool)> = sqlx::query_as(
+                    "SELECT role, information_management_access FROM users WHERE id = $1 FOR UPDATE",
+                )
+                .bind(&target_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                let Some((role, actual_access)) = actual else {
+                    return Err(Error::NotFound);
+                };
+                let role = AccountRole::from_slug(&role)
+                    .ok_or_else(|| Error::InvalidData(format!("unknown account role {role:?}")))?;
+                if !role.has_volunteer_privileges()
+                    || Some(actual_access) != current_information_access
+                {
+                    return Err(Error::Stale);
+                }
+                users::set_information_management_access_in(
+                    &mut tx,
+                    &target_id,
+                    requested_access,
+                    actor_id,
+                    actor_name,
                 )
                 .await?;
             }

@@ -23,6 +23,7 @@ pub struct AppBadges {
     pub unread: Vec<ChannelUnread>,
     pub admin_case_requests_pending: i64,
     pub admin_role_requests_pending: i64,
+    pub admin_information_requests_pending: i64,
     pub cases_pending_review: i64,
     pub volunteer_requests_pending: i64,
 }
@@ -61,6 +62,17 @@ pub async fn load_app_badges() -> Result<AppBadges, ServerFnError> {
     } else {
         0
     };
+    let admin_information_requests_pending = if user.role.has_operations_admin_permissions() {
+        admin_requests::active_count_by_kind(
+            &user.id,
+            user.role.is_site_admin(),
+            crate::server_fns::admin_requests::AdminRequestKind::InformationAccess,
+        )
+        .await
+        .map_err(ServerFnError::new)?
+    } else {
+        0
+    };
     // Any admin may review a case, unlike approval requests.
     let cases_pending_review = if user.role.has_operations_admin_permissions() {
         cases::pending_review_count()
@@ -83,6 +95,7 @@ pub async fn load_app_badges() -> Result<AppBadges, ServerFnError> {
         unread,
         admin_case_requests_pending,
         admin_role_requests_pending,
+        admin_information_requests_pending,
         cases_pending_review,
         volunteer_requests_pending,
     })
@@ -124,6 +137,7 @@ pub struct AppState {
     pub unread: RwSignal<Vec<ChannelUnread>>,
     pub admin_case_request_pending: RwSignal<i64>,
     pub admin_role_request_pending: RwSignal<i64>,
+    pub admin_information_request_pending: RwSignal<i64>,
     /// Cases waiting for an admin accept/decline; drives the count badges.
     pub cases_pending_review: RwSignal<i64>,
     /// Volunteer applications waiting on a decision.
@@ -144,6 +158,7 @@ impl AppState {
             unread: RwSignal::new(Vec::new()),
             admin_case_request_pending: RwSignal::new(0),
             admin_role_request_pending: RwSignal::new(0),
+            admin_information_request_pending: RwSignal::new(0),
             cases_pending_review: RwSignal::new(0),
             volunteer_requests_pending: RwSignal::new(0),
         }
@@ -203,6 +218,8 @@ impl AppState {
                     .set(badges.admin_case_requests_pending);
                 self.admin_role_request_pending
                     .set(badges.admin_role_requests_pending);
+                self.admin_information_request_pending
+                    .set(badges.admin_information_requests_pending);
                 self.cases_pending_review.set(badges.cases_pending_review);
                 self.volunteer_requests_pending
                     .set(badges.volunteer_requests_pending);
@@ -315,6 +332,7 @@ impl AppState {
         self.unread.set(Vec::new());
         self.admin_case_request_pending.set(0);
         self.admin_role_request_pending.set(0);
+        self.admin_information_request_pending.set(0);
         self.cases_pending_review.set(0);
         self.volunteer_requests_pending.set(0);
         spawn_local(async move {

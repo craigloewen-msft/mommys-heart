@@ -17,15 +17,17 @@ const MAX_HISTORY_PAGE: i64 = 1_000;
 pub enum AdminRequestKind {
     Role,
     CaseCapabilities,
+    InformationAccess,
 }
 
 impl AdminRequestKind {
-    pub const ALL: [Self; 2] = [Self::Role, Self::CaseCapabilities];
+    pub const ALL: [Self; 3] = [Self::Role, Self::CaseCapabilities, Self::InformationAccess];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Role => "Role change",
             Self::CaseCapabilities => "Case permissions",
+            Self::InformationAccess => "Information access",
         }
     }
 
@@ -33,6 +35,7 @@ impl AdminRequestKind {
         match self {
             Self::Role => "role",
             Self::CaseCapabilities => "case_capabilities",
+            Self::InformationAccess => "information_access",
         }
     }
 
@@ -76,6 +79,8 @@ pub struct AdminRequest {
     pub current_capabilities: Option<Vec<CaseCapability>>,
     /// `None` means the request asks to remove the assignment.
     pub requested_capabilities: Option<Vec<CaseCapability>>,
+    pub current_information_access: Option<bool>,
+    pub requested_information_access: Option<bool>,
     pub request_note: String,
     pub created_at: String,
     pub decided_by_name: Option<String>,
@@ -100,6 +105,11 @@ impl AdminRequest {
                 capability_summary(self.current_capabilities.as_deref()),
                 capability_summary(self.requested_capabilities.as_deref()),
             ),
+            AdminRequestKind::InformationAccess => format!(
+                "{} to {}",
+                information_access_summary(self.current_information_access),
+                information_access_summary(self.requested_information_access),
+            ),
         }
     }
 }
@@ -112,6 +122,14 @@ fn capability_summary(capabilities: Option<&[CaseCapability]>) -> String {
             .map(|capability| capability.label())
             .collect::<Vec<_>>()
             .join(", "),
+    }
+}
+
+fn information_access_summary(access: Option<bool>) -> &'static str {
+    match access {
+        Some(true) => "Granted",
+        Some(false) => "Denied",
+        None => "Unknown",
     }
 }
 
@@ -302,6 +320,31 @@ pub async fn request_user_case_capabilities(
         crate::server::notifications::notify_admin_request_filed(request.clone());
     }
     Ok(requests)
+}
+
+/// Request the existing information-area grant for an eligible user.
+#[server(prefix = "/api")]
+pub async fn request_user_information_access(
+    target_user_id: String,
+    note: String,
+) -> Result<AdminRequest, ServerFnError> {
+    use crate::server::db::admin_requests;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let actor = require_user().await?;
+    require_operations_admin(&actor)?;
+    let target_user_id = target_user_id.trim();
+    if target_user_id.is_empty() {
+        return Err(ServerFnError::new(
+            "Choose a user for this information-access request.",
+        ));
+    }
+    let note = validate_note(note)?;
+    let request = admin_requests::create_information_access(&actor.id, target_user_id, &note)
+        .await
+        .map_err(|error| ServerFnError::new(error.to_string()))?;
+    crate::server::notifications::notify_admin_request_filed(request.clone());
+    Ok(request)
 }
 
 /// Approve or deny one pending request. Site-admin only.
