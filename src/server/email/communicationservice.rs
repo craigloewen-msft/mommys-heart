@@ -135,24 +135,16 @@ async fn reserve_email_send() {
     // later emails cannot jump ahead, but release it before the ACS request.
     let mut sends = sends.lock().await;
 
-    loop {
-        let now = Instant::now();
-        while sends
-            .front()
-            .is_some_and(|sent_at| now.duration_since(*sent_at) >= EMAIL_LIMIT_WINDOW)
-        {
-            sends.pop_front();
-        }
+    let now = Instant::now();
+    sends.retain(|sent_at| now.duration_since(*sent_at) < EMAIL_LIMIT_WINDOW);
 
-        if sends.len() < MAX_EMAILS_PER_HOUR {
-            break;
-        }
-
-        let wait = EMAIL_LIMIT_WINDOW.saturating_sub(now.duration_since(sends[0]));
+    if sends.len() == MAX_EMAILS_PER_HOUR {
+        let wait = EMAIL_LIMIT_WINDOW - now.duration_since(sends[0]);
         tracing::warn!(
             "email hourly limit reached ({MAX_EMAILS_PER_HOUR} sends); waiting {wait:?} for the next slot"
         );
         tokio::time::sleep(wait).await;
+        sends.pop_front();
     }
 
     sends.push_back(Instant::now());
