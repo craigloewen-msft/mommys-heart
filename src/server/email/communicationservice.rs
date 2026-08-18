@@ -6,13 +6,14 @@
 //! resource's `emails:send` endpoint.
 
 use std::collections::VecDeque;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 
 use crate::server::config::EmailConfig;
 
@@ -98,7 +99,7 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
     let serialized =
         serde_json::to_string(&body).map_err(|e| format!("email encode failed: {e}"))?;
 
-    reserve_email_send()?;
+    reserve_email_send().await;
 
     // Retry transient failures a few times. Each attempt is freshly signed
     // because the `x-ms-date` header (and thus the signature) must be current.
@@ -127,29 +128,36 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
     ))
 }
 
-/// Reserve one slot in the process-local rolling hourly send limit.
-fn reserve_email_send() -> Result<(), String> {
-    let now = Instant::now();
+/// Wait for and reserve one slot in the process-local hourly send limit.
+async fn reserve_email_send() {
     let sends = EMAIL_SENDS.get_or_init(|| Mutex::new(VecDeque::new()));
-    let mut sends = sends
-        .lock()
-        .map_err(|_| "email hourly limit guard unavailable".to_string())?;
+    // Tokio's mutex admits queued callers in FIFO order. Keep it while waiting so
+    // later emails cannot jump ahead, but release it before the ACS request.
+    let mut sends = sends.lock().await;
 
-    while sends
-        .front()
-        .is_some_and(|sent_at| now.duration_since(*sent_at) >= EMAIL_LIMIT_WINDOW)
-    {
-        sends.pop_front();
+    loop {
+        let now = Instant::now();
+        while sends
+            .front()
+            .is_some_and(|sent_at| now.duration_since(*sent_at) >= EMAIL_LIMIT_WINDOW)
+        {
+            sends.pop_front();
+        }
+
+        if sends.len() < MAX_EMAILS_PER_HOUR {
+            sends.push_back(now);
+            return;
+        }
+
+        let Some(oldest) = sends.front() else {
+            continue;
+        };
+        let wait = EMAIL_LIMIT_WINDOW.saturating_sub(now.duration_since(*oldest));
+        tracing::warn!(
+            "email hourly limit reached ({MAX_EMAILS_PER_HOUR} sends); waiting {wait:?} for the next slot"
+        );
+        tokio::time::sleep(wait).await;
     }
-
-    if sends.len() >= MAX_EMAILS_PER_HOUR {
-        return Err(format!(
-            "email hourly limit reached ({MAX_EMAILS_PER_HOUR} sends in the last hour)"
-        ));
-    }
-
-    sends.push_back(now);
-    Ok(())
 }
 
 fn recipients_json(recipients: &EmailRecipients) -> Result<(serde_json::Value, String), String> {
