@@ -56,7 +56,7 @@ fn theme(kind: NotificationKind) -> Theme {
             accent: palette::color("rose-400"),
             emoji: "\u{1F4CE}",
         }, // 📎
-        NotificationKind::Assigned => Theme {
+        NotificationKind::AccountPermissionsChanged => Theme {
             accent: palette::color("primary-500"),
             emoji: "\u{1F511}",
         }, // 🔑
@@ -230,7 +230,7 @@ pub fn case_decision(
 /// Build the "you've been given access to a case" email, whose single recipient
 /// is the newly assigned user (a warmer, welcome-style message).
 pub fn assignment(brand: &Brand, case_name: &str, actor_name: &str) -> RenderedEmail {
-    let theme = theme(NotificationKind::Assigned);
+    let theme = theme(NotificationKind::AccountPermissionsChanged);
     let actor = actor_or_default(actor_name);
     let subject = format!("[{}] You've been given access to {}", brand.name, case_name);
 
@@ -265,6 +265,40 @@ pub fn assignment(brand: &Brand, case_name: &str, actor_name: &str) -> RenderedE
         subject,
         html,
         plain_text: plain,
+    }
+}
+
+/// Build a direct notice that an account-level role or information grant changed.
+pub fn account_permissions_changed(brand: &Brand, actor_name: &str, change: &str) -> RenderedEmail {
+    let theme = theme(NotificationKind::AccountPermissionsChanged);
+    let actor = actor_or_default(actor_name);
+    let subject = format!("[{}] Account permissions changed", brand.name);
+    let detail = format!("{actor} {change}.");
+    let callout = format!(
+        "<strong>{actor}</strong> {change}.",
+        actor = escape(actor),
+        change = escape(change),
+    );
+    let cta_href = cta_url(brand, "/profile");
+    let footer = notification_footer(brand);
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: &detail,
+            eyebrow: "Account permissions changed",
+            heading: "Your account permissions changed",
+            callout_html: &callout,
+            cta: cta_href.as_deref().map(|url| (url, "Open your profile")),
+            body_note: &format!("Sign in to {} to review your account.", brand.name),
+            footer_html: &footer,
+        },
+    );
+    let plain_text = plain(brand, &detail, "/profile");
+    RenderedEmail {
+        subject,
+        html,
+        plain_text,
     }
 }
 
@@ -929,7 +963,7 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
             !matches!(
                 **kind,
                 NotificationKind::NewMessage
-                    | NotificationKind::Assigned
+                    | NotificationKind::AccountPermissionsChanged
                     | NotificationKind::AdminRequests
             )
         })
@@ -949,9 +983,22 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
         email: secure_message_notice(brand),
     });
     samples.push(Sample {
-        key: NotificationKind::Assigned.slug().to_string(),
-        label: NotificationKind::Assigned.label().to_string(),
+        key: NotificationKind::AccountPermissionsChanged
+            .slug()
+            .to_string(),
+        label: NotificationKind::AccountPermissionsChanged
+            .label()
+            .to_string(),
         email: assignment(brand, case, actor),
+    });
+    samples.push(Sample {
+        key: "information_access_granted".to_string(),
+        label: "Account permissions changed — information access".to_string(),
+        email: account_permissions_changed(
+            brand,
+            actor,
+            "granted you access to Contacts, Organizations, and Funding",
+        ),
     });
     samples.push(Sample {
         key: "case_accepted".to_string(),
@@ -1010,7 +1057,7 @@ fn sample_detail(kind: NotificationKind) -> &'static str {
         NotificationKind::CaseData => "changed the status to \u{201C}In review\u{201D}",
         NotificationKind::NoteAdded => "added a note",
         NotificationKind::EvidenceChanged => "added evidence \u{201C}hearing-notes.pdf\u{201D}",
-        NotificationKind::Assigned => "gave you access to the case",
+        NotificationKind::AccountPermissionsChanged => "changed your account permissions",
         NotificationKind::AdminRequests => "filed an administrative request",
     }
 }

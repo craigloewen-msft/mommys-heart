@@ -386,6 +386,31 @@ pub async fn decide_admin_request(
             );
         }
     }
+    if approve {
+        let permission_change = match outcome.request.kind {
+            AdminRequestKind::Role => outcome
+                .request
+                .requested_role
+                .map(|role| format!("changed your account role to {}", role.label())),
+            AdminRequestKind::InformationAccess => {
+                outcome.request.requested_information_access.map(|enabled| {
+                    if enabled {
+                        "granted you access to Contacts, Organizations, and Funding".to_string()
+                    } else {
+                        "revoked your access to Contacts, Organizations, and Funding".to_string()
+                    }
+                })
+            }
+            AdminRequestKind::CaseCapabilities => None,
+        };
+        if let Some(change) = permission_change {
+            crate::server::notifications::notify_account_permissions_changed(
+                outcome.request.target_user_id.clone(),
+                actor.full_name(),
+                change,
+            );
+        }
+    }
     crate::server::notifications::notify_admin_request_decided(outcome.request.clone());
     Ok(outcome.request)
 }

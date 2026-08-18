@@ -87,6 +87,13 @@ This task does not alter route guards or information-domain server permissions. 
 9. Contacts, Organizations, and Funding remain inaccessible until approval and become available through the existing permission gates after approval/session refresh.
 10. Site admins retain direct grant and revoke controls.
 
+## Follow-up: account permission emails
+
+- Generalize the existing **Assigned to a case** email preference to **Account permissions changed**, preserving each user's stored choice.
+- Use that preference for case-assignment, account-role, volunteer-approval, and information-access change emails.
+- Send the affected user an **Account permissions changed** email when information access is granted or revoked, including changes approved through an administrative request.
+- Do not add another notification category.
+
 ## Verification
 
 - Run formatting checks and `etc/dev.sh -- cargo check --no-default-features --features ssr`.

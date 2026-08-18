@@ -155,12 +155,47 @@ pub fn notify_assignment(user_id: String, actor_name: String, case_id: String) {
                 return;
             }
         };
-        if !recipient.settings.wants(NotificationKind::Assigned) {
+        if !recipient
+            .settings
+            .wants(NotificationKind::AccountPermissionsChanged)
+        {
             return;
         }
         let case = case_name(&case_id).await;
         let email = templates::assignment(&Brand::from_env(), &case, &actor_name);
         dispatch(&cfg, vec![recipient], &email, "Case notification").await;
+    });
+}
+
+/// Notify a user that their account-level role or information permission changed.
+pub fn notify_account_permissions_changed(user_id: String, actor_name: String, change: String) {
+    let Some(cfg) = configured_email() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let recipient = match settings::recipient_for_user(&user_id).await {
+            Ok(Some(recipient)) => recipient,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!("account-permission recipient lookup failed for {user_id}: {error}");
+                return;
+            }
+        };
+        if !recipient
+            .settings
+            .wants(NotificationKind::AccountPermissionsChanged)
+        {
+            return;
+        }
+        let email =
+            templates::account_permissions_changed(&Brand::from_env(), &actor_name, &change);
+        dispatch(
+            &cfg,
+            vec![recipient],
+            &email,
+            "Account permission notification",
+        )
+        .await;
     });
 }
 
@@ -189,7 +224,7 @@ pub fn notify_admin_request_filed(request: AdminRequest) {
 
 /// Notify the requester when a site admin approves or denies an administrative
 /// request. Affected users receive the notification for the resulting domain
-/// event, such as [`notify_assignment`], instead.
+/// event, such as [`notify_assignment`] or [`notify_account_permissions_changed`], instead.
 pub fn notify_admin_request_decided(request: AdminRequest) {
     let Some(cfg) = configured_email() else {
         return;
@@ -242,10 +277,9 @@ pub fn notify_volunteer_application_filed(applicant_name: String, applicant_emai
     });
 }
 
-/// Notify an applicant that their volunteer application was approved or
-/// declined. For a decline this email is the only notice they get — nothing is
-/// shown on the page — so it is sent regardless of notification preferences,
-/// like the account emails in [`crate::server::email::auth_notifications`].
+/// Notify an applicant that their volunteer application was approved or declined.
+/// Approval follows the account-permission preference; decline remains required
+/// because it is the applicant's only notice.
 pub fn notify_volunteer_decision(user_id: String, approved: bool, decision_note: String) {
     let Some(cfg) = configured_email() else {
         return;
@@ -259,6 +293,13 @@ pub fn notify_volunteer_decision(user_id: String, approved: bool, decision_note:
                 return;
             }
         };
+        if approved
+            && !recipient
+                .settings
+                .wants(NotificationKind::AccountPermissionsChanged)
+        {
+            return;
+        }
         let email =
             templates::volunteer_application_decided(&Brand::from_env(), approved, &decision_note);
         dispatch(&cfg, vec![recipient], &email, "Volunteer application").await;
