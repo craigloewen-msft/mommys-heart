@@ -28,11 +28,12 @@ const MAX_ATTEMPTS: u32 = 3;
 /// How long to wait between attempts after a transient failure.
 const RETRY_DELAY: Duration = Duration::from_secs(25);
 
-/// Maximum non-OTP email sends allowed in a rolling hour.
-const MAX_EMAILS_PER_HOUR: usize = 90;
+/// Number of recent sends at which standard emails must wait.
+const STANDARD_EMAIL_LIMIT: usize = 90;
 const EMAIL_LIMIT_WINDOW: Duration = Duration::from_secs(60 * 60);
 
 static EMAIL_SENDS: OnceLock<Mutex<VecDeque<Instant>>> = OnceLock::new();
+static STANDARD_EMAIL_SEND_ORDER: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// ACS Email's maximum total recipients in one message.
 pub const MAX_RECIPIENTS_PER_MESSAGE: usize = 50;
@@ -62,17 +63,9 @@ pub enum EmailRecipients {
     Bcc(Vec<EmailRecipient>),
 }
 
-/// Whether an email uses the standard limit or the reserved OTP capacity.
-#[derive(Clone, Copy, Debug)]
-pub enum EmailKind {
-    Standard,
-    Otp,
-}
-
 /// A single outbound email.
 #[derive(Clone, Debug)]
 pub struct EmailMessage {
-    pub kind: EmailKind,
     pub recipients: EmailRecipients,
     pub subject: String,
     /// HTML body.
@@ -88,6 +81,15 @@ pub struct EmailMessage {
 /// The request is authenticated with the ACS shared-key HMAC-SHA256 scheme:
 /// see <https://learn.microsoft.com/azure/communication-services/tutorials/hmac-header-tutorial>.
 pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), String> {
+    send(cfg, msg, false).await
+}
+
+/// Send an OTP immediately while still recording it in the hourly history.
+pub async fn send_otp_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), String> {
+    send(cfg, msg, true).await
+}
+
+async fn send(cfg: &EmailConfig, msg: &EmailMessage, is_otp: bool) -> Result<(), String> {
     let base = cfg.endpoint.trim_end_matches('/');
     let host = host_of(base)?;
     let path_and_query = format!("/emails:send?api-version={API_VERSION}");
@@ -107,9 +109,7 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
     let serialized =
         serde_json::to_string(&body).map_err(|e| format!("email encode failed: {e}"))?;
 
-    if matches!(msg.kind, EmailKind::Standard) {
-        reserve_email_send().await;
-    }
+    record_email_send(is_otp).await;
 
     // Retry transient failures a few times. Each attempt is freshly signed
     // because the `x-ms-date` header (and thus the signature) must be current.
@@ -138,26 +138,51 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
     ))
 }
 
-/// Wait for and reserve one slot in the process-local hourly send limit.
-async fn reserve_email_send() {
-    let sends = EMAIL_SENDS.get_or_init(|| Mutex::new(VecDeque::new()));
-    // Tokio's mutex admits queued callers in FIFO order. Keep it while waiting so
-    // later emails cannot jump ahead, but release it before the ACS request.
-    let mut sends = sends.lock().await;
-
-    let now = Instant::now();
-    sends.retain(|sent_at| now.duration_since(*sent_at) < EMAIL_LIMIT_WINDOW);
-
-    if sends.len() == MAX_EMAILS_PER_HOUR {
-        let wait = EMAIL_LIMIT_WINDOW - now.duration_since(sends[0]);
-        tracing::warn!(
-            "email hourly limit reached ({MAX_EMAILS_PER_HOUR} sends); waiting {wait:?} for the next slot"
-        );
-        tokio::time::sleep(wait).await;
-        sends.pop_front();
+/// Record every send, waiting for standard email capacity when necessary.
+async fn record_email_send(is_otp: bool) {
+    if is_otp {
+        let mut sends = email_sends().lock().await;
+        let now = Instant::now();
+        prune_old_sends(&mut sends, now);
+        sends.push_back(now);
+        return;
     }
 
-    sends.push_back(Instant::now());
+    // Keep standard emails FIFO without making OTP emails wait behind them.
+    let order = STANDARD_EMAIL_SEND_ORDER.get_or_init(|| Mutex::new(()));
+    let _turn = order.lock().await;
+
+    // Recheck after sleeping because OTP sends can update the history meanwhile.
+    while let Some(wait) = try_record_standard_email().await {
+        tracing::warn!("email rate limited; waiting {wait:?} for standard email capacity");
+        tokio::time::sleep(wait).await;
+    }
+}
+
+/// Reserve a standard send or return how long it must wait.
+async fn try_record_standard_email() -> Option<Duration> {
+    let mut sends = email_sends().lock().await;
+    let now = Instant::now();
+    prune_old_sends(&mut sends, now);
+
+    if sends.len() < STANDARD_EMAIL_LIMIT {
+        sends.push_back(now);
+        return None;
+    }
+
+    // OTP sends can take the history above 90. Wait until enough of the oldest
+    // sends expire to bring it below 90 before recording this standard email.
+    let required_expirations = sends.len() - STANDARD_EMAIL_LIMIT + 1;
+    let last_to_expire = sends[required_expirations - 1];
+    Some(EMAIL_LIMIT_WINDOW.saturating_sub(now.duration_since(last_to_expire)))
+}
+
+fn email_sends() -> &'static Mutex<VecDeque<Instant>> {
+    EMAIL_SENDS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn prune_old_sends(sends: &mut VecDeque<Instant>, now: Instant) {
+    sends.retain(|sent_at| now.duration_since(*sent_at) < EMAIL_LIMIT_WINDOW);
 }
 
 fn recipients_json(recipients: &EmailRecipients) -> Result<(serde_json::Value, String), String> {

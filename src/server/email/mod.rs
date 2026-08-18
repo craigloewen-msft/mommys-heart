@@ -17,6 +17,6 @@ pub mod preview;
 pub mod templates;
 
 pub use communicationservice::{
-    send_email, EmailKind, EmailMessage, EmailRecipient, EmailRecipients,
+    send_email, send_otp_email, EmailMessage, EmailRecipient, EmailRecipients,
     MAX_RECIPIENTS_PER_MESSAGE,
 };

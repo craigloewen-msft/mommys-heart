@@ -10,7 +10,7 @@
 
 use crate::server::config::{Brand, EmailConfig};
 use crate::server::email::templates::{self, RenderedEmail};
-use crate::server::email::{send_email, EmailKind, EmailMessage};
+use crate::server::email::{send_email, send_otp_email, EmailMessage};
 
 /// Email a user their one-time MFA code. Returns `Err` only when ACS is
 /// configured and the send itself fails.
@@ -22,7 +22,7 @@ pub async fn send_mfa_code(to_email: &str, to_name: &str, code: &str) -> Result<
         to_name,
         &rendered,
         &format!("verification code {code}"),
-        EmailKind::Otp,
+        true,
     )
     .await
 }
@@ -40,7 +40,7 @@ pub async fn send_email_verification(
         to_name,
         &rendered,
         &format!("email verification code {code}"),
-        EmailKind::Otp,
+        true,
     )
     .await
 }
@@ -59,7 +59,7 @@ pub async fn send_password_reset(
         to_name,
         &rendered,
         &format!("password-reset link {reset_url}"),
-        EmailKind::Standard,
+        false,
     )
     .await
 }
@@ -70,7 +70,7 @@ async fn deliver(
     to_name: &str,
     email: &RenderedEmail,
     dev_detail: &str,
-    kind: EmailKind,
+    is_otp: bool,
 ) -> Result<(), String> {
     let cfg = EmailConfig::from_env();
 
@@ -89,7 +89,6 @@ async fn deliver(
     }
 
     let msg = EmailMessage {
-        kind,
         recipients: crate::server::email::EmailRecipients::To(
             crate::server::email::EmailRecipient {
                 address: to_email.to_string(),
@@ -100,7 +99,12 @@ async fn deliver(
         html: email.html.clone(),
         plain_text: email.plain_text.clone(),
     };
-    if let Err(e) = send_email(&cfg, &msg).await {
+    let result = if is_otp {
+        send_otp_email(&cfg, &msg).await
+    } else {
+        send_email(&cfg, &msg).await
+    };
+    if let Err(e) = result {
         crate::server::db::email_failures::record(
             to_email,
             &email.subject,

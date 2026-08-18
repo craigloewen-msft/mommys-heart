@@ -8,7 +8,7 @@
    - When 90 timestamps remain, warn and wait until the oldest ages out.
    - Append the current timestamp before releasing the lock and beginning network I/O, making concurrent checks atomic.
    - Keep waiting callers in FIFO order so later emails cannot jump ahead.
-   - Bypass the queue for MFA and email-verification OTP codes, reserving provider capacity for sign-in and verification.
+   - Let MFA and email-verification OTP codes bypass waiting, while still recording them in the same history.
 3. Count one logical email once, before its first ACS attempt; internal retries do not reserve additional slots. Keep a reservation when delivery fails because an ambiguous request may still have reached ACS, and failing closed protects the provider quota.
 4. Keep the guard in memory and intentionally simple: it resets when the process restarts and applies per running application instance, with no database changes or new dependencies.
 5. Run formatting checks and the repository's isolated SSR compile check.
@@ -16,7 +16,8 @@
 ## Acceptance criteria
 
 - No running application instance begins more than 90 standard ACS email sends in any rolling one-hour window.
-- MFA and email-verification OTP emails bypass the queue and are attempted immediately.
+- MFA and email-verification OTP emails bypass waiting and are attempted immediately.
+- OTP attempts are recorded in the same history used to limit standard emails.
 - Password-reset and regular notification emails remain subject to the standard limit.
 - The oldest reservation automatically ages out after one hour, allowing another send.
 - Concurrent callers cannot both claim the same remaining slot.
@@ -31,9 +32,9 @@
 
 - Added a process-local, Tokio mutex-protected rolling queue at the shared ACS transport boundary.
 - The guard prunes reservations at least one hour old, then warns and waits when 90 standard sends remain.
-- MFA and email-verification OTP messages bypass the queue; password-reset and notification messages do not.
+- MFA and email-verification OTP messages bypass waiting but are recorded; password-reset and notification messages wait when the combined history reaches 90.
 - Tokio's FIFO mutex ordering and retaining the lock during limiter waits prevent later emails from jumping ahead.
 - Each logical email reserves one slot before its first ACS attempt; retries do not consume extra slots.
 - Kept dry-run and unconfigured behavior unchanged and added no new crates or database changes.
-- Kept the guard linear: prune expired timestamps, optionally wait for the oldest, then append the new reservation.
+- Standard sends recheck after waiting because OTP sends can update the shared history while they sleep.
 - Verified `cargo fmt --all -- --check` and `etc/dev.sh -- cargo check --no-default-features --features ssr` pass.
