@@ -45,7 +45,7 @@ fn recipient_from_row(row: RecipientRow) -> Recipient {
         case_data,
         note_added,
         evidence_changed,
-        assigned,
+        account_permissions_changed,
         admin_requests,
     ) = row;
     Recipient {
@@ -57,7 +57,7 @@ fn recipient_from_row(row: RecipientRow) -> Recipient {
             case_data,
             note_added,
             evidence_changed,
-            assigned,
+            account_permissions_changed,
             admin_requests,
         },
     }
@@ -67,8 +67,8 @@ fn recipient_from_row(row: RecipientRow) -> Recipient {
 pub async fn get_settings(user_id: &str) -> Result<UserSettings, sqlx::Error> {
     let row = sqlx::query_as::<_, (bool, bool, bool, bool, bool, bool, bool)>(
         "SELECT notification_emails_enabled, notification_new_message, notification_case_data,
-                notification_note_added, notification_evidence_changed, notification_assigned,
-                notification_admin_requests
+                notification_note_added, notification_evidence_changed,
+                notification_account_permissions_changed, notification_admin_requests
          FROM user_settings WHERE user_id = $1",
     )
     .bind(user_id)
@@ -83,7 +83,7 @@ pub async fn get_settings(user_id: &str) -> Result<UserSettings, sqlx::Error> {
                 case_data,
                 note_added,
                 evidence_changed,
-                assigned,
+                account_permissions_changed,
                 admin_requests,
             )| {
                 NotificationSettings {
@@ -92,7 +92,7 @@ pub async fn get_settings(user_id: &str) -> Result<UserSettings, sqlx::Error> {
                     case_data,
                     note_added,
                     evidence_changed,
-                    assigned,
+                    account_permissions_changed,
                     admin_requests,
                 }
             },
@@ -108,8 +108,8 @@ pub async fn upsert_settings(user_id: &str, settings: &UserSettings) -> Result<(
         "INSERT INTO user_settings
              (user_id, notification_emails_enabled, notification_new_message,
               notification_case_data, notification_note_added,
-                            notification_evidence_changed, notification_assigned,
-                            notification_admin_requests)
+              notification_evidence_changed, notification_account_permissions_changed,
+              notification_admin_requests)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (user_id) DO UPDATE SET
              notification_emails_enabled   = EXCLUDED.notification_emails_enabled,
@@ -117,7 +117,7 @@ pub async fn upsert_settings(user_id: &str, settings: &UserSettings) -> Result<(
              notification_case_data        = EXCLUDED.notification_case_data,
              notification_note_added       = EXCLUDED.notification_note_added,
              notification_evidence_changed = EXCLUDED.notification_evidence_changed,
-             notification_assigned         = EXCLUDED.notification_assigned,
+             notification_account_permissions_changed = EXCLUDED.notification_account_permissions_changed,
              notification_admin_requests   = EXCLUDED.notification_admin_requests",
     )
     .bind(user_id)
@@ -126,7 +126,7 @@ pub async fn upsert_settings(user_id: &str, settings: &UserSettings) -> Result<(
     .bind(n.case_data)
     .bind(n.note_added)
     .bind(n.evidence_changed)
-    .bind(n.assigned)
+    .bind(n.account_permissions_changed)
     .bind(n.admin_requests)
     .execute(pool())
     .await?;
@@ -150,7 +150,7 @@ pub async fn recipients_for_case(
                 COALESCE(s.notification_case_data,        true),
                 COALESCE(s.notification_note_added,       true),
                 COALESCE(s.notification_evidence_changed, true),
-                COALESCE(s.notification_assigned,         true),
+                COALESCE(s.notification_account_permissions_changed, true),
                 COALESCE(s.notification_admin_requests,   true)
          FROM case_assignments a
          JOIN users u ON u.id = a.user_id
@@ -181,7 +181,7 @@ pub async fn recipient_for_user(user_id: &str) -> Result<Option<Recipient>, sqlx
                 COALESCE(s.notification_case_data,        true),
                 COALESCE(s.notification_note_added,       true),
                 COALESCE(s.notification_evidence_changed, true),
-                COALESCE(s.notification_assigned,         true),
+                COALESCE(s.notification_account_permissions_changed, true),
                 COALESCE(s.notification_admin_requests,   true)
          FROM users u
          LEFT JOIN user_settings s ON s.user_id = u.id
@@ -203,7 +203,7 @@ pub async fn recipients_for_site_admins() -> Result<Vec<Recipient>, sqlx::Error>
                 COALESCE(s.notification_case_data,        true),
                 COALESCE(s.notification_note_added,       true),
                 COALESCE(s.notification_evidence_changed, true),
-                COALESCE(s.notification_assigned,         true),
+                COALESCE(s.notification_account_permissions_changed, true),
                 COALESCE(s.notification_admin_requests,   true)
          FROM users u
          LEFT JOIN user_settings s ON s.user_id = u.id
@@ -226,7 +226,7 @@ pub async fn recipients_for_admins() -> Result<Vec<Recipient>, sqlx::Error> {
                 COALESCE(s.notification_case_data,        true),
                 COALESCE(s.notification_note_added,       true),
                 COALESCE(s.notification_evidence_changed, true),
-                COALESCE(s.notification_assigned,         true),
+                COALESCE(s.notification_account_permissions_changed, true),
                 COALESCE(s.notification_admin_requests,   true)
          FROM users u
          LEFT JOIN user_settings s ON s.user_id = u.id

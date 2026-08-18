@@ -353,7 +353,7 @@ pub async fn set_role_in(
     user_id: &str,
     role: AccountRole,
     actor: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     // Two concurrent demotions must not both observe a second site admin.
     lock_role_changes_in(tx).await?;
 
@@ -363,10 +363,10 @@ pub async fn set_role_in(
             .fetch_optional(&mut **tx)
             .await?;
     let Some(current) = current else {
-        return Ok(());
+        return Ok(false);
     };
     if current == role.slug() {
-        return Ok(());
+        return Ok(false);
     }
 
     let current_role = AccountRole::from_slug(&current).ok_or_else(|| {
@@ -437,45 +437,46 @@ pub async fn set_role_in(
         &current,
         role.slug(),
     )
-    .await
+    .await?;
+    Ok(true)
 }
 
 /// Change a user's role in its own transaction, for callers not already in one.
-pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<(), sqlx::Error> {
+pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<bool, sqlx::Error> {
     let mut tx = pool().begin().await?;
-    set_role_in(&mut tx, user_id, role, actor).await?;
-    tx.commit().await
+    let changed = set_role_in(&mut tx, user_id, role, actor).await?;
+    tx.commit().await?;
+    Ok(changed)
 }
 
-/// Grant or revoke the shared information-area permission and audit the change.
-pub async fn set_information_management_access(
+/// Change the shared information-area permission inside an existing transaction.
+pub async fn set_information_management_access_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: &str,
     enabled: bool,
     actor_user_id: &str,
     actor: &str,
-) -> Result<(), sqlx::Error> {
-    let mut tx = pool().begin().await?;
+) -> Result<bool, sqlx::Error> {
     let current: Option<bool> = sqlx::query_scalar(
         "SELECT information_management_access FROM users WHERE id = $1 FOR UPDATE",
     )
     .bind(user_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
     let Some(current) = current else {
         return Err(sqlx::Error::RowNotFound);
     };
     if current == enabled {
-        tx.commit().await?;
-        return Ok(());
+        return Ok(false);
     }
 
     sqlx::query("UPDATE users SET information_management_access = $2 WHERE id = $1")
         .bind(user_id)
         .bind(enabled)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     audit::record_in_transaction_by(
-        &mut tx,
+        tx,
         audit::Entity::User,
         user_id,
         actor_user_id,
@@ -485,7 +486,22 @@ pub async fn set_information_management_access(
         if enabled { "granted" } else { "denied" },
     )
     .await?;
-    tx.commit().await
+    Ok(true)
+}
+
+/// Grant or revoke the shared information-area permission and audit the change.
+pub async fn set_information_management_access(
+    user_id: &str,
+    enabled: bool,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<bool, sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    let changed =
+        set_information_management_access_in(&mut tx, user_id, enabled, actor_user_id, actor)
+            .await?;
+    tx.commit().await?;
+    Ok(changed)
 }
 
 /// Remove a user's assignment to a case entirely.

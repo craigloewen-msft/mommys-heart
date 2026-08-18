@@ -369,7 +369,8 @@ pub async fn set_user_role(user_id: String, role: AccountRole) -> Result<(), Ser
 
     let actor = require_user().await?;
     require_site_admin(&actor)?;
-    users::set_role(&user_id, role, &actor.full_name())
+    let user_id = user_id.trim().to_string();
+    let changed = users::set_role(&user_id, role, &actor.full_name())
         .await
         .map_err(|error| {
             let message = error.to_string();
@@ -378,7 +379,15 @@ pub async fn set_user_role(user_id: String, role: AccountRole) -> Result<(), Ser
             } else {
                 ServerFnError::new(error)
             }
-        })
+        })?;
+    if changed {
+        crate::server::notifications::notify_account_permissions_changed(
+            user_id,
+            actor.full_name(),
+            format!("changed your account role to {}", role.label()),
+        );
+    }
+    Ok(())
 }
 
 /// Grant or revoke access to Contacts, Organizations, and Funding information.
@@ -392,9 +401,24 @@ pub async fn set_information_management_access(
 
     let actor = require_user().await?;
     require_site_admin(&actor)?;
-    users::set_information_management_access(user_id.trim(), enabled, &actor.id, &actor.full_name())
-        .await
-        .map_err(ServerFnError::new)
+    let user_id = user_id.trim().to_string();
+    let changed =
+        users::set_information_management_access(&user_id, enabled, &actor.id, &actor.full_name())
+            .await
+            .map_err(ServerFnError::new)?;
+    if changed {
+        let change = if enabled {
+            "granted you access to Contacts, Organizations, and Funding"
+        } else {
+            "revoked your access to Contacts, Organizations, and Funding"
+        };
+        crate::server::notifications::notify_account_permissions_changed(
+            user_id,
+            actor.full_name(),
+            change.to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Assign a user to a case with an explicit set of capabilities.

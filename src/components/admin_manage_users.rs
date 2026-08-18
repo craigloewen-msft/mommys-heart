@@ -301,6 +301,12 @@ pub fn ManageUsers(
     view! {
         <div class="space-y-10">
             <AdminRequestCenter
+                kind=AdminRequestKind::InformationAccess
+                is_site_admin=is_site_admin
+                reload=reload
+            />
+
+            <AdminRequestCenter
                 kind=AdminRequestKind::Role
                 is_site_admin=is_site_admin
                 reload=reload

@@ -121,7 +121,9 @@ pub fn AdminWorkspaceNav(#[prop(into)] selected: String) -> impl IntoView {
         state.cases_pending_review.get() + state.admin_case_request_pending.get()
     });
     let user_attention = Signal::derive(move || {
-        state.volunteer_requests_pending.get() + state.admin_role_request_pending.get()
+        state.volunteer_requests_pending.get()
+            + state.admin_role_request_pending.get()
+            + state.admin_information_request_pending.get()
     });
     view! {
         <nav

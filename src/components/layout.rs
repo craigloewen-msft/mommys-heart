@@ -33,6 +33,7 @@ fn NavLink(
         Some(NavBadge::PendingAdminWork) => {
             state.admin_case_request_pending.get()
                 + state.admin_role_request_pending.get()
+                + state.admin_information_request_pending.get()
                 + state.cases_pending_review.get()
                 + state.volunteer_requests_pending.get()
         }
