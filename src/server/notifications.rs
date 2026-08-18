@@ -16,7 +16,8 @@ use crate::server::db::cases;
 use crate::server::db::settings::{self, Recipient};
 use crate::server::email::templates::{self, RenderedEmail};
 use crate::server::email::{
-    send_email, EmailMessage, EmailRecipient, EmailRecipients, MAX_RECIPIENTS_PER_MESSAGE,
+    send_email, EmailKind, EmailMessage, EmailRecipient, EmailRecipients,
+    MAX_RECIPIENTS_PER_MESSAGE,
 };
 use crate::server_fns::admin_requests::AdminRequest;
 use crate::server_fns::settings::NotificationKind;
@@ -360,6 +361,7 @@ async fn dispatch(
             EmailRecipients::Bcc(chunk.iter().map(email_recipient).collect())
         };
         let message = EmailMessage {
+            kind: EmailKind::Standard,
             recipients,
             subject: email.subject.clone(),
             html: email.html.clone(),

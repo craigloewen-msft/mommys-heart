@@ -28,8 +28,8 @@ const MAX_ATTEMPTS: u32 = 3;
 /// How long to wait between attempts after a transient failure.
 const RETRY_DELAY: Duration = Duration::from_secs(25);
 
-/// Maximum logical email sends allowed in a rolling hour.
-const MAX_EMAILS_PER_HOUR: usize = 100;
+/// Maximum non-OTP email sends allowed in a rolling hour.
+const MAX_EMAILS_PER_HOUR: usize = 90;
 const EMAIL_LIMIT_WINDOW: Duration = Duration::from_secs(60 * 60);
 
 static EMAIL_SENDS: OnceLock<Mutex<VecDeque<Instant>>> = OnceLock::new();
@@ -62,9 +62,17 @@ pub enum EmailRecipients {
     Bcc(Vec<EmailRecipient>),
 }
 
+/// Whether an email uses the standard limit or the reserved OTP capacity.
+#[derive(Clone, Copy, Debug)]
+pub enum EmailKind {
+    Standard,
+    Otp,
+}
+
 /// A single outbound email.
 #[derive(Clone, Debug)]
 pub struct EmailMessage {
+    pub kind: EmailKind,
     pub recipients: EmailRecipients,
     pub subject: String,
     /// HTML body.
@@ -99,7 +107,9 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
     let serialized =
         serde_json::to_string(&body).map_err(|e| format!("email encode failed: {e}"))?;
 
-    reserve_email_send().await;
+    if matches!(msg.kind, EmailKind::Standard) {
+        reserve_email_send().await;
+    }
 
     // Retry transient failures a few times. Each attempt is freshly signed
     // because the `x-ms-date` header (and thus the signature) must be current.
