@@ -18,8 +18,8 @@ async fn main() {
     // captured. Verbosity is controlled by `RUST_LOG`.
     telemetry::init();
 
-    // REQ-SEC-001/004/005: production never starts with MFA, secure cookies,
-    // origin validation, or malware quarantine accidentally disabled.
+    // Production never starts with MFA or origin validation disabled. Secure
+    // cookies and transport headers follow the same production-mode decision.
     if let Err(error) = mommys_heart_app::server::config::validate_production() {
         panic!("unsafe production configuration: {error}");
     }

@@ -5,17 +5,15 @@ production-approved until every required row has named evidence and an owner.
 
 ## Configuration gate
 
-`APP_ENV=production` makes startup fail unless:
+`APP_ENV=production` makes startup fail unless both conditions are met:
 
-- ACS email is fully configured, so MFA cannot fall back to password-only login;
-- `COOKIE_SECURE=true`;
-- `APP_URL` names the one accepted browser origin; and
-- `MALWARE_SCAN_ADDR` points to a ClamAV-compatible INSTREAM scanner.
+- ACS email is fully configured, so MFA cannot fall back to password-only login.
+- `APP_URL` names the one accepted browser origin.
 
-The server applies Content Security Policy, frame denial, no-sniff, no-referrer,
-permissions policy, HSTS in production, and Origin validation for
-cookie-authenticated mutations. Deployment review must confirm proxy headers and
-the public URL match this policy.
+The server automatically marks authentication cookies `Secure` and applies
+Content Security Policy, frame denial, no-sniff, no-referrer, permissions policy,
+HSTS, and Origin validation for cookie-authenticated mutations. Deployment review
+must confirm proxy headers and the public URL match this policy.
 
 ## Required release evidence
 
@@ -62,8 +60,13 @@ approval, recovery validation, and post-incident review.
 
 ## Evidence upload quarantine
 
-New bytes are content-sniffed and scanned before they are written to blob storage
-or become downloadable. Clean, rejected, and scanner-error outcomes are recorded
-in `evidence_scan_log`; rejected/error bytes are not stored. Existing files are
-marked as legacy-clean by migration and should be batch rescanned before
-production approval if policy requires it.
+Evidence is currently unavailable in the UI and rejected at every server upload,
+download, mutation, and folder boundary. A scanner is therefore not required to
+start the application. Before evidence is re-enabled in production,
+`MALWARE_SCAN_ADDR` must point to a ClamAV-compatible INSTREAM scanner.
+
+The preserved upload path fails closed when a production scanner is absent. New
+bytes are content-sniffed and scanned before storage; clean, rejected, and scanner
+error outcomes are recorded in `evidence_scan_log`, and rejected/error bytes are
+not stored. Existing files are marked as legacy-clean by migration and should be
+batch rescanned before production approval if policy requires it.

@@ -257,11 +257,13 @@ migrated into contact records.
 - Registration and password reset share one password policy. Password reset
   consumes the token, changes the hash, and revokes sessions and trusted devices
   in one transaction.
-- Production startup fails closed when MFA email, secure cookies, public origin,
-  or malware scanning is unconfigured. Browser security headers and same-origin
-  mutation checks apply to all app surfaces.
-- New evidence bytes pass content validation and malware scanning before storage
-  or download; rejected/error outcomes are audited without storing those bytes.
+- Production startup fails closed when MFA email or the public origin is
+  unconfigured. Secure cookies, browser security headers, and same-origin
+  mutation checks follow the same production-mode decision.
+- Evidence is temporarily unavailable at every UI and server boundary. Its
+  preserved upload path requires content validation and fail-closed malware
+  scanning before storage; rejected/error outcomes are audited without storing
+  those bytes.
 
 **Operational limit:** these engineering safeguards do not approve retention,
 legal-hold, backup ownership, incident policy, accessibility targets, or an

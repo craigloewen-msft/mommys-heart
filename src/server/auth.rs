@@ -50,11 +50,9 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     }
 }
 
-/// Whether session cookies should carry the `Secure` flag (production/HTTPS).
+/// Whether authentication cookies should carry the `Secure` flag.
 fn cookie_secure() -> bool {
-    std::env::var("COOKIE_SECURE")
-        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-        .unwrap_or(false)
+    crate::server::config::is_production()
 }
 
 /// Build the `Set-Cookie` for a freshly minted session token.

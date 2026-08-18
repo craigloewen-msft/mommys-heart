@@ -33,3 +33,12 @@ The production deployment currently fails during `validate_production()` when ei
 - ACS email and `APP_URL` production safety checks remain intact.
 - Environment and operations documentation accurately describe the resulting requirements.
 - The SSR compile check passes.
+
+## Completion
+
+- Removed `COOKIE_SECURE`; authentication cookies now derive `Secure` from the shared production-mode decision.
+- Removed the unconditional production startup requirement for `MALWARE_SCAN_ADDR` while retaining the dormant scanner's fail-closed production behavior.
+- Kept the active ACS email and `APP_URL` production gates unchanged and updated deployment documentation.
+- Verified `cargo fmt --check` and the isolated SSR compile check pass.
+- Verified production validation succeeds with both removed variables unset, production cookies include `Secure`, local development cookies omit it, the unconfigured production scanner returns an error, and the retained production gates still reject incomplete configuration.
+- `etc/dev.sh build` was also attempted, but this environment does not have the `cargo-leptos` subcommand installed; it exited before compiling project code.

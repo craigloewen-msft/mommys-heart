@@ -140,22 +140,12 @@ pub fn validate_production() -> Result<(), String> {
     if !EmailConfig::from_env().is_configured() {
         return Err("production requires configured ACS email so MFA cannot fail open".into());
     }
-    if !env_bool("COOKIE_SECURE", false) {
-        return Err("production requires COOKIE_SECURE=true".into());
-    }
     if std::env::var("APP_URL")
         .unwrap_or_default()
         .trim()
         .is_empty()
     {
         return Err("production requires APP_URL for same-origin request validation".into());
-    }
-    if std::env::var("MALWARE_SCAN_ADDR")
-        .unwrap_or_default()
-        .trim()
-        .is_empty()
-    {
-        return Err("production requires MALWARE_SCAN_ADDR for evidence quarantine".into());
     }
     Ok(())
 }
