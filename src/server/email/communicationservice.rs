@@ -5,7 +5,9 @@
 //! signed with the ACS HMAC-SHA256 shared-key scheme and POSTed to the
 //! resource's `emails:send` endpoint.
 
-use std::time::Duration;
+use std::collections::VecDeque;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use hmac::{Hmac, Mac};
@@ -24,6 +26,12 @@ const MAX_ATTEMPTS: u32 = 3;
 
 /// How long to wait between attempts after a transient failure.
 const RETRY_DELAY: Duration = Duration::from_secs(25);
+
+/// Maximum logical email sends allowed in a rolling hour.
+const MAX_EMAILS_PER_HOUR: usize = 100;
+const EMAIL_LIMIT_WINDOW: Duration = Duration::from_secs(60 * 60);
+
+static EMAIL_SENDS: OnceLock<Mutex<VecDeque<Instant>>> = OnceLock::new();
 
 /// ACS Email's maximum total recipients in one message.
 pub const MAX_RECIPIENTS_PER_MESSAGE: usize = 50;
@@ -90,6 +98,8 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
     let serialized =
         serde_json::to_string(&body).map_err(|e| format!("email encode failed: {e}"))?;
 
+    reserve_email_send()?;
+
     // Retry transient failures a few times. Each attempt is freshly signed
     // because the `x-ms-date` header (and thus the signature) must be current.
     let mut last_err = String::new();
@@ -115,6 +125,31 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
     Err(format!(
         "email failed after {MAX_ATTEMPTS} attempts: {last_err}"
     ))
+}
+
+/// Reserve one slot in the process-local rolling hourly send limit.
+fn reserve_email_send() -> Result<(), String> {
+    let now = Instant::now();
+    let sends = EMAIL_SENDS.get_or_init(|| Mutex::new(VecDeque::new()));
+    let mut sends = sends
+        .lock()
+        .map_err(|_| "email hourly limit guard unavailable".to_string())?;
+
+    while sends
+        .front()
+        .is_some_and(|sent_at| now.duration_since(*sent_at) >= EMAIL_LIMIT_WINDOW)
+    {
+        sends.pop_front();
+    }
+
+    if sends.len() >= MAX_EMAILS_PER_HOUR {
+        return Err(format!(
+            "email hourly limit reached ({MAX_EMAILS_PER_HOUR} sends in the last hour)"
+        ));
+    }
+
+    sends.push_back(now);
+    Ok(())
 }
 
 fn recipients_json(recipients: &EmailRecipients) -> Result<(serde_json::Value, String), String> {

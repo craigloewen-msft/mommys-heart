@@ -21,3 +21,11 @@
 - Existing ACS retries count as part of their original logical email rather than as new emails.
 - No database migration or new crate is introduced.
 - The SSR compile check passes.
+
+## Completion
+
+- Added a process-local, mutex-protected rolling queue at the shared ACS transport boundary.
+- The guard prunes reservations at least one hour old and rejects sends once 100 remain.
+- Each logical email reserves one slot before its first ACS attempt; retries do not consume extra slots.
+- Kept dry-run and unconfigured behavior unchanged and added no dependencies or database changes.
+- Verified `cargo fmt --all -- --check` and `etc/dev.sh -- cargo check --no-default-features --features ssr` pass.
