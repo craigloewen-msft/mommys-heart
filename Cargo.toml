@@ -41,6 +41,7 @@ time = { version = "0.3", optional = true }
 # subscriber prints them with timestamps and is filtered via `RUST_LOG`.
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+is-terminal = { version = "0.4", optional = true }
 
 gloo-net = { version = "0.6", optional = true }
 send_wrapper = { version = "0.6", optional = true }
@@ -99,6 +100,7 @@ ssr = [
     "dep:time",
     "dep:tracing",
     "dep:tracing-subscriber",
+    "dep:is-terminal",
     "dep:azure_storage_blob",
     "dep:azure_identity",
     "dep:azure_core",
@@ -115,7 +117,7 @@ ssr = [
 
 # Silence a false-positive cfg check emitted by the wasm build tooling.
 [package.metadata.cargo-all-features]
-denylist = ["axum", "tokio", "tower", "tower-http", "leptos_axum", "reqwest", "dotenvy", "zip", "quick-xml", "sqlx", "argon2", "rand", "sha2", "hex", "chrono", "axum-extra", "time", "tracing", "tracing-subscriber", "azure_storage_blob", "azure_identity", "azure_core", "infer", "futures", "base64", "hmac"]
+denylist = ["axum", "tokio", "tower", "tower-http", "leptos_axum", "reqwest", "dotenvy", "zip", "quick-xml", "sqlx", "argon2", "rand", "sha2", "hex", "chrono", "axum-extra", "time", "tracing", "tracing-subscriber", "is-terminal", "azure_storage_blob", "azure_identity", "azure_core", "infer", "futures", "base64", "hmac"]
 
 [package.metadata.leptos]
 output-name = "mommys-heart-app"

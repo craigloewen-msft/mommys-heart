@@ -17,6 +17,7 @@
 //! When `RUST_LOG` is unset we default to a developer-friendly level that shows
 //! API requests and database operations.
 
+use is_terminal::IsTerminal;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// The filter applied when `RUST_LOG` is not set: informative app + request
@@ -32,6 +33,12 @@ pub fn init() {
     let _ = tracing_subscriber::registry()
         .with(filter)
         // Timestamps are included by default; target shows the emitting module.
-        .with(fmt::layer().with_target(true))
+        // ANSI colors are only enabled when stdout is a real terminal, so logs
+        // stay readable when captured by files/log aggregators in production.
+        .with(
+            fmt::layer()
+                .with_target(true)
+                .with_ansi(std::io::stdout().is_terminal()),
+        )
         .try_init();
 }
