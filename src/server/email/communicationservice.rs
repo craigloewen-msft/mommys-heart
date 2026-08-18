@@ -145,19 +145,17 @@ async fn reserve_email_send() {
         }
 
         if sends.len() < MAX_EMAILS_PER_HOUR {
-            sends.push_back(now);
-            return;
+            break;
         }
 
-        let Some(oldest) = sends.front() else {
-            continue;
-        };
-        let wait = EMAIL_LIMIT_WINDOW.saturating_sub(now.duration_since(*oldest));
+        let wait = EMAIL_LIMIT_WINDOW.saturating_sub(now.duration_since(sends[0]));
         tracing::warn!(
             "email hourly limit reached ({MAX_EMAILS_PER_HOUR} sends); waiting {wait:?} for the next slot"
         );
         tokio::time::sleep(wait).await;
     }
+
+    sends.push_back(Instant::now());
 }
 
 fn recipients_json(recipients: &EmailRecipients) -> Result<(serde_json::Value, String), String> {

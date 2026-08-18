@@ -31,4 +31,5 @@
 - Tokio's FIFO mutex ordering and retaining the lock during limiter waits prevent later emails from jumping ahead.
 - Each logical email reserves one slot before its first ACS attempt; retries do not consume extra slots.
 - Kept dry-run and unconfigured behavior unchanged and added no new crates or database changes.
+- Simplified reservation flow to break when capacity exists and append once after the wait loop.
 - Verified `cargo fmt --all -- --check` and `etc/dev.sh -- cargo check --no-default-features --features ssr` pass.
