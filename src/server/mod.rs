@@ -6,6 +6,7 @@ pub mod api;
 pub mod auth;
 pub mod captcha;
 pub mod config;
+pub mod contact_mail;
 pub mod db;
 pub mod docs;
 pub mod email;

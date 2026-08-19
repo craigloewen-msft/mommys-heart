@@ -611,6 +611,44 @@ pub fn case_signup(
     }
 }
 
+/// Build one administrator-authored contact message. The body is always treated
+/// as text; escaping happens before line breaks are added for HTML display.
+pub fn contact_mail(brand: &Brand, subject: &str, body: &str) -> RenderedEmail {
+    let theme = Theme {
+        accent: palette::color("primary-500"),
+        emoji: "\u{2709}\u{FE0F}",
+    };
+    let escaped_body = escape(body).replace("\r\n", "\n").replace('\n', "<br />");
+    let footer = if brand.support_email.is_empty() {
+        format!("This message was sent by {}.", escape(&brand.name))
+    } else {
+        format!(
+            "This message was sent by {}. Questions? Contact <a href=\"mailto:{email}\" style=\"color:{muted};text-decoration:underline;\">{email}</a>.",
+            escape(&brand.name),
+            email = escape(&brand.support_email),
+            muted = palette::muted(),
+        )
+    };
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: body.lines().next().unwrap_or(subject),
+            eyebrow: "Message from Mommy's Heart",
+            heading: subject,
+            callout_html: &escaped_body,
+            cta: None,
+            body_note: "",
+            footer_html: &footer,
+        },
+    );
+    RenderedEmail {
+        subject: subject.to_string(),
+        html,
+        plain_text: body.to_string(),
+    }
+}
+
 /// The full CTA url for an in-app path, or `None` when no public app URL is
 /// configured (so the layout renders no button).
 fn cta_url(brand: &Brand, path: &str) -> Option<String> {
@@ -1020,6 +1058,16 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
         key: "case_signup".to_string(),
         label: "New case signup".to_string(),
         email: case_signup(brand, "Elena Rivera", "elena@example.org", case),
+    });
+
+    samples.push(Sample {
+        key: "contact_mail".to_string(),
+        label: "Administrator contact message".to_string(),
+        email: contact_mail(
+            brand,
+            "Community resource update",
+            "Hello,\n\nWe are sharing an update about services available this month.\n\nThank you,\nMommy's Heart",
+        ),
     });
 
     // Transactional auth emails (not tied to a NotificationKind).

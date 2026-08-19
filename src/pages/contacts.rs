@@ -563,6 +563,9 @@ pub fn ContactsPage() -> impl IntoView {
 
 #[component]
 fn ContactsDirectory() -> impl IntoView {
+    let state = expect_context::<AppState>();
+    let can_send_mail =
+        state.has_operations_admin_permissions() && state.has_information_management_access();
     let categories = RwSignal::new(Vec::<ContactCategory>::new());
     let contacts = RwSignal::new(Vec::<Contact>::new());
     let total = RwSignal::new(0i64);
@@ -811,17 +814,27 @@ fn ContactsDirectory() -> impl IntoView {
                         "Search outreach, referral, fundraising, partnership, and volunteer-recruitment contacts. Open any contact for communications, categories, and structured CRM detail."
                     </p>
                 </div>
-                <button
-                    type="button"
-                    on:click=move |_| {
-                        draft.set(ContactDraft::default());
-                        creating.set(true);
-                        error.set(None);
-                    }
-                    class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600"
-                >
-                    "Add contact"
-                </button>
+                <div class="flex flex-wrap gap-2">
+                    <Show when=move || can_send_mail>
+                        <A
+                            href="/contacts/mail"
+                            attr:class="rounded-lg border border-primary-500/50 px-4 py-2 text-sm font-semibold text-primary-300 hover:bg-primary-500/10"
+                        >
+                            "Send mail"
+                        </A>
+                    </Show>
+                    <button
+                        type="button"
+                        on:click=move |_| {
+                            draft.set(ContactDraft::default());
+                            creating.set(true);
+                            error.set(None);
+                        }
+                        class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600"
+                    >
+                        "Add contact"
+                    </button>
+                </div>
             </div>
 
             <Show when=move || error.get().is_some()>

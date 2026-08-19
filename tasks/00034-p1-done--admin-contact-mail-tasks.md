@@ -2,14 +2,14 @@
 
 ## Goal
 
-Add a dedicated **Send mail** page under Contacts where authorized operations and site administrators can select contact groups, compose one message, start a durable asynchronous send task, monitor its progress, and cancel its remaining work.
+Add a dedicated **Send mail** page under Contacts where authorized operations and site administrators can select contact groups, compose one message, start a process-local asynchronous send task, monitor its progress, and cancel its remaining work.
 
 The campaign shall send one private email per recipient on a fixed one-minute schedule: at most 60 logical recipient emails per hour, with no catch-up bursts.
 
 ## Confirmed interpretation
 
 1. The final role requirement governs the feature: both operations admins and site admins may view the page and use its actions. They must also retain the existing information-management grant because the page exposes contact records; no other role may reach the page or its server functions.
-2. Only one contact-mail task may be active site-wide. This keeps the 60/hour campaign schedule deterministic and blocks every administrator from starting an overlapping campaign until the active task completes or reaches a terminal cancelled state.
+2. Only one contact-mail task may be active in the running application process. The task service enforces this in memory and blocks every administrator from starting an overlapping campaign until the active task completes or reaches a terminal cancelled state.
 3. “Specify a list” means selecting a one-time recipient group from existing Contacts, not creating a separate saved mailing-list entity.
 4. The first recipient may be attempted immediately. Each later recipient receives its own `To` message at the next one-minute schedule boundary. Delays may make the task slower, but missed boundaries are skipped and never replayed as a burst.
 5. Cancellation is cooperative and honest: it prevents the next recipient from starting. An email already handed to the provider cannot be recalled, so the task remains “Cancelling” until that in-flight attempt settles and then becomes “Cancelled.”
@@ -53,34 +53,35 @@ The server shall resolve and revalidate the submitted selection when creating th
 - Treat composed text as text, not trusted HTML; escape it before producing HTML while preserving readable paragraphs/line breaks.
 - Send a separate direct email to each snapshotted recipient so addresses are never disclosed to other recipients.
 
-### REQ-MAIL-004 — Durable task and recipient snapshot
+### REQ-MAIL-004 — Start and final history records
 
-Add a migration for a durable contact-mail task and its ordered recipient snapshot. Persist enough data to display and safely resume the operation, including:
+Add a migration for a contact-mail task and its ordered recipient snapshot.
 
-- task id, status, subject/body, creator id and display-name snapshot;
-- original recipient total, accepted/failed counts, timestamps, next scheduled send time, cancellation metadata, and a task-level error when applicable;
-- ordered recipient rows with the source contact id when available, name/email snapshots, per-recipient state, attempt timestamps, and final error detail;
-- database constraints for valid statuses/counts and a partial unique index that permits only one queued/running/cancelling task site-wide.
+- Commit the task and immutable recipient snapshot once when sending starts.
+- Keep live progress, cancellation, and scheduling in the application process.
+- Commit the terminal task and per-recipient outcomes once when sending completes, is cancelled, or fails.
+- Store task id, status, subject/body, creator identity snapshot, recipient counts, timestamps, cancellation metadata, and final errors.
+- Store ordered recipients with contact id, name/email snapshots, attempt timestamps, status, and final error detail.
+- Do not use a database unique index, lease, polling loop, or per-recipient progress writes to coordinate active work.
+- Contact edits made after start shall not silently retarget the snapshotted recipients.
 
-Task creation and recipient snapshotting shall be one transaction. Contact edits made afterward shall not silently retarget or rewrite an active campaign.
+### REQ-MAIL-005 — Maintainable in-memory Tokio task service
 
-### REQ-MAIL-005 — Maintainable Tokio task runner
+Implement the operation as a cohesive Rust task service, separate from Leptos handlers and database query details.
 
-Implement the operation as a cohesive Rust task type/service (a readable Rust `struct`, the language’s equivalent of the requested class), separate from Leptos handlers and database query details. Its responsibilities shall be explicit: claim/resume a task, wait for its next slot, observe cancellation, send one recipient, record the outcome, advance the schedule, and finalize.
-
-- Start the runner with `tokio::spawn` after database initialization.
-- Wake it when work is created and recover any non-terminal task after process restart.
-- Coordinate through PostgreSQL so only one application worker can own the campaign sender if more than one process is running.
-- Before provider I/O, durably mark the recipient attempt as started.
-- If the process restarts with an indeterminate in-flight recipient, do not resend it and risk a duplicate; record it as an interrupted/unknown failure, then continue the remaining schedule.
-- Keep database locks out of network waits and one-minute sleeps.
-- Log task lifecycle and send failures without logging message bodies or unnecessary recipient data.
+- Expose small start, current-task, and cancel operations around one process-local active task.
+- Spawn the send operation with `tokio::spawn` when an administrator starts it; do not run an idle background polling loop.
+- Keep live progress under Tokio synchronization and use cancellation notification to wake a scheduled wait promptly.
+- Keep database work out of provider calls and one-minute sleeps.
+- On startup, close a start record left active by a prior process as interrupted/failed; do not resend it.
+- Retry the one terminal history write until it commits.
+- Log lifecycle and failures without logging message bodies or recipient addresses.
 
 ### REQ-MAIL-006 — Fixed 60/hour campaign schedule
 
 - Anchor the schedule to task start and allow at most one new logical recipient attempt per 60 seconds.
 - Send sequentially; never batch recipients into BCC and never process recipients concurrently.
-- Skip elapsed schedule boundaries after a slow provider call, retry, server pause, or restart. Never catch up with back-to-back sends.
+- Skip elapsed schedule boundaries after a slow provider call or retry. Never catch up with back-to-back sends.
 - Continue using the shared ACS transport and its existing retry/error classification.
 - Preserve the lower-level process-wide 90-standard-emails/hour safety guard and OTP priority. That guard or provider latency may slow this campaign but may never make the campaign exceed its own one-per-minute limit.
 - Count transport retries as part of the same logical recipient attempt, not as additional campaign recipients.
@@ -97,7 +98,7 @@ The page shall poll/reload the active or most recent task while it is non-termin
 - the next planned send time and a useful estimate of remaining minimum duration while running;
 - readable failed-recipient details without exposing them outside the authorized page.
 
-While a queued, running, or cancelling task exists, disable the recipient/composer launch flow and enforce the same block transactionally on the server. A stale browser or concurrent administrator must not bypass it. Once the task reaches completed, cancelled, or failed, a new campaign may be created.
+While a queued, running, or cancelling task exists in the process-local task service, disable the recipient/composer launch flow and enforce the same block atomically in that service. A stale browser or concurrent administrator request in the same application process must not bypass it. Once the task reaches completed, cancelled, or failed, a new campaign may be created.
 
 ### REQ-MAIL-008 — Cancellation and failures
 
@@ -128,12 +129,12 @@ Keep the task runner, persistence, server-function authorization, and page state
 1. A site admin and an operations admin with information access can open `/contacts/mail`; a volunteer, client, signed-out user, or information-denied admin cannot see the entry or call its APIs.
 2. An admin can combine search/type/organization/category filters, select individual or all matching eligible contacts across pages, clear selections, and see an accurate selected total.
 3. Archived, do-not-contact, empty/invalid-address, duplicate-address, and newly ineligible contacts cannot enter the persisted recipient snapshot even if a stale client submits them.
-4. Starting a campaign returns promptly, creates one durable task, snapshots direct recipients, sends the first recipient, and advances accepted/failed progress in the UI.
+4. Starting a campaign returns promptly, commits its start history and recipient snapshot, sends the first recipient, and advances accepted/failed progress in the UI from memory.
 5. With a local fake mail service, recipient attempt start times are at least 60 seconds apart. Slow sends and a simulated pause skip missed slots and never produce a catch-up burst.
-6. A second launch from the same or another admin is rejected while the first task is queued/running/cancelling, including simultaneous submissions; it becomes possible after a terminal state.
+6. A second launch from the same or another admin through the same application process is rejected while the first task is queued/running/cancelling, including simultaneous submissions; it becomes possible after a terminal state.
 7. Cancellation during the minute wait wakes promptly and sends nobody else. Cancellation during provider I/O lets only that in-flight attempt settle, then marks the rest unattempted and the task cancelled.
 8. An individual provider failure is visible, recorded in `email_failures`, and does not prevent later recipients from following their scheduled slots.
-9. Restarting the app resumes remaining work. A recipient left in an indeterminate sending state is reported as interrupted rather than sent twice.
+9. Restarting the app does not resend in-memory work. A start record left active by the prior process is closed as interrupted/failed so duplicate sends are not attempted.
 10. Every recipient receives a separate `To` email with the exact composed subject and equivalent escaped branded HTML/plain text; no recipient can see another recipient’s address.
 11. Direct API attempts, stale tabs, malformed inputs, unknown contacts, and repeated cancellation requests fail safely with readable results and no authorization or concurrency bypass.
 12. Desktop and mobile layouts remain usable by keyboard, progress is announced accessibly, controls explain why they are disabled, and browser console logs remain clean.
@@ -145,10 +146,26 @@ Keep the task runner, persistence, server-function authorization, and page state
 - `etc/dev.sh build`, then `etc/dev.sh run`, waiting for `MH_READY`
 - Browser-check selection, composition, launch blocking, progress polling, completion, failure, and cancellation at desktop and mobile widths
 - Exercise authorization with seeded site-admin, operations-admin, volunteer, and client sessions, including direct server-function calls
-- Use a local fake ACS endpoint and temporary accelerated scheduler checks to verify ordering, no overlap, failure continuation, cancellation, restart recovery, and no duplicate recovery; remove temporary tests before review
+- Use dry-run/fake delivery and temporary checks to verify ordering, in-process overlap prevention, failure continuation, cancellation, start/final history writes, and interrupted-process cleanup; remove temporary tests before review
 - Inspect persisted task/recipient rows and the existing email-failure log for representative success, failure, cancellation, and restart cases
 - Do not add permanent Cargo tests; this repository does not use them
 
 ## GPT-OSS evaluation note
 
 The requested `ollama/gpt-oss:120b` model was tried for three bounded repository-exploration tasks (contacts/auth, mail infrastructure, and task persistence). The platform rejected each attempt before inference because the parent session’s `xhigh` reasoning effort is unsupported by that model. It therefore supplied no findings and was not useful for this task; the repository analysis and this plan were completed directly.
+
+## Completion
+
+- Added `/contacts/mail` and an admin-only Contacts entry for operations/site admins with information-management access.
+- Added searchable, filterable, paginated contact selection with individual, visible-page, and all-matching controls.
+- Excluded archived, do-not-contact, invalid-email, and case-insensitive duplicate recipients in the server query; linked-account emails remain authoritative.
+- Added validated text composition and a branded, escaped HTML/plain-text contact-mail template that sends one private `To` email per recipient.
+- Added a readable process-local `ContactMailTaskService` with atomic one-task blocking, Tokio spawning, live in-memory progress, cancellation notification, and a fixed 60-second schedule that skips missed boundaries.
+- Added start and final history transactions for tasks and recipient snapshots. Startup closes interrupted start-only records without resending them.
+- Added progress, accepted/failed/not-attempted counts, next-send timing, failure details, cancellation confirmation, and polling cleanup to the UI.
+- Removed recipient addresses from low-level email transport logs.
+- Verified formatting, SSR compilation, and native hydrate feature compilation.
+- Verified dry-run start/final persistence, overlap blocking, cancellation, interruption cleanup, and an actual two-recipient attempt interval of at least 60 seconds with temporary smoke binaries; removed them afterward.
+- Rendered the contact-mail email preview successfully.
+- Full `etc/dev.sh build`/browser verification was unavailable because this host lacks `cargo-leptos` and the `wasm32-unknown-unknown` Rust target.
+- GPT-OSS was attempted for three exploration tasks, but the platform rejected it before inference because the model does not support this session's `xhigh` effort setting; it produced no findings.

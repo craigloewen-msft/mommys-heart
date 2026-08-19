@@ -27,6 +27,7 @@ pub mod cases;
 pub mod channel_notifications;
 pub mod channels;
 pub mod contact_directory;
+pub mod contact_mail;
 pub mod contact_properties;
 pub mod contacts;
 pub mod crm;

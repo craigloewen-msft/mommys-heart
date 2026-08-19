@@ -37,6 +37,7 @@ pub mod pages {
     pub mod case_notes;
     pub mod case_signup;
     pub mod cases;
+    pub mod contact_mail;
     pub mod contacts;
     pub mod forgot_password;
     pub mod funding;

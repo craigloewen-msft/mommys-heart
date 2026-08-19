@@ -77,6 +77,12 @@ async fn main() {
     // dashboard.
     mommys_heart_app::server::db::email_failures::start_retention_task();
 
+    // Initialize the process-local contact-mail task service and close any
+    // history row left active by an earlier process stop.
+    if let Err(error) = mommys_heart_app::server::contact_mail::initialize().await {
+        panic!("failed to initialize contact mail tasks: {error}");
+    }
+
     // Prune case-chat notifications that were never read within the retention
     // window (unread ones a user never opened), on startup and every 30 days.
     mommys_heart_app::server::db::channel_notifications::start_retention_task();

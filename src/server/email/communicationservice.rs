@@ -224,7 +224,7 @@ fn recipients_json(recipients: &EmailRecipients) -> Result<(serde_json::Value, S
     match recipients {
         EmailRecipients::To(recipient) => Ok((
             json!({ "to": [recipient_json(recipient)] }),
-            recipient.address.clone(),
+            "1 direct recipient".to_string(),
         )),
         EmailRecipients::Bcc(recipients) => {
             if recipients.is_empty() {
