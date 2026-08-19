@@ -5,12 +5,13 @@
 //! with `ON DELETE RESTRICT`, so retiring one must not erase the history that
 //! points at it.
 
-use crate::server::db::{audit, ids, organization_properties, pool};
+use crate::server::db::{audit, ids, organization_properties, pool, property_filters};
 use crate::server_fns::organizations::{
     ActiveOrganizationSummary, Organization, OrganizationFilters, OrganizationInput,
     OrganizationKind,
 };
 use crate::server_fns::pagination::Page;
+use crate::server_fns::property_filters::PropertySubject;
 
 #[derive(sqlx::FromRow)]
 struct OrganizationRow {
@@ -39,6 +40,7 @@ impl From<OrganizationRow> for Organization {
             description: row.description,
             archived: row.archived,
             contact_count: row.contact_count,
+            filtered_properties: Vec::new(),
         }
     }
 }
@@ -88,36 +90,59 @@ pub async fn page(
 ) -> Result<Page<Organization>, sqlx::Error> {
     let keyword = filters.keyword.trim();
     let kind = filters.kind.map(|k| k.slug()).unwrap_or_default();
+    // A typed word also matches a property value, so "Boston" finds an
+    // organization whose Location says so without building a filter first.
+    let property_search_sql =
+        property_filters::keyword_match_sql(PropertySubject::Organization, "o.id", 3);
+    let property_filter_sql =
+        property_filters::predicate_sql(PropertySubject::Organization, "o.id", 4);
+    let filters_json = property_filters::to_json(&filters.property_filters);
 
-    let where_sql = "WHERE ($1 OR NOT o.archived)
+    let where_sql = format!(
+        "WHERE ($1 OR NOT o.archived)
            AND ($2 = '' OR o.kind = $2)
-           AND ($3 = '' OR o.name ILIKE '%' || $3 || '%' OR o.email ILIKE '%' || $3 || '%')";
+           AND ($3 = '' OR o.name ILIKE '%' || $3 || '%' OR o.email ILIKE '%' || $3 || '%'
+                {property_search_sql})
+           {property_filter_sql}"
+    );
 
     let total: i64 =
         sqlx::query_scalar(&format!("SELECT count(*) FROM organizations o {where_sql}"))
             .bind(filters.include_archived)
             .bind(kind)
             .bind(keyword)
+            .bind(&filters_json)
             .fetch_one(pool())
             .await?;
 
     let rows = sqlx::query_as::<_, OrganizationRow>(&format!(
         "SELECT {SELECT_COLUMNS} FROM organizations o {where_sql}
          ORDER BY o.archived ASC, lower(o.name) ASC
-         OFFSET $4 LIMIT $5"
+         OFFSET $5 LIMIT $6"
     ))
     .bind(filters.include_archived)
     .bind(kind)
     .bind(keyword)
+    .bind(&filters_json)
     .bind(offset.max(0))
     .bind(limit.clamp(1, 200))
     .fetch_all(pool())
     .await?;
 
-    Ok(Page {
-        items: rows.into_iter().map(Into::into).collect(),
-        total,
-    })
+    let mut items: Vec<Organization> = rows.into_iter().map(Into::into).collect();
+    // The values behind the active chips, so each card can name why it matched.
+    let ids: Vec<String> = items.iter().map(|item| item.id.clone()).collect();
+    let keys: Vec<String> = filters
+        .property_filters
+        .iter()
+        .map(|filter| filter.key.clone())
+        .collect();
+    let matched = property_filters::values_for(PropertySubject::Organization, &ids, &keys).await?;
+    for item in &mut items {
+        item.filtered_properties = matched.get(&item.id).cloned().unwrap_or_default();
+    }
+
+    Ok(Page { items, total })
 }
 
 pub async fn get(id: &str) -> Result<Option<Organization>, sqlx::Error> {

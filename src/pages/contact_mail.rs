@@ -6,6 +6,7 @@ use leptos_router::components::A;
 
 use crate::components::guard::{require_information_management_access, require_operations_admin};
 use crate::components::layout::Layout;
+use crate::components::property_filters::PropertyFilterBar;
 use crate::server_fns::contact_directory::{list_contact_categories, ContactCategory};
 use crate::server_fns::contact_mail::{
     cancel_contact_mail_task, list_contact_mail_candidates, load_contact_mail_task,
@@ -15,6 +16,7 @@ use crate::server_fns::contact_mail::{
 use crate::server_fns::contacts::ContactType;
 use crate::server_fns::err_text;
 use crate::server_fns::organizations::{list_organizations, OrganizationFilters};
+use crate::server_fns::property_filters::{PropertyFacetScope, PropertyFilter, PropertySubject};
 use crate::state::AppState;
 
 const INPUT: &str = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40 disabled:cursor-not-allowed disabled:opacity-50";
@@ -56,6 +58,7 @@ fn ContactMailWorkspace() -> impl IntoView {
     let contact_type = RwSignal::new(String::new());
     let organization_id = RwSignal::new(String::new());
     let category_ids = RwSignal::new(Vec::<String>::new());
+    let property_filters = RwSignal::new(Vec::<PropertyFilter>::new());
     let applied_filters = RwSignal::new(ContactMailFilters::default());
 
     let selected_ids = RwSignal::new(Vec::<String>::new());
@@ -158,8 +161,40 @@ fn ContactMailWorkspace() -> impl IntoView {
             category_ids: category_ids.get_untracked(),
             contact_type: ContactType::from_slug(&contact_type.get_untracked()),
             organization_id: organization_id.get_untracked(),
+            property_filters: property_filters.get_untracked(),
         });
     };
+
+    // Facet counts describe the recipients actually listed, and only mailable
+    // people can ever be listed here.
+    let facet_scope = Signal::derive(move || {
+        let applied = applied_filters.get();
+        PropertyFacetScope {
+            keyword: applied.query,
+            category_ids: applied.category_ids,
+            contact_type: applied
+                .contact_type
+                .map(|kind| kind.slug().to_string())
+                .unwrap_or_default(),
+            organization_id: applied.organization_id,
+            mailable_only: true,
+            ..Default::default()
+        }
+    });
+
+    // A chip commits on its own Apply. Fold it straight into the applied filters
+    // and drop the selection, so a tick made before the change cannot survive it.
+    Effect::new(move |previous: Option<Vec<PropertyFilter>>| {
+        let current = property_filters.get();
+        if previous.is_some_and(|previous| previous != current) {
+            offset.set(0);
+            all_matching.set(false);
+            selected_ids.set(Vec::new());
+            excluded_ids.set(Vec::new());
+            applied_filters.update(|filters| filters.property_filters = current.clone());
+        }
+        current
+    });
 
     let clear_selection = move |_| {
         all_matching.set(false);
@@ -492,6 +527,14 @@ fn ContactMailWorkspace() -> impl IntoView {
                         class="mt-3 rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50">
                         "Apply filters"
                     </button>
+
+                    <div class="mt-4">
+                        <PropertyFilterBar
+                            subject=PropertySubject::Contact
+                            filters=property_filters
+                            scope=facet_scope
+                        />
+                    </div>
 
                     <div class="mt-5 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
                         <span>"Showing " {move || candidates.get().len()} " of " {move || total.get()} " eligible contacts"</span>

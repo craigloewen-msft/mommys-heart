@@ -3,11 +3,13 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
+use leptos_router::NavigateOptions;
 
 use crate::components::contact_form::ContactTypeSelector;
 use crate::components::guard::require_information_management_access;
 use crate::components::layout::Layout;
+use crate::components::property_filters::{MatchedProperties, PropertyFilterBar};
 use crate::pages::people::ContactDetail;
 use crate::server_fns::contact_directory::{
     add_contact_category, add_contact_communication, get_contact, list_contact_categories,
@@ -17,6 +19,9 @@ use crate::server_fns::contact_directory::{
 use crate::server_fns::contacts::{ContactType, MAX_TYPES};
 use crate::server_fns::err_text;
 use crate::server_fns::organizations::{list_organizations, OrganizationFilters};
+use crate::server_fns::property_filters::{
+    self, PropertyFacetScope, PropertyFilter, PropertySubject,
+};
 use crate::state::AppState;
 
 pub(crate) const INPUT: &str = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
@@ -59,6 +64,23 @@ pub(crate) fn toggle_id(ids: &mut Vec<String>, id: &str, checked: bool) {
     } else {
         ids.retain(|selected| selected != id);
     }
+}
+
+/// Percent-encode a filter value for the query string.
+///
+/// Hand-rolled because the browser's `encodeURIComponent` is not available in
+/// the SSR build, and the set of characters that matter here is small.
+pub(crate) fn encode_query_value(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 #[component]
@@ -566,15 +588,34 @@ fn ContactsDirectory() -> impl IntoView {
     let state = expect_context::<AppState>();
     let can_send_mail =
         state.has_operations_admin_permissions() && state.has_information_management_access();
+
+    // Seed every filter from the query string, so a shared link opens the view
+    // its sender was looking at.
+    let initial = use_query_map().get_untracked();
+    let initial_query = initial.get("q").unwrap_or_default();
+    let initial_type = initial.get("type").unwrap_or_default();
+    let initial_organization = initial.get("org").unwrap_or_default();
+    let initial_categories: Vec<String> = initial
+        .get("cat")
+        .unwrap_or_default()
+        .split(',')
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+    let initial_archived = initial.get("archived").as_deref() == Some("1");
+    let initial_properties = property_filters::decode(&initial.get("props").unwrap_or_default());
+    drop(initial);
+
     let categories = RwSignal::new(Vec::<ContactCategory>::new());
     let contacts = RwSignal::new(Vec::<Contact>::new());
     let total = RwSignal::new(0i64);
-    let query = RwSignal::new(String::new());
-    let debounced_query = RwSignal::new(String::new());
-    let filters = RwSignal::new(Vec::<String>::new());
-    let contact_type = RwSignal::new(String::new());
-    let organization_id = RwSignal::new(String::new());
-    let include_archived = RwSignal::new(false);
+    let query = RwSignal::new(initial_query.clone());
+    let debounced_query = RwSignal::new(initial_query);
+    let filters = RwSignal::new(initial_categories);
+    let contact_type = RwSignal::new(initial_type);
+    let organization_id = RwSignal::new(initial_organization);
+    let include_archived = RwSignal::new(initial_archived);
+    let property_filters = RwSignal::new(initial_properties);
     let organizations = RwSignal::new(Vec::<(String, String)>::new());
     let search_generation = RwSignal::new(0u64);
     let reload = RwSignal::new(0u32);
@@ -587,6 +628,17 @@ fn ContactsDirectory() -> impl IntoView {
     let category_parent = RwSignal::new(String::new());
     let category_saving = RwSignal::new(false);
     let offset = RwSignal::new(0i64);
+
+    // What the facet counts are measured against, so the values on offer match
+    // the list on screen.
+    let facet_scope = Signal::derive(move || PropertyFacetScope {
+        keyword: debounced_query.get(),
+        include_archived: include_archived.get(),
+        category_ids: filters.get(),
+        contact_type: contact_type.get(),
+        organization_id: organization_id.get(),
+        ..Default::default()
+    });
 
     Effect::new(move |_| {
         spawn_local(async move {
@@ -615,12 +667,49 @@ fn ContactsDirectory() -> impl IntoView {
         });
     });
 
+    // Mirror the applied filters into the URL so the view can be linked to.
+    // `replace` keeps filter tweaks out of the back-button history.
+    let navigate = use_navigate();
+    Effect::new(move |previous: Option<()>| {
+        let mut parts = Vec::<String>::new();
+        let mut push = |key: &str, value: String| {
+            if !value.is_empty() {
+                parts.push(format!("{key}={}", encode_query_value(&value)));
+            }
+        };
+        push("q", debounced_query.get());
+        push("type", contact_type.get());
+        push("org", organization_id.get());
+        push("cat", filters.get().join(","));
+        push("props", property_filters::encode(&property_filters.get()));
+        if include_archived.get() {
+            parts.push("archived=1".to_string());
+        }
+        // Skip the first run: it would only rewrite the URL we just read.
+        if previous.is_some() {
+            let target = if parts.is_empty() {
+                "/contacts".to_string()
+            } else {
+                format!("/contacts?{}", parts.join("&"))
+            };
+            navigate(
+                &target,
+                NavigateOptions {
+                    replace: true,
+                    scroll: false,
+                    ..Default::default()
+                },
+            );
+        }
+    });
+
     Effect::new(move |_| {
         let query = debounced_query.get();
         let filters = filters.get();
         let selected_type = ContactType::from_slug(&contact_type.get());
         let selected_organization = organization_id.get();
         let archived = include_archived.get();
+        let properties = property_filters.get();
         let page_offset = offset.get();
         reload.track();
         search_generation.update(|generation| *generation += 1);
@@ -633,6 +722,7 @@ fn ContactsDirectory() -> impl IntoView {
                 selected_type,
                 selected_organization,
                 archived,
+                properties,
                 page_offset,
                 50,
             )
@@ -654,6 +744,15 @@ fn ContactsDirectory() -> impl IntoView {
             }
             loading.set(false);
         });
+    });
+
+    // A changed chip must start the result list again, not append to it.
+    Effect::new(move |previous: Option<Vec<PropertyFilter>>| {
+        let current = property_filters.get();
+        if previous.is_some_and(|previous| previous != current) {
+            offset.set(0);
+        }
+        current
     });
 
     let save = move |()| {
@@ -781,6 +880,7 @@ fn ContactsDirectory() -> impl IntoView {
                         }
                     })
                     .collect_view();
+                let matched = contact.filtered_properties.clone();
                 view! {
                     <A
                         href=href
@@ -797,6 +897,9 @@ fn ContactsDirectory() -> impl IntoView {
                             <p class="mt-0.5 text-xs text-slate-400">{subtitle}</p>
                         })}
                         <div class="mt-2 flex flex-wrap gap-1">{tags}</div>
+                        <div class="mt-2 flex flex-wrap gap-1">
+                            <MatchedProperties properties=matched />
+                        </div>
                         <p class="mt-3 text-[0.68rem] text-slate-600">"Updated " {contact.updated_at}</p>
                     </A>
                 }
@@ -906,6 +1009,11 @@ fn ContactsDirectory() -> impl IntoView {
                             query.set(value.clone());
                             on_search(value);
                         }
+                    />
+                    <PropertyFilterBar
+                        subject=PropertySubject::Contact
+                        filters=property_filters
+                        scope=facet_scope
                     />
                     <label class="block">
                         <span class=LABEL>"Contact type"</span>

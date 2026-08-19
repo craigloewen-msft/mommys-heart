@@ -9,13 +9,14 @@
 use std::collections::HashMap;
 
 use crate::helpers::contact_categories::CONTACT_CATEGORIES;
-use crate::server::db::{audit, contacts, ids, organizations, pool};
+use crate::server::db::{audit, contacts, ids, organizations, pool, property_filters};
 use crate::server_fns::contact_directory::{
     CommunicationKind, Contact, ContactCategory, ContactCommunication, ContactDetails, ContactInput,
 };
 use crate::server_fns::contacts::{ContactInput as PersonInput, ContactType};
 use crate::server_fns::organizations::{OrganizationInput, OrganizationKind};
 use crate::server_fns::pagination::Page;
+use crate::server_fns::property_filters::{PropertyFilter, PropertySubject};
 
 const STAMP: &str = "%Y-%m-%d %H:%M";
 
@@ -148,6 +149,7 @@ fn fold_contacts(rows: Vec<ContactRow>) -> Vec<Contact> {
                 archived: row.archived,
                 has_account: row.has_account,
                 updated_at: stamp(row.updated_at),
+                filtered_properties: Vec::new(),
             });
             index
         };
@@ -242,6 +244,7 @@ pub async fn search_page(
     contact_type: Option<ContactType>,
     organization_id: &str,
     include_archived: bool,
+    filters: &[PropertyFilter],
     offset: i64,
     limit: i64,
     include_account_projection: bool,
@@ -258,6 +261,12 @@ pub async fn search_page(
     } else {
         (SAFE_DIRECTORY_COLUMNS, SAFE_DISPLAY_NAME_SQL, "")
     };
+    // A typed word also matches a property value, so "Boston" finds a contact
+    // whose Location says so without building a filter first.
+    let property_search_sql =
+        property_filters::keyword_match_sql(PropertySubject::Contact, "c.id", 2);
+    let property_filter_sql = property_filters::predicate_sql(PropertySubject::Contact, "c.id", 7);
+    let filters_json = property_filters::to_json(filters);
     let filter = format!(
         "WHERE (
              $1 = '' OR c.first_name ILIKE $2 OR c.last_name ILIKE $2
@@ -266,6 +275,7 @@ pub async fn search_page(
              OR c.job_title ILIKE $2 OR o.name ILIKE $2
              OR c.email ILIKE $2 OR c.phone ILIKE $2
              OR c.mobile ILIKE $2 OR c.address ILIKE $2 OR c.website ILIKE $2
+             {property_search_sql}
          )
          AND (
              cardinality($3::text[]) = 0 OR c.id IN (
@@ -278,7 +288,8 @@ pub async fn search_page(
          )
          AND ($4 = '' OR $4 = ANY(c.types))
          AND ($5 = '' OR c.organization_id = $5)
-         AND ($6 OR NOT c.archived)"
+         AND ($6 OR NOT c.archived)
+         {property_filter_sql}"
     );
     let base = "FROM contacts c
                 LEFT JOIN organizations o ON o.id = c.organization_id
@@ -287,7 +298,7 @@ pub async fn search_page(
     let ids_sql = format!(
         "SELECT c.id {base} {filter}
          ORDER BY lower(c.last_name), lower(c.first_name), lower(coalesce(o.name, '')), c.id
-         LIMIT $7 OFFSET $8"
+         LIMIT $8 OFFSET $9"
     );
 
     let contact_type = contact_type.map(ContactType::slug).unwrap_or_default();
@@ -298,6 +309,7 @@ pub async fn search_page(
         .bind(contact_type)
         .bind(organization_id)
         .bind(include_archived)
+        .bind(&filters_json)
         .fetch_one(pool());
     let ids_fut = sqlx::query_scalar::<_, String>(&ids_sql)
         .bind(query)
@@ -306,6 +318,7 @@ pub async fn search_page(
         .bind(contact_type)
         .bind(organization_id)
         .bind(include_archived)
+        .bind(&filters_json)
         .bind(limit)
         .bind(offset)
         .fetch_all(pool());
@@ -324,13 +337,19 @@ pub async fn search_page(
          ORDER BY lower(c.last_name), lower(c.first_name), lower(coalesce(o.name, '')),
                   c.id, category.name"
     ))
-    .bind(ids)
+    .bind(&ids)
     .fetch_all(pool())
     .await?;
-    Ok(Page {
-        items: fold_contacts(rows),
-        total,
-    })
+
+    // The values behind the active chips, so each card can name why it matched.
+    let filtered_keys: Vec<String> = filters.iter().map(|filter| filter.key.clone()).collect();
+    let matched =
+        property_filters::values_for(PropertySubject::Contact, &ids, &filtered_keys).await?;
+    let mut items = fold_contacts(rows);
+    for contact in &mut items {
+        contact.filtered_properties = matched.get(&contact.id).cloned().unwrap_or_default();
+    }
+    Ok(Page { items, total })
 }
 
 pub async fn get(

@@ -148,6 +148,29 @@ attorneys, court clerks, board members, and emergency contacts.
   answers "may the client see this?"; clients cannot see contacts at all, so
   reusing that vocabulary would give it a second, weaker meaning.
 
+### Filtering by property — faceted search over custom fields
+
+- The Contacts directory, the Organizations directory, and the send-mail
+  recipient picker share one filter bar: pick a property name, tick the values
+  actually recorded under it, and the choice becomes a removable chip.
+- Values inside one property are OR; different properties are AND.
+- Counts describe the records currently listed, with a facet's own chip excluded
+  from its own counts, so a value that would return nothing is never offered.
+- Keys and values are matched on their trimmed, lowercased form, so "Location"
+  and "location" are one facet. Nothing anyone typed is rewritten; the most
+  common spelling is shown.
+- A blank value is a selectable facet ("not filled in") and is distinct from not
+  having the property at all.
+- The plain keyword box also matches property *values*, so a search for a place
+  name finds it without building a filter first. Property *names* are not
+  keyword-matched, since that would return every record carrying the field.
+- On Contacts and Organizations the active filters live in the query string, so a
+  filtered view can be linked to and reopened. The mail picker deliberately does
+  not, since a half-composed campaign is not a shareable view — but its filters
+  are part of the snapshot "send to all matching" re-resolves at send time.
+- Facet reads carry the same guard as the property panels: information-management
+  access plus a staff account, since a list of values is contact data.
+
 ### Organizations
 
 - Funders, partner agencies, service providers, government bodies, courts, and

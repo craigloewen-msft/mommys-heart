@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::server_fns::contacts::ContactType;
 use crate::server_fns::pagination::Page;
+use crate::server_fns::property_filters::PropertyFilter;
 
 pub const MAX_MAIL_SUBJECT: usize = 200;
 pub const MAX_MAIL_BODY: usize = 20_000;
@@ -15,6 +16,10 @@ pub struct ContactMailFilters {
     pub category_ids: Vec<String>,
     pub contact_type: Option<ContactType>,
     pub organization_id: String,
+    /// Custom-property facets. Part of the filters rather than the page state
+    /// because `all_matching` snapshots this struct and re-runs it at send time.
+    #[serde(default)]
+    pub property_filters: Vec<PropertyFilter>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -126,6 +131,7 @@ fn normalize_filters(mut filters: ContactMailFilters) -> ContactMailFilters {
         .collect();
     filters.category_ids.sort();
     filters.category_ids.dedup();
+    filters.property_filters = crate::server_fns::property_filters::clean(filters.property_filters);
     filters
 }
 
