@@ -34,6 +34,7 @@ pub mod components {
 
 pub mod pages {
     pub mod admin;
+    pub mod bulk_properties;
     pub mod case_notes;
     pub mod case_signup;
     pub mod cases;

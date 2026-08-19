@@ -566,6 +566,7 @@ fn ContactsDirectory() -> impl IntoView {
     let state = expect_context::<AppState>();
     let can_send_mail =
         state.has_operations_admin_permissions() && state.has_information_management_access();
+    let can_bulk_edit = state.has_information_management_access();
     let categories = RwSignal::new(Vec::<ContactCategory>::new());
     let contacts = RwSignal::new(Vec::<Contact>::new());
     let total = RwSignal::new(0i64);
@@ -815,6 +816,14 @@ fn ContactsDirectory() -> impl IntoView {
                     </p>
                 </div>
                 <div class="flex flex-wrap gap-2">
+                    <Show when=move || can_bulk_edit>
+                        <A
+                            href="/properties/bulk?subject=people"
+                            attr:class="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                        >
+                            "Bulk edit properties"
+                        </A>
+                    </Show>
                     <Show when=move || can_send_mail>
                         <A
                             href="/contacts/mail"

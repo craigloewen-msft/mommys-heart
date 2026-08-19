@@ -151,13 +151,21 @@ fn OrganizationDirectory() -> impl IntoView {
                     </p>
                 </div>
                 <Show when=move || can_manage>
-                    <button
-                        type="button"
-                        on:click=move |_| creating.update(|c| *c = !*c)
-                        class="shrink-0 rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600"
-                    >
-                        {move || if creating.get() { "Cancel" } else { "+ New organization" }}
-                    </button>
+                    <div class="flex shrink-0 flex-wrap gap-2">
+                        <A
+                            href="/properties/bulk?subject=organizations"
+                            attr:class="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                        >
+                            "Bulk edit properties"
+                        </A>
+                        <button
+                            type="button"
+                            on:click=move |_| creating.update(|c| *c = !*c)
+                            class="shrink-0 rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600"
+                        >
+                            {move || if creating.get() { "Cancel" } else { "+ New organization" }}
+                        </button>
+                    </div>
                 </Show>
             </div>
 

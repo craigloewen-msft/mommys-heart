@@ -7,6 +7,7 @@
 
 pub mod admin_requests;
 pub mod audit;
+pub mod bulk_properties;
 pub mod capabilities;
 pub mod case_contacts;
 pub mod case_folders;
