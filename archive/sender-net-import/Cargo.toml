@@ -1,0 +1,35 @@
+# Standalone one-time importer. Kept out of the app's own Cargo.toml so nothing
+# here is compiled into, or shipped with, the application.
+#
+# It depends on the app as a path dependency and calls the same repository
+# functions the UI does, so every database CHECK and validation rule still
+# applies. Build and run it from this directory; the parent has no [workspace],
+# so this crate resolves independently.
+[package]
+name = "sender-net-import"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sender-net-import"
+path = "src/main.rs"
+
+[dependencies]
+mommys-heart-app = { path = "../..", default-features = false, features = ["ssr"] }
+
+csv = "1"
+sqlx = { version = "0.8", default-features = false, features = [
+    "postgres",
+    "runtime-tokio-rustls",
+    "macros",
+    "migrate",
+    "chrono",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
+
+# Match the app: full DWARF exceeds the linker's relocation limit.
+[profile.dev]
+debug = 1
