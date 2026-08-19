@@ -16,7 +16,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
-use crate::server::config::EmailConfig;
+use crate::server::config::{Brand, EmailConfig};
+use crate::server::email::templates::{self, RenderedEmail};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -83,6 +84,108 @@ pub struct EmailMessage {
     pub html: String,
     /// Plain-text fallback body.
     pub plain_text: String,
+}
+
+/// One recipient submitted to the high-level batch delivery path.
+#[derive(Clone, Debug)]
+pub struct EmailBatchRecipient {
+    /// Caller-owned stable key returned unchanged in the outcome.
+    pub key: i32,
+    pub address: String,
+    pub name: String,
+}
+
+/// Provider acceptance or final failure for one submitted batch recipient.
+#[derive(Clone, Debug)]
+pub struct EmailBatchOutcome {
+    pub recipient: EmailBatchRecipient,
+    pub result: Result<(), String>,
+}
+
+/// Render and deliver one administrator-authored contact message through the
+/// shared batch path.
+pub async fn send_contact_batch(
+    task_id: &str,
+    recipients: &[EmailBatchRecipient],
+    subject: &str,
+    body: &str,
+) -> Vec<EmailBatchOutcome> {
+    let email = templates::contact_mail(&Brand::from_env(), subject, body);
+    let context = format!("Contact mail task {task_id}");
+    send_standard_batch(recipients, &email, &context).await
+}
+
+/// Deliver shared content to hidden-recipient ACS batches and return one outcome
+/// for every submitted recipient.
+async fn send_standard_batch(
+    recipients: &[EmailBatchRecipient],
+    email: &RenderedEmail,
+    context: &str,
+) -> Vec<EmailBatchOutcome> {
+    let cfg = EmailConfig::from_env();
+    let mut outcomes = Vec::with_capacity(recipients.len());
+
+    for chunk in recipients.chunks(MAX_RECIPIENTS_PER_MESSAGE) {
+        if cfg.dry_run {
+            tracing::warn!(
+                subject = %email.subject,
+                recipient_count = chunk.len(),
+                "[email dry-run] batch accepted without delivery"
+            );
+            outcomes.extend(chunk.iter().cloned().map(|recipient| EmailBatchOutcome {
+                recipient,
+                result: Ok(()),
+            }));
+            continue;
+        }
+
+        let result = if cfg.is_configured() {
+            let recipients = if let [recipient] = chunk {
+                EmailRecipients::To(batch_email_recipient(recipient))
+            } else {
+                EmailRecipients::Bcc(chunk.iter().map(batch_email_recipient).collect())
+            };
+            send_email(
+                &cfg,
+                &EmailMessage {
+                    kind: EmailKind::Standard,
+                    recipients,
+                    subject: email.subject.clone(),
+                    html: email.html.clone(),
+                    plain_text: email.plain_text.clone(),
+                },
+            )
+            .await
+        } else {
+            Err("Email delivery is not configured.".to_string())
+        };
+
+        if let Err(error) = &result {
+            tracing::warn!(recipient_count = chunk.len(), "email batch failed: {error}");
+            for recipient in chunk {
+                crate::server::db::email_failures::record(
+                    &recipient.address,
+                    &email.subject,
+                    context,
+                    error,
+                )
+                .await;
+            }
+        }
+        outcomes.extend(chunk.iter().cloned().map(|recipient| EmailBatchOutcome {
+            recipient,
+            result: result.clone(),
+        }));
+    }
+
+    outcomes
+}
+
+fn batch_email_recipient(recipient: &EmailBatchRecipient) -> EmailRecipient {
+    EmailRecipient {
+        address: recipient.address.clone(),
+        name: recipient.name.clone(),
+    }
 }
 
 /// Send one email through ACS. Returns `Ok(())` when ACS accepts the request

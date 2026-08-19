@@ -6,16 +6,14 @@ use std::time::Duration;
 use chrono::Utc;
 use tokio::sync::{Mutex, Notify};
 
-use crate::server::config::{Brand, EmailConfig};
 use crate::server::db::contact_mail::{self as repository, MailTaskRecord};
-use crate::server::db::email_failures;
-use crate::server::email::templates;
-use crate::server::email::{send_email, EmailKind, EmailMessage, EmailRecipient, EmailRecipients};
+use crate::server::email::{send_contact_batch, EmailBatchOutcome, EmailBatchRecipient};
 use crate::server_fns::contact_mail::{
     ContactMailSelection, ContactMailTask, ContactMailTaskStatus,
 };
 
-const SEND_INTERVAL: Duration = Duration::from_secs(60);
+const CONTACTS_PER_HOUR: usize = 60;
+const MAIL_SEND_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const FINAL_WRITE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 static SERVICE: OnceLock<ContactMailTaskService> = OnceLock::new();
@@ -162,15 +160,13 @@ async fn run_task(task: Arc<Mutex<MailTaskRecord>>, cancel: Arc<Notify>) {
             task.recipients.clone(),
         )
     };
-    let cfg = EmailConfig::from_env();
-    let rendered = templates::contact_mail(&Brand::from_env(), &subject, &body);
     let started_at = Utc::now();
     let schedule_interval =
-        chrono::Duration::from_std(SEND_INTERVAL).expect("send interval fits chrono");
+        chrono::Duration::from_std(MAIL_SEND_INTERVAL).expect("batch interval fits chrono");
     let mut next_send_at = started_at;
 
-    for (index, recipient) in recipients.iter().enumerate() {
-        if index > 0 {
+    for (batch_index, batch) in recipients.chunks(CONTACTS_PER_HOUR).enumerate() {
+        if batch_index > 0 {
             while next_send_at <= Utc::now() {
                 next_send_at += schedule_interval;
             }
@@ -183,41 +179,32 @@ async fn run_task(task: Arc<Mutex<MailTaskRecord>>, cancel: Arc<Notify>) {
                 _ = cancel.notified() => break,
             }
         }
-        {
+
+        let claimed_at = Utc::now();
+        let batch_recipients = {
             let mut task = task.lock().await;
             if task.status == ContactMailTaskStatus::Cancelling {
                 break;
             }
-            let recipient = &mut task.recipients[index];
-            recipient.status = "sending".to_string();
-            recipient.attempt_started_at = Some(Utc::now());
-        }
+            batch
+                .iter()
+                .map(|recipient| {
+                    let record = &mut task.recipients[(recipient.position - 1) as usize];
+                    record.status = "sending".to_string();
+                    record.attempt_started_at = Some(claimed_at);
+                    EmailBatchRecipient {
+                        key: recipient.position,
+                        address: recipient.email.clone(),
+                        name: recipient.name.clone(),
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
 
-        let result = send_one(&cfg, &rendered, recipient).await;
-        if let Err(error) = &result {
-            email_failures::record(
-                &recipient.email,
-                &subject,
-                &format!("Contact mail task {task_id}"),
-                error,
-            )
-            .await;
-        }
-        let now = Utc::now();
-        let mut state = task.lock().await;
-        let recipient = &mut state.recipients[index];
-        recipient.finished_at = Some(now);
-        match result {
-            Ok(()) => {
-                recipient.status = "accepted".to_string();
-                state.accepted_count += 1;
-            }
-            Err(error) => {
-                recipient.status = "failed".to_string();
-                recipient.error = error;
-                state.failed_count += 1;
-            }
-        }
+        // The hourly task group is the in-flight unit. The lower service owns its
+        // provider chunks and returns one final outcome for each contact.
+        let outcomes = send_contact_batch(&task_id, &batch_recipients, &subject, &body).await;
+        apply_batch_outcomes(&task, outcomes).await;
     }
 
     {
@@ -243,35 +230,22 @@ async fn run_task(task: Arc<Mutex<MailTaskRecord>>, cancel: Arc<Notify>) {
     }
 }
 
-async fn send_one(
-    cfg: &EmailConfig,
-    rendered: &templates::RenderedEmail,
-    recipient: &repository::MailRecipientRecord,
-) -> Result<(), String> {
-    if cfg.dry_run {
-        tracing::warn!(
-            position = recipient.position,
-            "[email dry-run] contact mail recipient accepted without delivery"
-        );
-        return Ok(());
+async fn apply_batch_outcomes(task: &Arc<Mutex<MailTaskRecord>>, outcomes: Vec<EmailBatchOutcome>) {
+    let finished_at = Utc::now();
+    let mut task = task.lock().await;
+    for outcome in outcomes {
+        let recipient = &mut task.recipients[(outcome.recipient.key - 1) as usize];
+        recipient.finished_at = Some(finished_at);
+        match outcome.result {
+            Ok(()) => {
+                recipient.status = "accepted".to_string();
+                task.accepted_count += 1;
+            }
+            Err(error) => {
+                recipient.status = "failed".to_string();
+                recipient.error = error;
+                task.failed_count += 1;
+            }
+        }
     }
-    if !cfg.is_configured() {
-        return Err(
-            "Email delivery became unavailable before this recipient was sent.".to_string(),
-        );
-    }
-    send_email(
-        cfg,
-        &EmailMessage {
-            kind: EmailKind::Standard,
-            recipients: EmailRecipients::To(EmailRecipient {
-                address: recipient.email.clone(),
-                name: recipient.name.clone(),
-            }),
-            subject: rendered.subject.clone(),
-            html: rendered.html.clone(),
-            plain_text: rendered.plain_text.clone(),
-        },
-    )
-    .await
 }

@@ -166,13 +166,6 @@ pub async fn start_contact_mail_task(
     let user = crate::server::permissions::require_user().await?;
     crate::server::permissions::require_operations_admin(&user)?;
     crate::server::permissions::require_information_management_access(&user)?;
-    let cfg = crate::server::config::EmailConfig::from_env();
-    if !cfg.dry_run && !cfg.is_configured() {
-        return Err(ServerFnError::new(
-            "Email delivery is not configured. Configure ACS Email or enable EMAIL_DRY_RUN.",
-        ));
-    }
-
     let subject = subject.trim().to_string();
     let body = body.trim().to_string();
     if subject.is_empty() {
