@@ -6,6 +6,7 @@
 //! resource's `emails:send` endpoint.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -13,7 +14,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::server::config::EmailConfig;
 
@@ -28,11 +29,14 @@ const MAX_ATTEMPTS: u32 = 3;
 /// How long to wait between attempts after a transient failure.
 const RETRY_DELAY: Duration = Duration::from_secs(25);
 
-/// Maximum non-OTP email sends allowed in a rolling hour.
-const MAX_EMAILS_PER_HOUR: usize = 90;
+/// Number of recent sends at which standard emails must wait.
+const STANDARD_EMAIL_LIMIT: usize = 90;
 const EMAIL_LIMIT_WINDOW: Duration = Duration::from_secs(60 * 60);
 
-static EMAIL_SENDS: OnceLock<Mutex<VecDeque<Instant>>> = OnceLock::new();
+static EMAIL_SENDS_HISTORY: OnceLock<Mutex<VecDeque<Instant>>> = OnceLock::new();
+static NEXT_EMAIL_SEND_ID: AtomicU64 = AtomicU64::new(0);
+static EMAILS_WAITING_QUEUE: OnceLock<Mutex<VecDeque<u64>>> = OnceLock::new();
+static EMAIL_QUEUE_CHANGED: OnceLock<Notify> = OnceLock::new();
 
 /// ACS Email's maximum total recipients in one message.
 pub const MAX_RECIPIENTS_PER_MESSAGE: usize = 50;
@@ -63,7 +67,7 @@ pub enum EmailRecipients {
 }
 
 /// Whether an email uses the standard limit or the reserved OTP capacity.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EmailKind {
     Standard,
     Otp,
@@ -107,57 +111,113 @@ pub async fn send_email(cfg: &EmailConfig, msg: &EmailMessage) -> Result<(), Str
     let serialized =
         serde_json::to_string(&body).map_err(|e| format!("email encode failed: {e}"))?;
 
-    if matches!(msg.kind, EmailKind::Standard) {
-        reserve_email_send().await;
-    }
+    let send_id = register_waiting_email(msg).await;
 
     // Retry transient failures a few times. Each attempt is freshly signed
     // because the `x-ms-date` header (and thus the signature) must be current.
-    let mut last_err = String::new();
-    for attempt in 1..=MAX_ATTEMPTS {
+    let mut attempt = 1;
+    let result = loop {
         match try_send(cfg, &url, &path_and_query, &host, &serialized).await {
             Ok(()) => {
                 tracing::info!("email \"{}\" sent to {recipient_summary}", msg.subject);
-                return Ok(());
+                break Ok(());
             }
-            Err(SendError::Permanent(e)) => return Err(e),
+            Err(SendError::Permanent(e)) => break Err(e),
             Err(SendError::Retryable(e)) => {
-                last_err = e;
                 if attempt < MAX_ATTEMPTS {
                     tracing::warn!(
                         "email to {recipient_summary} failed (attempt {attempt}/{MAX_ATTEMPTS}): \
-                         {last_err}; retrying"
+                         {e}; retrying"
                     );
                     tokio::time::sleep(RETRY_DELAY).await;
+                    attempt += 1;
+                } else {
+                    break Err(format!("email failed after {MAX_ATTEMPTS} attempts: {e}"));
                 }
             }
         }
-    }
-    Err(format!(
-        "email failed after {MAX_ATTEMPTS} attempts: {last_err}"
-    ))
+    };
+    remove_waiting_email(send_id).await;
+    result
 }
 
-/// Wait for and reserve one slot in the process-local hourly send limit.
-async fn reserve_email_send() {
-    let sends = EMAIL_SENDS.get_or_init(|| Mutex::new(VecDeque::new()));
-    // Tokio's mutex admits queued callers in FIFO order. Keep it while waiting so
-    // later emails cannot jump ahead, but release it before the ACS request.
-    let mut sends = sends.lock().await;
+/// The mechanism we use to ensure we aren't hitting the rate limit.
+/// And also ensure that OTP messages can be sent out always with priority.
+async fn register_waiting_email(msg: &EmailMessage) -> u64 {
+    // OTP emails bypass the standard limit and start immediately.
+    if msg.kind == EmailKind::Otp {
+        let send_id = NEXT_EMAIL_SEND_ID.fetch_add(1, Ordering::Relaxed);
+        let waiting_queue_mutex = EMAILS_WAITING_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()));
+        let mut waiting_queue = waiting_queue_mutex.lock().await;
+        waiting_queue.push_back(send_id);
 
-    let now = Instant::now();
-    sends.retain(|sent_at| now.duration_since(*sent_at) < EMAIL_LIMIT_WINDOW);
-
-    if sends.len() == MAX_EMAILS_PER_HOUR {
-        let wait = EMAIL_LIMIT_WINDOW - now.duration_since(sends[0]);
-        tracing::warn!(
-            "email hourly limit reached ({MAX_EMAILS_PER_HOUR} sends); waiting {wait:?} for the next slot"
-        );
-        tokio::time::sleep(wait).await;
-        sends.pop_front();
+        let history_mutex = EMAIL_SENDS_HISTORY.get_or_init(|| Mutex::new(VecDeque::new()));
+        history_mutex.lock().await.push_back(Instant::now());
+        return send_id;
     }
 
-    sends.push_back(Instant::now());
+    loop {
+        // Register for notification before inspecting the queue so an OTP
+        // completion cannot be missed between the check and the await.
+        let queue_changed = EMAIL_QUEUE_CHANGED.get_or_init(Notify::new).notified();
+        let waiting_queue_mutex = EMAILS_WAITING_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()));
+        let mut waiting_queue = waiting_queue_mutex.lock().await;
+
+        let history_mutex = EMAIL_SENDS_HISTORY.get_or_init(|| Mutex::new(VecDeque::new()));
+        let mut history = history_mutex.lock().await;
+
+        if waiting_queue.len() > 0 {
+            tracing::warn!(
+                "email \"{}\" waiting for OTP emails to be sent first ({} in queue)",
+                msg.subject,
+                waiting_queue.len()
+            );
+            drop(waiting_queue);
+            drop(history);
+            queue_changed.await;
+            continue;
+        }
+
+        let now = Instant::now();
+        history.retain(|&sent_at| now.duration_since(sent_at) < EMAIL_LIMIT_WINDOW);
+
+        if history.len() < STANDARD_EMAIL_LIMIT {
+            history.push_back(Instant::now());
+            let send_id = NEXT_EMAIL_SEND_ID.fetch_add(1, Ordering::Relaxed);
+            if msg.kind == EmailKind::Otp {
+                waiting_queue.push_back(send_id);
+            }
+            return send_id;
+        }
+
+        let wait = history
+            .front()
+            .map(|sent_at| EMAIL_LIMIT_WINDOW.saturating_sub(now.duration_since(*sent_at)))
+            .unwrap_or_default();
+        tracing::warn!(
+            "email \"{}\" waiting for {wait:?} due to rate limit ({} sent in the last hour)",
+            msg.subject,
+            history.len()
+        );
+        drop(waiting_queue);
+        drop(history);
+        tokio::time::sleep(wait).await;
+    }
+}
+
+async fn remove_waiting_email(send_id: u64) {
+    let waiting_queue_mutex = EMAILS_WAITING_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()));
+    let mut waiting_queue = waiting_queue_mutex.lock().await;
+
+    let previous_len = waiting_queue.len();
+    waiting_queue.retain(|&queued_id| queued_id != send_id);
+    let removed = waiting_queue.len() < previous_len;
+    drop(waiting_queue);
+    if removed {
+        EMAIL_QUEUE_CHANGED
+            .get_or_init(Notify::new)
+            .notify_waiters();
+    }
 }
 
 fn recipients_json(recipients: &EmailRecipients) -> Result<(serde_json::Value, String), String> {
