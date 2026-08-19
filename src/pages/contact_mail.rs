@@ -582,13 +582,13 @@ fn ContactMailWorkspace() -> impl IntoView {
                                 {move || blocked_recipients.get().into_iter().map(|entry| {
                                     let reason = if entry.do_not_contact { "Do not contact" } else { "Archived" };
                                     view! {
-                                        <li class="text-xs text-amber-200/80">
+                                        <li class="text-xs text-amber-200">
                                             {entry.name} " - " {entry.email} " - " <span class="font-medium">{reason}</span>
                                         </li>
                                     }
                                 }).collect_view()}
                             </ul>
-                            <p class="mt-2 text-xs text-amber-200/70">
+                            <p class="mt-2 text-xs text-amber-200">
                                 "Sending skips them automatically; clear them from the selection to remove this notice."
                             </p>
                         </div>

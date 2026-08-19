@@ -153,7 +153,7 @@ pub fn VolunteerDetailsPanel(
                     </span>
                 </div>
                 <Show when=move || revealed_ssn.get().is_some()>
-                    <p class="mt-1 text-xs text-amber-300/80">
+                    <p class="mt-1 text-xs text-amber-300">
                         "This disclosure has been recorded in the change log."
                     </p>
                 </Show>

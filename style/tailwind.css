@@ -18,8 +18,10 @@
   /* Primary accent: warm yellow / gold. */
   --color-primary-50: #fffbeb;
   --color-primary-100: #fef3c7;
-  --color-primary-200: #b45309;
-  --color-primary-300: #b45309;
+  /* 200/300 are only ever used as text; darken so gold links and badges clear
+     WCAG AA on the light gold tints they sit on. */
+  --color-primary-200: #a2490b;
+  --color-primary-300: #a2490b;
   --color-primary-400: #d97706;
   --color-primary-500: #d97706;
   --color-primary-600: #b45309;
@@ -32,10 +34,19 @@
   --color-rose-400: #dc2626;
   --color-rose-500: #dc2626;
 
-  /* Darken status text shades so badges read on a light background. */
+  /* Darken status text shades so badges read on a light background. The status
+     ramps follow the same inversion as slate: lower number = darker text. */
+  --color-emerald-100: #064e3b;
+  --color-emerald-200: #065f46;
   --color-emerald-300: #047857;
+  --color-sky-100: #0c4a6e;
+  --color-sky-200: #075985;
   --color-sky-300: #0369a1;
-  --color-amber-300: #b45309;
+  --color-amber-100: #78350f;
+  --color-amber-200: #92400e;
+  --color-amber-300: #a2490b;
+  --color-rose-100: #7f1d1d;
+  --color-rose-200: #991b1b;
 
   /* Slate ramp, remapped for light mode: low numbers = dark text, high
      numbers = light surfaces (900 = card white, 950 = page). */
