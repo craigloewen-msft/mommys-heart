@@ -157,6 +157,41 @@ pub async fn load_contact_mail_task() -> Result<Option<ContactMailTask>, ServerF
     }
 }
 
+/// One selected contact that will be skipped because it is no longer eligible.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BlockedRecipient {
+    pub name: String,
+    pub email: String,
+    /// True for "do not contact"; false when the contact was archived instead.
+    pub do_not_contact: bool,
+}
+
+#[server(prefix = "/api", input = leptos::server_fn::codec::Json)]
+pub async fn preview_blocked_recipients(
+    selection: ContactMailSelection,
+) -> Result<Vec<BlockedRecipient>, ServerFnError> {
+    let user = crate::server::permissions::require_user().await?;
+    crate::server::permissions::require_operations_admin(&user)?;
+    crate::server::permissions::require_information_management_access(&user)?;
+    // "All matching" is re-resolved server-side through the eligibility filter,
+    // so only an explicit id selection can carry newly-blocked contacts.
+    if selection.all_matching {
+        return Ok(Vec::new());
+    }
+    let ids = clean_ids(selection.contact_ids);
+    let blocked = crate::server::db::contact_mail::blocked_selection_preview(&ids)
+        .await
+        .map_err(ServerFnError::new)?;
+    Ok(blocked
+        .into_iter()
+        .map(|(name, email, do_not_contact)| BlockedRecipient {
+            name,
+            email,
+            do_not_contact,
+        })
+        .collect())
+}
+
 #[server(prefix = "/api", input = leptos::server_fn::codec::Json)]
 pub async fn start_contact_mail_task(
     selection: ContactMailSelection,

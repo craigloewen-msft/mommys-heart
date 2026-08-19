@@ -319,6 +319,37 @@ pub async fn start_task(
     })
 }
 
+#[derive(sqlx::FromRow)]
+struct BlockedRow {
+    name: String,
+    email: String,
+    do_not_contact: bool,
+}
+
+/// Explicitly selected contacts that would now be skipped, so the UI can warn
+/// before sending. Only meaningful for explicit id selections: "all matching"
+/// is re-resolved through the eligibility CTE, which already excludes these.
+pub async fn blocked_selection_preview(
+    contact_ids: &[String],
+) -> Result<Vec<(String, String, bool)>, sqlx::Error> {
+    if contact_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, BlockedRow>(&format!(
+        "SELECT {EFFECTIVE_NAME} AS name, btrim({EFFECTIVE_EMAIL}) AS email, c.do_not_contact
+         {ELIGIBLE_FROM}
+         WHERE c.id = ANY($1::text[]) AND (c.do_not_contact OR c.archived)
+         ORDER BY lower({EFFECTIVE_NAME}), c.id"
+    ))
+    .bind(contact_ids)
+    .fetch_all(pool())
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.name, row.email, row.do_not_contact))
+        .collect())
+}
+
 /// Contacts that must not be mailed right now: flagged "do not contact" or
 /// archived since the task started. Used as a pre-send fail-safe.
 pub async fn suppressed_contact_ids(

@@ -9,8 +9,8 @@ use crate::components::layout::Layout;
 use crate::server_fns::contact_directory::{list_contact_categories, ContactCategory};
 use crate::server_fns::contact_mail::{
     cancel_contact_mail_task, list_contact_mail_candidates, load_contact_mail_task,
-    start_contact_mail_task, ContactMailCandidate, ContactMailFilters, ContactMailSelection,
-    ContactMailTask, MAX_MAIL_BODY, MAX_MAIL_SUBJECT,
+    preview_blocked_recipients, start_contact_mail_task, BlockedRecipient, ContactMailCandidate,
+    ContactMailFilters, ContactMailSelection, ContactMailTask, MAX_MAIL_BODY, MAX_MAIL_SUBJECT,
 };
 use crate::server_fns::contacts::ContactType;
 use crate::server_fns::err_text;
@@ -63,6 +63,7 @@ fn ContactMailWorkspace() -> impl IntoView {
     let all_matching = RwSignal::new(false);
     let subject = RwSignal::new(String::new());
     let body = RwSignal::new(String::new());
+    let blocked_recipients = RwSignal::new(Vec::<BlockedRecipient>::new());
 
     let active = Signal::derive(move || task.get().is_some_and(|task| task.status.is_active()));
     let selected_count = Signal::derive(move || {
@@ -196,15 +197,6 @@ fn ContactMailWorkspace() -> impl IntoView {
         }
         let launch_subject = subject.get_untracked();
         let launch_body = body.get_untracked();
-        let hours = count.saturating_sub(1) / 60;
-        let confirmation = format!(
-            "Send this message to {count} contact{}? The fixed batch schedule will take at least {hours} hour{}.",
-            if count == 1 { "" } else { "s" },
-            if hours == 1 { "" } else { "s" },
-        );
-        if !confirm(&confirmation) {
-            return;
-        }
         let selection = ContactMailSelection {
             all_matching: all_matching.get_untracked(),
             filters: applied_filters.get_untracked(),
@@ -216,9 +208,59 @@ fn ContactMailWorkspace() -> impl IntoView {
         error.set(String::new());
         notice.set(String::new());
         spawn_local(async move {
+            // Re-check server-side: a contact may have been flagged since this
+            // page listed them, so the visible selection can be stale.
+            let blocked = match preview_blocked_recipients(selection.clone()).await {
+                Ok(blocked) => blocked,
+                Err(server_error) => {
+                    error.set(err_text(server_error));
+                    busy.set(false);
+                    return;
+                }
+            };
+            blocked_recipients.set(blocked.clone());
+            let sending = (count - blocked.len() as i64).max(0);
+            if sending == 0 {
+                error.set(
+                    "Every selected contact is now marked do not contact or archived, so there is nobody to send to."
+                        .to_string(),
+                );
+                busy.set(false);
+                return;
+            }
+            let hours = sending.saturating_sub(1) / 60;
+            let mut confirmation = String::new();
+            if !blocked.is_empty() {
+                let names = blocked
+                    .iter()
+                    .take(5)
+                    .map(|entry| format!("  - {} ({})", entry.name, entry.email))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let overflow = if blocked.len() > 5 {
+                    format!("\n  and {} more", blocked.len() - 5)
+                } else {
+                    String::new()
+                };
+                confirmation.push_str(&format!(
+                    "WARNING: {} of your selected contact{} marked do not contact or archived and will NOT receive this email:\n{names}{overflow}\n\n",
+                    blocked.len(),
+                    if blocked.len() == 1 { " is" } else { "s are" },
+                ));
+            }
+            confirmation.push_str(&format!(
+                "Send this message to {sending} contact{}? The fixed batch schedule will take at least {hours} hour{}.",
+                if sending == 1 { "" } else { "s" },
+                if hours == 1 { "" } else { "s" },
+            ));
+            if !confirm(&confirmation) {
+                busy.set(false);
+                return;
+            }
             match start_contact_mail_task(selection, launch_subject, launch_body).await {
                 Ok(started) => {
                     task.set(Some(started));
+                    blocked_recipients.set(Vec::new());
                     notice.set("Mail task started. This page will update as it sends.".to_string());
                 }
                 Err(server_error) => error.set(err_text(server_error)),
@@ -527,6 +569,32 @@ fn ContactMailWorkspace() -> impl IntoView {
 
                 <section class=PANEL>
                     <h2 class="text-lg font-semibold text-slate-100">"3. Review and start"</h2>
+                    <Show when=move || !blocked_recipients.get().is_empty()>
+                        <div role="alert" class="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+                            <p class="text-sm font-semibold text-amber-200">
+                                {move || {
+                                    let count = blocked_recipients.get().len();
+                                    format!(
+                                        "{count} selected contact{} marked do not contact or archived and will not be emailed.",
+                                        if count == 1 { " is" } else { "s are" },
+                                    )
+                                }}
+                            </p>
+                            <ul class="mt-2 space-y-1">
+                                {move || blocked_recipients.get().into_iter().map(|entry| {
+                                    let reason = if entry.do_not_contact { "Do not contact" } else { "Archived" };
+                                    view! {
+                                        <li class="text-xs text-amber-200/80">
+                                            {entry.name} " - " {entry.email} " - " <span class="font-medium">{reason}</span>
+                                        </li>
+                                    }
+                                }).collect_view()}
+                            </ul>
+                            <p class="mt-2 text-xs text-amber-200/70">
+                                "Sending skips them automatically; clear them from the selection to remove this notice."
+                            </p>
+                        </div>
+                    </Show>
                     <p class="mt-2 text-sm text-slate-300">
                         "This will send to " <strong>{move || selected_count.get()}</strong> " contact"
                         {move || if selected_count.get() == 1 { "" } else { "s" }}
