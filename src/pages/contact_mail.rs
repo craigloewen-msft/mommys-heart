@@ -196,11 +196,9 @@ fn ContactMailWorkspace() -> impl IntoView {
         }
         let launch_subject = subject.get_untracked();
         let launch_body = body.get_untracked();
-        let hours = count.saturating_sub(1) / 60;
         let confirmation = format!(
-            "Send this message to {count} contact{}? The fixed batch schedule will take at least {hours} hour{}.",
+            "Send this message to {count} contact{}?",
             if count == 1 { "" } else { "s" },
-            if hours == 1 { "" } else { "s" },
         );
         if !confirm(&confirmation) {
             return;
@@ -367,7 +365,7 @@ fn ContactMailWorkspace() -> impl IntoView {
             <div class="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <p class="max-w-3xl text-sm text-slate-400">
-                        "Choose eligible Contacts, write one message, and send hidden-recipient batches of up to 60 contacts per hour."
+                        "Choose eligible Contacts, write one message, and send it in hidden-recipient batches."
                     </p>
                     <p class="mt-1 text-xs text-slate-500">
                         "Archived contacts, do-not-contact entries, invalid addresses, and duplicate addresses are excluded."
@@ -530,9 +528,7 @@ fn ContactMailWorkspace() -> impl IntoView {
                     <p class="mt-2 text-sm text-slate-300">
                         "This will send to " <strong>{move || selected_count.get()}</strong> " contact"
                         {move || if selected_count.get() == 1 { "" } else { "s" }}
-                        " in hidden-recipient batches over at least "
-                        <strong>{move || selected_count.get().saturating_sub(1) / 60}</strong>
-                        " hour" {move || if selected_count.get().saturating_sub(1) / 60 == 1 { "" } else { "s" }} "."
+                        " in hidden-recipient batches."
                     </p>
                     <button type="button" on:click=launch
                         prop:disabled=move || busy.get() || selected_count.get() == 0 || subject.get().trim().is_empty() || body.get().trim().is_empty()
@@ -569,13 +565,6 @@ fn TaskProgress(
             } else {
                 "Remaining"
             };
-        let hours_left = if !status.is_active() {
-            0
-        } else if processed == 0 {
-            remaining.saturating_sub(1) / 60
-        } else {
-            (remaining + 59) / 60
-        };
         let status_class = match status {
             crate::server_fns::contact_mail::ContactMailTaskStatus::Completed => {
                 "bg-emerald-500/15 text-emerald-300"
@@ -592,7 +581,6 @@ fn TaskProgress(
             _ => "bg-primary-500/15 text-primary-300",
         };
         let failures = current.failures.clone();
-        let next_send_at = current.next_send_at.clone();
         let completed_at = current.completed_at.clone();
         let cancel_requested_at = current.cancel_requested_at.clone();
         let cancel_requested_by_name = current.cancel_requested_by_name.clone();
@@ -622,15 +610,11 @@ fn TaskProgress(
                     </div>
                     <p class="mt-2 text-sm text-slate-300">{processed} " of " {current.recipient_total} " recipients processed (" {percent} "%)"</p>
                 </div>
-                <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-4">
+                <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-3">
                     <div class="rounded-lg bg-slate-950 p-3"><dt class="text-xs text-slate-500">"Provider accepted"</dt><dd class="mt-1 text-lg font-semibold text-emerald-300">{current.accepted_count}</dd></div>
                     <div class="rounded-lg bg-slate-950 p-3"><dt class="text-xs text-slate-500">"Failed attempts"</dt><dd class="mt-1 text-lg font-semibold text-rose-300">{current.failed_count}</dd></div>
                     <div class="rounded-lg bg-slate-950 p-3"><dt class="text-xs text-slate-500">{remaining_label}</dt><dd class="mt-1 text-lg font-semibold text-slate-100">{remaining}</dd></div>
-                    <div class="rounded-lg bg-slate-950 p-3"><dt class="text-xs text-slate-500">"Minimum time left"</dt><dd class="mt-1 text-lg font-semibold text-slate-100">{hours_left} " hr"</dd></div>
                 </dl>
-                {if status.is_active() && !next_send_at.is_empty() {
-                    view! { <p class="mt-3 text-xs text-slate-500">"Next planned batch: " {next_send_at}</p> }.into_any()
-                } else { ().into_any() }}
                 {if !completed_at.is_empty() {
                     view! { <p class="mt-3 text-xs text-slate-500">"Finished: " {completed_at}</p> }.into_any()
                 } else { ().into_any() }}
