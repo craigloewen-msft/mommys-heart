@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::server_fns::contacts::validate_contact_types;
 use crate::server_fns::contacts::ContactType;
 use crate::server_fns::pagination::Page;
+use crate::server_fns::property_filters::PropertyFilter;
 
 #[cfg(feature = "ssr")]
 const MAX_SHORT: usize = 300;
@@ -64,6 +65,10 @@ pub struct Contact {
     pub archived: bool,
     pub has_account: bool,
     pub updated_at: String,
+    /// The label/value pairs behind the active property filters, so a result can
+    /// show why it matched. Empty when nothing is filtered.
+    #[serde(default)]
+    pub filtered_properties: Vec<(String, String)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +257,7 @@ pub async fn search_contacts(
     contact_type: Option<ContactType>,
     organization_id: String,
     include_archived: bool,
+    property_filters: Vec<PropertyFilter>,
     offset: i64,
     limit: i64,
 ) -> Result<Page<Contact>, ServerFnError> {
@@ -268,12 +274,14 @@ pub async fn search_contacts(
         .collect();
     category_ids.sort();
     category_ids.dedup();
+    let property_filters = crate::server_fns::property_filters::clean(property_filters);
     directory::search_page(
         query.trim(),
         &category_ids,
         contact_type,
         organization_id.trim(),
         include_archived,
+        &property_filters,
         offset,
         limit,
         user.role.has_operations_admin_permissions(),

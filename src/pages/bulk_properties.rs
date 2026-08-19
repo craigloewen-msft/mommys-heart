@@ -11,15 +11,17 @@ use leptos_router::hooks::use_query_map;
 
 use crate::components::guard::require_information_management_access;
 use crate::components::layout::Layout;
+use crate::components::property_filters::PropertyFilterBar;
 use crate::server_fns::bulk_properties::{
     apply_bulk_property_edit, list_bulk_property_candidates, list_property_key_options,
     preview_bulk_property_edit, BulkPropertyCandidate, BulkPropertyEdit, BulkPropertyFilters,
-    BulkPropertyOutcome, BulkPropertyPreview, BulkPropertySelection, PropertyCondition,
-    PropertyKeyOption, PropertyRef, PropertySubject, PropertyValueMatch, CANDIDATE_PAGE_SIZE,
+    BulkPropertyOutcome, BulkPropertyPreview, BulkPropertySelection, PropertyKeyOption,
+    PropertyRef, CANDIDATE_PAGE_SIZE,
 };
 use crate::server_fns::contacts::ContactType;
 use crate::server_fns::err_text;
 use crate::server_fns::organizations::{list_organizations, OrganizationFilters, OrganizationKind};
+use crate::server_fns::property_filters::{PropertyFacetScope, PropertyFilter, PropertySubject};
 use crate::state::AppState;
 
 const INPUT: &str = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40 disabled:cursor-not-allowed disabled:opacity-50";
@@ -80,8 +82,9 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
     let organization_id = RwSignal::new(String::new());
     let organization_kind = RwSignal::new(String::new());
     let include_archived = RwSignal::new(false);
-    let match_kind = RwSignal::new(PropertyValueMatch::Any);
-    let condition_value = RwSignal::new(String::new());
+    // The shared chips, owned by the filter bar below.
+    let property_filters = RwSignal::new(Vec::<PropertyFilter>::new());
+    let only_missing_target = RwSignal::new(false);
     let applied_filters = RwSignal::new(BulkPropertyFilters::default());
     // The property the applied list was keyed to, so the "current value" column
     // does not silently re-key while the user is still typing in step 1.
@@ -122,6 +125,26 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
         section: section.get(),
         key: key.get(),
     };
+
+    // Facet counts are measured against the filters actually applied, so the
+    // values on offer describe the list on screen rather than the whole table.
+    let facet_scope = Signal::derive(move || {
+        let applied = applied_filters.get();
+        PropertyFacetScope {
+            keyword: applied.keyword,
+            include_archived: applied.include_archived,
+            contact_type: applied
+                .contact_type
+                .map(|kind| kind.slug().to_string())
+                .unwrap_or_default(),
+            organization_id: applied.organization_id,
+            organization_kind: applied
+                .organization_kind
+                .map(|kind| kind.slug().to_string())
+                .unwrap_or_default(),
+            ..Default::default()
+        }
+    });
 
     // Organizations only ever fill the people-side organization picker.
     Effect::new(move |_| {
@@ -196,30 +219,24 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
         contact_type.set(String::new());
         organization_id.set(String::new());
         organization_kind.set(String::new());
+        property_filters.set(Vec::new());
         applied_filters.set(BulkPropertyFilters::default());
         applied_target.set(PropertyRef::default());
         outcome.set(None);
         notice.set(String::new());
     };
 
-    // Takes the property explicitly so the filter condition and the displayed
-    // current-value column can never be keyed to different properties.
-    let build_filters = move |property: &PropertyRef| {
-        let kind = match_kind.get_untracked();
-        let condition =
-            (property.is_named() && kind != PropertyValueMatch::Any).then(|| PropertyCondition {
-                property: property.clone(),
-                match_kind: kind,
-                value: condition_value.get_untracked(),
-            });
-        BulkPropertyFilters {
-            keyword: keyword.get_untracked(),
-            contact_type: ContactType::from_slug(&contact_type.get_untracked()),
-            organization_id: organization_id.get_untracked(),
-            organization_kind: OrganizationKind::from_slug(&organization_kind.get_untracked()),
-            include_archived: include_archived.get_untracked(),
-            condition,
-        }
+    // Takes the property explicitly so the missing-target clause and the
+    // displayed current-value column can never be keyed to different properties.
+    let build_filters = move |property: &PropertyRef| BulkPropertyFilters {
+        keyword: keyword.get_untracked(),
+        contact_type: ContactType::from_slug(&contact_type.get_untracked()),
+        organization_id: organization_id.get_untracked(),
+        organization_kind: OrganizationKind::from_slug(&organization_kind.get_untracked()),
+        include_archived: include_archived.get_untracked(),
+        property_filters: property_filters.get_untracked(),
+        // Only meaningful once a property has been named.
+        only_missing_target: only_missing_target.get_untracked() && property.is_named(),
     };
 
     let apply_filters = move |_| {
@@ -328,7 +345,7 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
         });
     };
 
-    let subject_button = move |target: PropertySubject, label: &'static str| {
+    let subject_button = move |target: PropertySubject| {
         view! {
             <button
                 type="button"
@@ -341,7 +358,7 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
                     }
                 }
             >
-                {label}
+                {target.label()}
             </button>
         }
     };
@@ -478,8 +495,8 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
                 <A
                     href=move || {
                         match subject.get() {
-                            PropertySubject::People => "/contacts".to_string(),
-                            PropertySubject::Organizations => "/organizations".to_string(),
+                            PropertySubject::Contact => "/contacts".to_string(),
+                            PropertySubject::Organization => "/organizations".to_string(),
                         }
                     }
                     attr:class="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
@@ -502,8 +519,7 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
             <section class=PANEL>
                 <h2 class="text-lg font-semibold text-slate-100">"1. Choose the property"</h2>
                 <div class="mt-3 flex flex-wrap gap-2">
-                    {subject_button(PropertySubject::People, "People")}
-                    {subject_button(PropertySubject::Organizations, "Organizations")}
+                    {PropertySubject::ALL.iter().map(|target| subject_button(*target)).collect_view()}
                 </div>
                 <div class="mt-4 grid gap-3 md:grid-cols-3">
                     <label>
@@ -566,7 +582,7 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
                             on:input=move |event| keyword.set(event_target_value(&event))
                         />
                     </label>
-                    <Show when=move || subject.get() == PropertySubject::People>
+                    <Show when=move || subject.get() == PropertySubject::Contact>
                         <label>
                             <span class=LABEL>"Contact type"</span>
                             <select
@@ -594,7 +610,7 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
                             </select>
                         </label>
                     </Show>
-                    <Show when=move || subject.get() == PropertySubject::Organizations>
+                    <Show when=move || subject.get() == PropertySubject::Organization>
                         <label>
                             <span class=LABEL>"Organization kind"</span>
                             <select
@@ -611,35 +627,20 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
                     </Show>
                 </div>
 
-                <div class="mt-3 grid gap-3 md:grid-cols-3">
-                    <label class="md:col-span-2">
-                        <span class=LABEL>"Only records where this property\u{2026}"</span>
-                        <select
-                            class=INPUT
-                            prop:value=move || match_kind.get().slug()
-                            on:change=move |event| {
-                                match_kind.set(
-                                    PropertyValueMatch::from_slug(&event_target_value(&event))
-                                        .unwrap_or_default(),
-                                );
-                            }
-                        >
-                            {PropertyValueMatch::ALL.iter().map(|kind| view! {
-                                <option value=kind.slug()>{kind.label()}</option>
-                            }).collect_view()}
-                        </select>
-                    </label>
-                    <Show when=move || match_kind.get().needs_value()>
-                        <label>
-                            <span class=LABEL>"Compared with"</span>
-                            <input
-                                class=INPUT
-                                prop:value=move || condition_value.get()
-                                on:input=move |event| condition_value.set(event_target_value(&event))
-                            />
-                        </label>
-                    </Show>
-                </div>
+                <label class="mt-3 flex cursor-pointer items-start gap-2 text-sm text-slate-300">
+                    <input
+                        type="checkbox"
+                        class="mt-0.5 h-4 w-4 accent-primary-500"
+                        prop:checked=move || only_missing_target.get()
+                        on:change=move |event| only_missing_target.set(event_target_checked(&event))
+                    />
+                    <span>
+                        "Only records that do not have this property yet"
+                        <span class="block text-xs text-slate-500">
+                            "The backfill case: everyone the property has never been set on. The chips above pick records by the values they already carry, which is a different question."
+                        </span>
+                    </span>
+                </label>
 
                 <label class="mt-3 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
                     <input
@@ -650,6 +651,19 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
                     />
                     "Include archived records"
                 </label>
+
+                <div class="mt-4">
+                    <span class=LABEL>"Filter by properties they already have"</span>
+                    // Remounted per subject: the facets come from a different
+                    // table, and switching subjects clears the chips anyway.
+                    {move || view! {
+                        <PropertyFilterBar
+                            subject=subject.get()
+                            filters=property_filters
+                            scope=facet_scope
+                        />
+                    }}
+                </div>
 
                 <button
                     type="button"

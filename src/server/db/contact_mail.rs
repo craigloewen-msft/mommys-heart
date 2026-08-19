@@ -4,13 +4,14 @@ use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 use std::collections::HashSet;
 
-use crate::server::db::{ids, pool};
+use crate::server::db::{ids, pool, property_filters};
 use crate::server_fns::contact_mail::{
     ContactMailCandidate, ContactMailFailure, ContactMailFilters, ContactMailSelection,
     ContactMailTask, ContactMailTaskStatus,
 };
 use crate::server_fns::contacts::ContactType;
 use crate::server_fns::pagination::Page;
+use crate::server_fns::property_filters::PropertySubject;
 
 const STAMP: &str = "%Y-%m-%d %H:%M:%S";
 const ELIGIBLE_FROM: &str = "FROM contacts c
@@ -113,7 +114,15 @@ impl MailTaskRecord {
     }
 }
 
+/// The eligible-recipient CTE. The SQL is the same whatever is filtered — the
+/// property chips arrive as one `jsonb` bind — so both the counting and the
+/// sending path share it and cannot disagree about who matches.
 fn candidate_cte() -> String {
+    // A typed word also matches a property value, and the property chips narrow
+    // the same set.
+    let property_search_sql =
+        property_filters::keyword_match_sql(PropertySubject::Contact, "c.id", 2);
+    let property_filter_sql = property_filters::predicate_sql(PropertySubject::Contact, "c.id", 6);
     format!(
         "WITH eligible AS (
             SELECT c.id, {EFFECTIVE_NAME} AS name, btrim({EFFECTIVE_EMAIL}) AS email,
@@ -130,7 +139,8 @@ fn candidate_cte() -> String {
                    OR c.preferred_name ILIKE $2 ESCAPE '\\'
                    OR {EFFECTIVE_NAME} ILIKE $2 ESCAPE '\\'
                    OR {EFFECTIVE_EMAIL} ILIKE $2 ESCAPE '\\'
-                   OR o.name ILIKE $2 ESCAPE '\\')
+                   OR o.name ILIKE $2 ESCAPE '\\'
+                   {property_search_sql})
               AND (cardinality($3::text[]) = 0 OR c.id IN (
                     SELECT a.contact_id FROM contact_category_assignments a
                     WHERE a.category_id = ANY($3::text[])
@@ -139,6 +149,7 @@ fn candidate_cte() -> String {
               ))
               AND ($4 = '' OR $4 = ANY(c.types))
               AND ($5 = '' OR c.organization_id = $5)
+              {property_filter_sql}
         )"
     )
 }
@@ -167,6 +178,7 @@ pub async fn candidate_page(
 ) -> Result<Page<ContactMailCandidate>, sqlx::Error> {
     let cte = candidate_cte();
     let pattern = search_pattern(&filters.query);
+    let filters_json = property_filters::to_json(&filters.property_filters);
     let total: i64 = sqlx::query_scalar(&format!(
         "{cte} SELECT count(*) FROM eligible WHERE email_rank = 1"
     ))
@@ -175,19 +187,21 @@ pub async fn candidate_page(
     .bind(&filters.category_ids)
     .bind(type_slug(filters))
     .bind(&filters.organization_id)
+    .bind(&filters_json)
     .fetch_one(pool())
     .await?;
     let rows = sqlx::query_as::<_, CandidateRow>(&format!(
         "{cte}
          SELECT id, name, email, organization, types FROM eligible
          WHERE email_rank = 1
-         ORDER BY lower(name), id LIMIT $6 OFFSET $7"
+         ORDER BY lower(name), id LIMIT $7 OFFSET $8"
     ))
     .bind(&filters.query)
     .bind(&pattern)
     .bind(&filters.category_ids)
     .bind(type_slug(filters))
     .bind(&filters.organization_id)
+    .bind(&filters_json)
     .bind(limit.clamp(1, 100))
     .bind(offset.max(0))
     .fetch_all(pool())
@@ -209,13 +223,14 @@ async fn selected_recipients(
         &unfiltered
     };
     let pattern = search_pattern(&filters.query);
+    let filters_json = property_filters::to_json(&filters.property_filters);
     let cte = candidate_cte();
     sqlx::query_as::<_, CandidateRow>(&format!(
         "{cte}
          SELECT id, name, email, organization, types FROM eligible
          WHERE email_rank = 1
-           AND (($6 AND NOT (id = ANY($7::text[])))
-                OR (NOT $6 AND id = ANY($8::text[])))
+           AND (($7 AND NOT (id = ANY($8::text[])))
+                OR (NOT $7 AND id = ANY($9::text[])))
          ORDER BY lower(name), id"
     ))
     .bind(&filters.query)
@@ -223,6 +238,7 @@ async fn selected_recipients(
     .bind(&filters.category_ids)
     .bind(type_slug(filters))
     .bind(&filters.organization_id)
+    .bind(&filters_json)
     .bind(selection.all_matching)
     .bind(&selection.excluded_contact_ids)
     .bind(&selection.contact_ids)

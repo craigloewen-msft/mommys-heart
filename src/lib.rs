@@ -28,6 +28,7 @@ pub mod components {
     pub mod loading;
     pub mod organization_properties;
     pub mod profile_link;
+    pub mod property_filters;
     pub mod volunteer_details;
     pub mod volunteer_hours;
 }

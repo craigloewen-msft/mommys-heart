@@ -35,13 +35,10 @@ flowchart LR
 ## 1. Shared types and server functions — new `src/server_fns/bulk_properties.rs`
 
 ```rust
-pub enum PropertySubject { People, Organizations }   // serde snake_case
+// PropertySubject is the shared one from server_fns::property_filters.
 
 pub struct PropertyRef { pub section: String, pub key: String }
 
-pub enum PropertyValueMatch { Any, Missing, Blank, Filled, Equals(String), Contains(String) }
-
-pub struct PropertyCondition { pub property: PropertyRef, pub value: PropertyValueMatch }
 
 pub struct BulkPropertyFilters {
     pub keyword: String,
@@ -49,7 +46,8 @@ pub struct BulkPropertyFilters {
     pub organization_id: String,                     // People only
     pub organization_kind: Option<OrganizationKind>, // Organizations only
     pub include_archived: bool,
-    pub condition: Option<PropertyCondition>,        // filter BY existing properties
+    pub property_filters: Vec<PropertyFilter>,       // the shared property chips
+    pub only_missing_target: bool,                   // bulk-only backfill clause
 }
 
 pub struct BulkPropertyCandidate {
@@ -125,14 +123,11 @@ struct SubjectTables {
 Functions:
 
 - `candidate_page(subject, filters, target, offset, limit)` — the subject's base
-  `WHERE`, plus, when `filters.condition` is set, an `EXISTS` / `NOT EXISTS`
-  subquery against the properties table matched on
-  `lower(btrim(key)) = $n AND lower(btrim(section)) = $m` — the same
-  normalisation `helpers::new_crm_fields::normalize_property_part` does in Rust,
-  so bulk matching and the existing defaults logic agree. `Missing` becomes
-  `NOT EXISTS`; `Blank` / `Filled` / `Equals` / `Contains` become `EXISTS` with an
-  extra value predicate. `current_value` comes from a `LEFT JOIN LATERAL` on the
-  same match.
+  `WHERE`, plus `property_filters::predicate_sql` pasted in verbatim so the
+  shared chips mean exactly what they mean in the Contacts and Organizations
+  directories, plus (when `only_missing_target` is set) a `NOT EXISTS` on the
+  target property matched on `lower(btrim(key))` / `lower(btrim(section))`.
+  `current_value` comes from a `LEFT JOIN LATERAL` on the same match.
 - `resolve_target_ids(subject, selection)` — when `all_matching`, re-runs the
   filter query server-side and subtracts `excluded_ids`; otherwise cleans and
   dedupes `ids`. Single source of truth for both preview and apply.
@@ -180,10 +175,9 @@ typed. Then the value to set. A short note that a blank value is allowed and mea
 
 **Step 2 — Find and select records.** Keyword box; contact-type + organization
 pickers for People, kind picker for Organizations; "include archived" toggle; and
-the property condition ("only records where <section / name> is any / missing /
-blank / filled / equals / contains …"), defaulting to the property chosen in
-step 1 so the common "find everyone missing this and fill it in" flow is two
-clicks. Paged 50-at-a-time table with a checkbox per row showing name, subtitle,
+the shared `PropertyFilterBar` chips, plus a bulk-only "only records that do not
+have this property yet" toggle for the backfill case the value-based chips
+cannot express. Paged 50-at-a-time table with a checkbox per row showing name, subtitle,
 and **current value of the target property**; "Select all N matching", "Select
 visible", "Clear selection", with the same `all_matching` + `excluded_ids`
 semantics as the mail tool.
@@ -223,8 +217,10 @@ button row of `src/pages/contacts.rs` (beside the existing "Send mail" button,
    Change Log on one of them shows a single properties entry.
 4. Add a *new* section/property that no contact has; confirm it is appended at the
    end of each list and does not disturb existing rows or their order.
-5. Filter by property: choose "is missing", use "Select all N matching", apply,
-   then re-run the same filter and confirm it now returns nothing.
+5. Filter by property: tick "only records that do not have this property yet",
+   use "Select all N matching", apply, then re-run the same filter and confirm it
+   now returns nothing. Separately, add a shared property chip and confirm the
+   candidate list narrows the same way the Contacts directory does.
 6. Re-apply the identical value to the same selection; confirm it reports all
    unchanged and adds no new Change Log entries.
 7. Repeat 3–5 with the Organizations subject.

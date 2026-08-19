@@ -10,12 +10,12 @@
 use std::collections::HashSet;
 
 use crate::helpers::new_crm_fields;
-use crate::server::db::{audit, pool};
+use crate::server::db::{audit, pool, property_filters};
 use crate::server_fns::bulk_properties::{
     BulkPropertyCandidate, BulkPropertyEdit, BulkPropertyFilters, BulkPropertyOutcome,
-    BulkPropertyPreview, BulkPropertySelection, PropertyCondition, PropertyKeyOption, PropertyRef,
-    PropertySubject, PropertyValueMatch,
+    BulkPropertyPreview, BulkPropertySelection, PropertyKeyOption, PropertyRef,
 };
+use crate::server_fns::property_filters::PropertySubject;
 use crate::server_fns::contact_properties::MAX_PROPERTIES;
 use crate::server_fns::contacts::ContactType;
 use crate::server_fns::organizations::OrganizationKind;
@@ -86,8 +86,8 @@ const ORGANIZATIONS: SubjectTables = SubjectTables {
 
 fn tables(subject: PropertySubject) -> &'static SubjectTables {
     match subject {
-        PropertySubject::People => &PEOPLE,
-        PropertySubject::Organizations => &ORGANIZATIONS,
+        PropertySubject::Contact => &PEOPLE,
+        PropertySubject::Organization => &ORGANIZATIONS,
     }
 }
 
@@ -109,8 +109,8 @@ struct CandidateRow {
 fn to_candidate(subject: PropertySubject, row: CandidateRow) -> BulkPropertyCandidate {
     // Organizations carry their kind slug in `subtitle`; show its label instead.
     let subtitle = match subject {
-        PropertySubject::People => row.subtitle,
-        PropertySubject::Organizations => OrganizationKind::from_slug(&row.subtitle)
+        PropertySubject::Contact => row.subtitle,
+        PropertySubject::Organization => OrganizationKind::from_slug(&row.subtitle)
             .map(|kind| kind.label().to_string())
             .unwrap_or_default(),
     };
@@ -126,21 +126,21 @@ fn to_candidate(subject: PropertySubject, row: CandidateRow) -> BulkPropertyCand
 /// The three always-present text parameters, `$2` through `$4`.
 fn base_params(subject: PropertySubject, filters: &BulkPropertyFilters) -> Vec<String> {
     let type_or_kind = match subject {
-        PropertySubject::People => filters
+        PropertySubject::Contact => filters
             .contact_type
             .map(ContactType::slug)
             .unwrap_or_default()
             .to_string(),
-        PropertySubject::Organizations => filters
+        PropertySubject::Organization => filters
             .organization_kind
             .map(OrganizationKind::slug)
             .unwrap_or_default()
             .to_string(),
     };
     let organization_id = match subject {
-        PropertySubject::People => filters.organization_id.trim().to_string(),
+        PropertySubject::Contact => filters.organization_id.trim().to_string(),
         // Not offered for organizations; kept empty so the clause is inert.
-        PropertySubject::Organizations => String::new(),
+        PropertySubject::Organization => String::new(),
     };
     vec![
         type_or_kind,
@@ -149,67 +149,51 @@ fn base_params(subject: PropertySubject, filters: &BulkPropertyFilters) -> Vec<S
     ]
 }
 
-/// The `EXISTS` / `NOT EXISTS` clause implementing "filter by a property the
-/// record already carries". Returns an empty string when the condition is inert.
-fn condition_sql(
+/// The extra `WHERE` clauses beyond the subject's own filters: the shared
+/// property chips, plus the bulk-only "does not have the target property yet".
+///
+/// `first_param` is the placeholder for the chips' single jsonb bind; the two
+/// after it are the normalized key and section of the property being edited.
+fn property_clauses(
     subject: PropertySubject,
-    condition: &PropertyCondition,
+    filters: &BulkPropertyFilters,
     first_param: usize,
 ) -> String {
-    if !condition.is_active() {
-        return String::new();
-    }
     let t = tables(subject);
-    let key_param = first_param;
-    let section_param = first_param + 1;
-    let value_param = first_param + 2;
-    let key = normalized("p.key");
-    let section = normalized("p.section");
-
-    let (negated, value_predicate) = match condition.match_kind {
-        PropertyValueMatch::Missing => (true, String::new()),
-        PropertyValueMatch::Blank => (false, " AND btrim(p.value) = ''".to_string()),
-        PropertyValueMatch::Filled => (false, " AND btrim(p.value) <> ''".to_string()),
-        PropertyValueMatch::Equals => (
-            false,
-            format!(" AND {} = ${value_param}", normalized("p.value")),
-        ),
-        PropertyValueMatch::Contains => (
-            false,
-            format!(" AND p.value ILIKE '%' || ${value_param} || '%'"),
-        ),
-        PropertyValueMatch::Any => (false, String::new()),
-    };
-    let exists = if negated { "NOT EXISTS" } else { "EXISTS" };
-    format!(
-        " AND {exists} (SELECT 1 FROM {table} p
-             WHERE p.{owner} = {alias}.id
-               AND {key} = ${key_param}
-               AND {section} = ${section_param}{value_predicate})",
-        table = t.properties_table,
-        owner = t.owner_column,
-        alias = t.alias,
-    )
+    let record_id = format!("{}.id", t.alias);
+    // The shared predicate is pasted in verbatim so the chips mean exactly what
+    // they mean in the Contacts and Organizations directories.
+    let mut sql = format!(
+        " {}",
+        property_filters::predicate_sql(subject, &record_id, first_param)
+    );
+    if filters.only_missing_target {
+        sql.push_str(&format!(
+            " AND NOT EXISTS (SELECT 1 FROM {table} mh_target
+                 WHERE mh_target.{owner} = {record_id}
+                   AND {key} = ${key_param}
+                   AND {section} = ${section_param})",
+            table = t.properties_table,
+            owner = t.owner_column,
+            key = normalized("mh_target.key"),
+            section = normalized("mh_target.section"),
+            key_param = first_param + 1,
+            section_param = first_param + 2,
+        ));
+    }
+    sql
 }
 
-/// The parameters [`condition_sql`] expects, in order.
-fn condition_params(condition: &PropertyCondition) -> Vec<String> {
-    if !condition.is_active() {
-        return Vec::new();
-    }
-    let (section, key) = condition.property.normalized();
-    let mut params = vec![key, section];
-    if condition.match_kind.needs_value() {
-        params.push(match condition.match_kind {
-            // `Equals` compares against the normalized value; `Contains` is a
-            // raw substring match handled by ILIKE.
-            PropertyValueMatch::Equals => {
-                new_crm_fields::normalize_property_part(&condition.value)
-            }
-            _ => condition.value.trim().to_string(),
-        });
-    }
-    params
+/// The binds [`property_clauses`] expects, in order.
+fn property_params(filters: &BulkPropertyFilters, target: &PropertyRef) -> Vec<String> {
+    let (section, key) = target.normalized();
+    // The key/section binds are always supplied so the placeholder numbering
+    // after them is fixed whether or not the missing-target clause is present.
+    vec![
+        property_filters::to_json(&filters.property_filters),
+        key,
+        section,
+    ]
 }
 
 /// A lateral join exposing the target property's current value and the `ord` it
@@ -252,15 +236,13 @@ pub async fn candidate_page(
     limit: i64,
 ) -> Result<Page<BulkPropertyCandidate>, sqlx::Error> {
     let t = tables(subject);
-    let inert = PropertyCondition::default();
-    let condition = filters.condition.as_ref().unwrap_or(&inert);
 
     let mut params = base_params(subject, filters);
-    let condition_clause = condition_sql(subject, condition, params.len() + 2);
-    params.extend(condition_params(condition));
+    let property_clause = property_clauses(subject, filters, params.len() + 2);
+    params.extend(property_params(filters, target));
 
     let total_sql = format!(
-        "SELECT count(*) {joins} {base}{condition_clause}",
+        "SELECT count(*) {joins} {base}{property_clause}",
         joins = t.from_joins,
         base = t.base_where,
     );
@@ -276,7 +258,7 @@ pub async fn candidate_page(
     let offset_param = limit_param + 1;
     let rows_sql = format!(
         "SELECT {columns}, target.value AS current_value
-         {joins} {join} {base}{condition_clause}
+         {joins} {join} {base}{property_clause}
          ORDER BY {alias}.archived ASC, lower(name) ASC, {alias}.id ASC
          LIMIT ${limit_param} OFFSET ${offset_param}",
         columns = t.select_columns,
@@ -309,9 +291,13 @@ pub async fn candidate_page(
 /// "Everything matching" is re-resolved here rather than trusted from the
 /// browser, and an explicit list is intersected with the subject's own table so
 /// a stale or foreign id can never reach the write path.
+///
+/// `target` is the property being edited: "everything matching" may include the
+/// "records missing this property" clause, which is defined against it.
 pub async fn resolve_target_ids(
     subject: PropertySubject,
     selection: &BulkPropertySelection,
+    target: &PropertyRef,
 ) -> Result<Vec<String>, sqlx::Error> {
     let t = tables(subject);
     if !selection.all_matching {
@@ -329,14 +315,12 @@ pub async fn resolve_target_ids(
     }
 
     let filters = &selection.filters;
-    let inert = PropertyCondition::default();
-    let condition = filters.condition.as_ref().unwrap_or(&inert);
     let mut params = base_params(subject, filters);
-    let condition_clause = condition_sql(subject, condition, params.len() + 2);
-    params.extend(condition_params(condition));
+    let property_clause = property_clauses(subject, filters, params.len() + 2);
+    params.extend(property_params(filters, target));
 
     let sql = format!(
-        "SELECT {alias}.id {joins} {base}{condition_clause} ORDER BY {alias}.id",
+        "SELECT {alias}.id {joins} {base}{property_clause} ORDER BY {alias}.id",
         alias = t.alias,
         joins = t.from_joins,
         base = t.base_where,
@@ -605,8 +589,8 @@ pub async fn key_options(
         .collect();
     let defaults: Box<dyn Iterator<Item = &'static new_crm_fields::DefaultPropertyField>> =
         match subject {
-            PropertySubject::People => Box::new(new_crm_fields::person_properties()),
-            PropertySubject::Organizations => Box::new(new_crm_fields::organization_properties()),
+            PropertySubject::Contact => Box::new(new_crm_fields::person_properties()),
+            PropertySubject::Organization => Box::new(new_crm_fields::organization_properties()),
         };
     for field in defaults {
         if seen.insert(new_crm_fields::normalized_property_key(

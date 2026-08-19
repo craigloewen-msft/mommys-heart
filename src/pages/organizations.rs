@@ -6,7 +6,8 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
+use leptos_router::NavigateOptions;
 
 use crate::components::change_log::ChangeLog;
 use crate::components::contact_form::ContactForm;
@@ -14,7 +15,9 @@ use crate::components::guard::require_information_management_access;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::components::organization_properties::OrganizationPropertiesPanel;
+use crate::components::property_filters::{MatchedProperties, PropertyFilterBar};
 use crate::helpers::format::badge_pill;
+use crate::pages::contacts::encode_query_value;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::contacts::{
     list_contacts, search_active_contacts, set_contact_organization, ActiveContactSummary, Contact,
@@ -25,6 +28,9 @@ use crate::server_fns::grants::{list_grants, Grant, GrantFilters};
 use crate::server_fns::organizations::{
     create_organization, list_organizations, load_organization, set_organization_archived,
     update_organization, Organization, OrganizationFilters, OrganizationInput, OrganizationKind,
+};
+use crate::server_fns::property_filters::{
+    self, PropertyFacetScope, PropertyFilter, PropertySubject,
 };
 use crate::state::AppState;
 
@@ -63,10 +69,25 @@ fn OrganizationDirectory() -> impl IntoView {
     let state = expect_context::<AppState>();
     let can_manage = state.has_information_management_access();
 
-    let keyword = RwSignal::new(String::new());
-    let kind_filter = RwSignal::new(String::new());
-    let include_archived = RwSignal::new(false);
-    let applied = RwSignal::new(OrganizationFilters::default());
+    // Seed the filters from the query string, so a shared link opens the view
+    // its sender was looking at.
+    let initial = use_query_map().get_untracked();
+    let initial_keyword = initial.get("q").unwrap_or_default();
+    let initial_kind = initial.get("kind").unwrap_or_default();
+    let initial_archived = initial.get("archived").as_deref() == Some("1");
+    let initial_properties = property_filters::decode(&initial.get("props").unwrap_or_default());
+    drop(initial);
+
+    let keyword = RwSignal::new(initial_keyword.clone());
+    let kind_filter = RwSignal::new(initial_kind.clone());
+    let include_archived = RwSignal::new(initial_archived);
+    let property_filters = RwSignal::new(initial_properties.clone());
+    let applied = RwSignal::new(OrganizationFilters {
+        keyword: initial_keyword,
+        kind: OrganizationKind::from_slug(&initial_kind),
+        include_archived: initial_archived,
+        property_filters: initial_properties,
+    });
     let items = RwSignal::new(Vec::<Organization>::new());
     let total = RwSignal::new(0i64);
     let window = RwSignal::new(50i64);
@@ -74,6 +95,21 @@ fn OrganizationDirectory() -> impl IntoView {
     let error = RwSignal::new(String::new());
     let reload = RwSignal::new(0u32);
     let creating = RwSignal::new(false);
+
+    // Facet counts are measured against the filters actually applied, not the
+    // half-typed ones sitting in the form above the Apply button.
+    let facet_scope = Signal::derive(move || {
+        let applied = applied.get();
+        PropertyFacetScope {
+            keyword: applied.keyword,
+            include_archived: applied.include_archived,
+            organization_kind: applied
+                .kind
+                .map(|kind| kind.slug().to_string())
+                .unwrap_or_default(),
+            ..Default::default()
+        }
+    });
 
     Effect::new(move |_| {
         let filters = applied.get();
@@ -93,12 +129,61 @@ fn OrganizationDirectory() -> impl IntoView {
         });
     });
 
+    // Chips commit on their own Apply, so they take effect without waiting for
+    // the keyword form's button; folding them into `applied` keeps that button
+    // from dropping them.
+    Effect::new(move |previous: Option<Vec<PropertyFilter>>| {
+        let current = property_filters.get();
+        if previous.is_some_and(|previous| previous != current) {
+            window.set(50);
+            applied.update(|applied| applied.property_filters = current.clone());
+        }
+        current
+    });
+
+    // Mirror the applied filters into the URL so the view can be linked to.
+    let navigate = use_navigate();
+    Effect::new(move |previous: Option<()>| {
+        let current = applied.get();
+        let mut parts = Vec::<String>::new();
+        if !current.keyword.is_empty() {
+            parts.push(format!("q={}", encode_query_value(&current.keyword)));
+        }
+        if let Some(kind) = current.kind {
+            parts.push(format!("kind={}", kind.slug()));
+        }
+        let props = property_filters::encode(&current.property_filters);
+        if !props.is_empty() {
+            parts.push(format!("props={}", encode_query_value(&props)));
+        }
+        if current.include_archived {
+            parts.push("archived=1".to_string());
+        }
+        // Skip the first run: it would only rewrite the URL we just read.
+        if previous.is_some() {
+            let target = if parts.is_empty() {
+                "/organizations".to_string()
+            } else {
+                format!("/organizations?{}", parts.join("&"))
+            };
+            navigate(
+                &target,
+                NavigateOptions {
+                    replace: true,
+                    scroll: false,
+                    ..Default::default()
+                },
+            );
+        }
+    });
+
     let apply = move |_| {
         window.set(50);
         applied.set(OrganizationFilters {
             keyword: keyword.get_untracked(),
             kind: OrganizationKind::from_slug(&kind_filter.get_untracked()),
             include_archived: include_archived.get_untracked(),
+            property_filters: property_filters.get_untracked(),
         });
     };
 
@@ -121,6 +206,7 @@ fn OrganizationDirectory() -> impl IntoView {
                 let kind = org.kind;
                 let archived = org.archived;
                 let count = org.contact_count;
+                let matched = org.filtered_properties.clone();
                 view! {
                     <A href=href attr:class="block rounded-lg border border-slate-800 bg-slate-950 p-3 hover:border-primary-500/40">
                         <div class="flex flex-wrap items-center gap-2">
@@ -134,6 +220,9 @@ fn OrganizationDirectory() -> impl IntoView {
                             {count} {if count == 1 { " contact" } else { " contacts" }}
                             {if org.email.is_empty() { String::new() } else { format!(" \u{b7} {}", org.email) }}
                         </p>
+                        <div class="mt-2 flex flex-wrap gap-1">
+                            <MatchedProperties properties=matched />
+                        </div>
                     </A>
                 }
             })
@@ -153,7 +242,7 @@ fn OrganizationDirectory() -> impl IntoView {
                 <Show when=move || can_manage>
                     <div class="flex shrink-0 flex-wrap gap-2">
                         <A
-                            href="/properties/bulk?subject=organizations"
+                            href="/properties/bulk?subject=organization"
                             attr:class="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
                         >
                             "Bulk edit properties"
@@ -222,6 +311,14 @@ fn OrganizationDirectory() -> impl IntoView {
             >
                 "Apply filters"
             </button>
+
+            <div class="mt-4">
+                <PropertyFilterBar
+                    subject=PropertySubject::Organization
+                    filters=property_filters
+                    scope=facet_scope
+                />
+            </div>
 
             <div class="mt-4 space-y-2">{rows}</div>
             <div class="mt-4 flex items-center justify-between text-xs text-slate-500">

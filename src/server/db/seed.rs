@@ -511,6 +511,10 @@ async fn seed_crm_fixtures() -> Result<(), sqlx::Error> {
     }
 
     // Custom properties, showing the same section grouping cases use.
+    //
+    // "Location" is deliberately shared across several people with repeated
+    // values, so the property filter has a real facet to demonstrate on a fresh
+    // database.
     let properties = [
         ("ct-101", 0, "Preferred contact", "Email", "Relationship"),
         (
@@ -559,6 +563,14 @@ async fn seed_crm_fixtures() -> Result<(), sqlx::Error> {
             "Signed 2026-01-14",
             "Governance",
         ),
+        ("ct-101", 3, "Location", "Harbor City", "Relationship"),
+        ("ct-102", 0, "Location", "Harbor City", "Relationship"),
+        ("ct-103", 3, "Location", "Riverside", "Professional"),
+        ("ct-104", 2, "Location", "Riverside", "Professional"),
+        ("ct-105", 0, "Location", "Harbor City", "Relationship"),
+        ("ct-106", 0, "Location", "Remote", "Relationship"),
+        // Named but unfilled, so the "not filled in" facet value has a member.
+        ("ct-107", 3, "Location", "", "Relationship"),
     ];
     for (contact_id, ord, key, value, section) in properties {
         sqlx::query(
@@ -566,6 +578,30 @@ async fn seed_crm_fixtures() -> Result<(), sqlx::Error> {
              VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(contact_id)
+        .bind(ord as i32)
+        .bind(key)
+        .bind(value)
+        .bind(section)
+        .execute(pool)
+        .await?;
+    }
+
+    // Organization properties mirroring the person-level Location facet, so the
+    // Organizations directory has something to filter by too.
+    let organization_properties = [
+        ("org-1", 0, "Location", "Harbor City", "Relationship"),
+        ("org-2", 0, "Location", "Harbor City", "Relationship"),
+        ("org-3", 0, "Location", "Riverside", "Relationship"),
+        ("org-4", 0, "Location", "Riverside", "Relationship"),
+        ("org-5", 0, "Location", "Harbor City", "Relationship"),
+        ("org-6", 0, "Location", "Remote", "Relationship"),
+    ];
+    for (organization_id, ord, key, value, section) in organization_properties {
+        sqlx::query(
+            "INSERT INTO organization_properties (organization_id, ord, key, value, section)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(organization_id)
         .bind(ord as i32)
         .bind(key)
         .bind(value)

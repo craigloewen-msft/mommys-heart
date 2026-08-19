@@ -32,6 +32,7 @@ pub mod organization_properties;
 pub mod organizations;
 pub mod password_reset;
 pub mod pending_registrations;
+pub mod property_filters;
 pub mod seed;
 pub mod sessions;
 pub mod settings;

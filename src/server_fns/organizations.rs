@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::server_fns::crm::{coded_enum, MAX_LONG_TEXT, MAX_NAME, MAX_SHORT_TEXT};
 use crate::server_fns::pagination::Page;
+use crate::server_fns::property_filters::PropertyFilter;
 
 coded_enum!(OrganizationKind {
     Funder => ("funder", "Funder"),
@@ -56,6 +57,10 @@ pub struct Organization {
     pub archived: bool,
     /// How many contacts are filed under this organization.
     pub contact_count: i64,
+    /// The label/value pairs behind the active property filters, so a result can
+    /// show why it matched. Empty when nothing is filtered.
+    #[serde(default)]
+    pub filtered_properties: Vec<(String, String)>,
 }
 
 /// The editable fields of an organization. Separate from [`Organization`] so the
@@ -109,6 +114,9 @@ pub struct OrganizationFilters {
     pub keyword: String,
     pub kind: Option<OrganizationKind>,
     pub include_archived: bool,
+    /// Custom-property facets, ANDed together with OR within each one.
+    #[serde(default)]
+    pub property_filters: Vec<PropertyFilter>,
 }
 
 /// One narrow active organization option for server-side typeahead pickers.
@@ -121,7 +129,10 @@ pub struct ActiveOrganizationSummary {
 
 /// The organization directory. Readable by any staff account so a volunteer can
 /// file a contact under an organization; clients are refused.
-#[server(prefix = "/api")]
+//
+// JSON input: the URL codec drops empty vectors, so an unfiltered listing would
+// arrive with `property_filters` missing entirely.
+#[server(prefix = "/api", input = leptos::server_fn::codec::Json)]
 pub async fn list_organizations(
     filters: OrganizationFilters,
     offset: i64,
@@ -133,6 +144,10 @@ pub async fn list_organizations(
     let user = require_user().await?;
     crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
+    let filters = OrganizationFilters {
+        property_filters: crate::server_fns::property_filters::clean(filters.property_filters),
+        ..filters
+    };
     organizations::page(&filters, offset, limit)
         .await
         .map_err(ServerFnError::new)

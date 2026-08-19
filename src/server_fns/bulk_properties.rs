@@ -19,6 +19,7 @@ use crate::server_fns::contact_properties::{MAX_KEY_CHARS, MAX_VALUE_CHARS};
 use crate::server_fns::contacts::ContactType;
 use crate::server_fns::organizations::OrganizationKind;
 use crate::server_fns::pagination::Page;
+use crate::server_fns::property_filters::{self, PropertyFilter, PropertySubject};
 
 /// How many records one bulk save may change. The write happens inline in a
 /// single transaction rather than as a background task, so the batch is capped
@@ -27,40 +28,6 @@ pub const MAX_BULK_TARGETS: usize = 1000;
 
 /// How many candidates one page of the picker holds.
 pub const CANDIDATE_PAGE_SIZE: i64 = 50;
-
-/// Which directory a bulk edit is aimed at.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PropertySubject {
-    #[default]
-    People,
-    Organizations,
-}
-
-impl PropertySubject {
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::People => "people",
-            Self::Organizations => "organizations",
-        }
-    }
-
-    pub fn from_slug(value: &str) -> Option<Self> {
-        match value {
-            "people" => Some(Self::People),
-            "organizations" => Some(Self::Organizations),
-            _ => None,
-        }
-    }
-
-    /// The plural noun used in UI copy and messages.
-    pub fn noun_plural(self) -> &'static str {
-        match self {
-            Self::People => "people",
-            Self::Organizations => "organizations",
-        }
-    }
-}
 
 /// A property named by its section heading and its name, as typed by the user.
 ///
@@ -103,82 +70,6 @@ impl PropertyRef {
     }
 }
 
-/// How a record's existing value for a property is compared when filtering.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PropertyValueMatch {
-    /// No constraint: the property is ignored when selecting records.
-    #[default]
-    Any,
-    /// The record has no row for this property at all.
-    Missing,
-    /// The record has the property, but its value is empty.
-    Blank,
-    /// The record has the property with a non-empty value.
-    Filled,
-    Equals,
-    Contains,
-}
-
-impl PropertyValueMatch {
-    pub const ALL: &'static [PropertyValueMatch] = &[
-        Self::Any,
-        Self::Missing,
-        Self::Blank,
-        Self::Filled,
-        Self::Equals,
-        Self::Contains,
-    ];
-
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::Any => "any",
-            Self::Missing => "missing",
-            Self::Blank => "blank",
-            Self::Filled => "filled",
-            Self::Equals => "equals",
-            Self::Contains => "contains",
-        }
-    }
-
-    pub fn from_slug(value: &str) -> Option<Self> {
-        Self::ALL.iter().copied().find(|m| m.slug() == value)
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Any => "is anything (no property filter)",
-            Self::Missing => "is not set on the record",
-            Self::Blank => "is set but empty",
-            Self::Filled => "has any value",
-            Self::Equals => "is exactly",
-            Self::Contains => "contains",
-        }
-    }
-
-    /// Whether the comparison needs the typed comparison value.
-    pub fn needs_value(self) -> bool {
-        matches!(self, Self::Equals | Self::Contains)
-    }
-}
-
-/// "Only records whose <property> <matches> <value>".
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct PropertyCondition {
-    pub property: PropertyRef,
-    pub match_kind: PropertyValueMatch,
-    #[serde(default)]
-    pub value: String,
-}
-
-impl PropertyCondition {
-    /// Whether this condition narrows anything. One with no named property, or
-    /// with [`PropertyValueMatch::Any`], is inert.
-    pub fn is_active(&self) -> bool {
-        self.property.is_named() && self.match_kind != PropertyValueMatch::Any
-    }
-}
-
 /// Which records the picker offers. Fields that do not apply to the chosen
 /// subject are ignored rather than rejected, so switching subjects never leaves
 /// a stale filter that silently returns nothing.
@@ -192,8 +83,17 @@ pub struct BulkPropertyFilters {
     /// Organizations only.
     pub organization_kind: Option<OrganizationKind>,
     pub include_archived: bool,
-    /// Filter records by a property they already carry.
-    pub condition: Option<PropertyCondition>,
+    /// The shared property chips: AND across properties, OR within one. Exactly
+    /// the filter the Contacts and Organizations directories use, so "the records
+    /// I was just looking at" means the same thing here.
+    #[serde(default)]
+    pub property_filters: Vec<PropertyFilter>,
+    /// Bulk-edit only: restrict to records that do not carry the property being
+    /// set. The shared chips select *values*, so they cannot express "has no row
+    /// for this property at all" — which is the backfill case this tool exists
+    /// for.
+    #[serde(default)]
+    pub only_missing_target: bool,
 }
 
 /// One record offered for selection, with its current value for the property
@@ -305,24 +205,13 @@ pub fn clean_edit(edit: &BulkPropertyEdit) -> Result<BulkPropertyEdit, String> {
     Ok(BulkPropertyEdit { property, value })
 }
 
-/// Reject a condition that asks for a comparison without giving anything to
-/// compare against.
-pub fn validate_filters(filters: &BulkPropertyFilters) -> Result<(), String> {
-    let Some(condition) = &filters.condition else {
-        return Ok(());
-    };
-    if condition.is_active()
-        && condition.match_kind.needs_value()
-        && condition.value.trim().is_empty()
-    {
-        return Err("Enter the value to compare the property against.".into());
+/// Normalize the property chips, applying the shared caps on how many
+/// properties and values one request may name.
+pub fn clean_filters(filters: BulkPropertyFilters) -> BulkPropertyFilters {
+    BulkPropertyFilters {
+        property_filters: property_filters::clean(filters.property_filters),
+        ..filters
     }
-    if condition.value.chars().count() > MAX_VALUE_CHARS {
-        return Err(format!(
-            "A property value must be {MAX_VALUE_CHARS} characters or fewer."
-        ));
-    }
-    Ok(())
 }
 
 /// Every entry point here is the same bar as editing one record's properties:
@@ -360,7 +249,7 @@ pub async fn list_bulk_property_candidates(
     limit: i64,
 ) -> Result<Page<BulkPropertyCandidate>, ServerFnError> {
     authorize().await?;
-    validate_filters(&filters).map_err(ServerFnError::new)?;
+    let filters = clean_filters(filters);
     crate::server::db::bulk_properties::candidate_page(subject, &filters, &target, offset, limit)
         .await
         .map_err(ServerFnError::new)
@@ -390,10 +279,14 @@ pub async fn preview_bulk_property_edit(
 ) -> Result<BulkPropertyPreview, ServerFnError> {
     authorize().await?;
     let edit = clean_edit(&edit).map_err(ServerFnError::new)?;
-    validate_filters(&selection.filters).map_err(ServerFnError::new)?;
-    let ids = crate::server::db::bulk_properties::resolve_target_ids(subject, &selection)
-        .await
-        .map_err(ServerFnError::new)?;
+    let selection = BulkPropertySelection {
+        filters: clean_filters(selection.filters),
+        ..selection
+    };
+    let ids =
+        crate::server::db::bulk_properties::resolve_target_ids(subject, &selection, &edit.property)
+            .await
+            .map_err(ServerFnError::new)?;
     guard_target_count(&ids)?;
     crate::server::db::bulk_properties::preview(subject, &ids, &edit)
         .await
@@ -409,10 +302,14 @@ pub async fn apply_bulk_property_edit(
 ) -> Result<BulkPropertyOutcome, ServerFnError> {
     let user = authorize().await?;
     let edit = clean_edit(&edit).map_err(ServerFnError::new)?;
-    validate_filters(&selection.filters).map_err(ServerFnError::new)?;
-    let ids = crate::server::db::bulk_properties::resolve_target_ids(subject, &selection)
-        .await
-        .map_err(ServerFnError::new)?;
+    let selection = BulkPropertySelection {
+        filters: clean_filters(selection.filters),
+        ..selection
+    };
+    let ids =
+        crate::server::db::bulk_properties::resolve_target_ids(subject, &selection, &edit.property)
+            .await
+            .map_err(ServerFnError::new)?;
     guard_target_count(&ids)?;
     if ids.is_empty() {
         return Err(ServerFnError::new("Choose at least one record."));
