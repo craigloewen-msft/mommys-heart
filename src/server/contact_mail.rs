@@ -7,13 +7,14 @@ use chrono::Utc;
 use tokio::sync::{Mutex, Notify};
 
 use crate::server::db::contact_mail::{self as repository, MailTaskRecord};
-use crate::server::email::{send_contact_batch, EmailBatchOutcome, EmailBatchRecipient};
+use crate::server::email::{
+    send_contact_batch, EmailBatchOutcome, EmailBatchRecipient, MAX_RECIPIENTS_PER_MESSAGE,
+};
 use crate::server_fns::contact_mail::{
     ContactMailSelection, ContactMailTask, ContactMailTaskStatus,
 };
 
-const CONTACTS_PER_HOUR: usize = 60;
-const MAIL_SEND_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const MAIL_SEND_INTERVAL: Duration = Duration::from_secs(60);
 const FINAL_WRITE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 static SERVICE: OnceLock<ContactMailTaskService> = OnceLock::new();
@@ -165,7 +166,7 @@ async fn run_task(task: Arc<Mutex<MailTaskRecord>>, cancel: Arc<Notify>) {
         chrono::Duration::from_std(MAIL_SEND_INTERVAL).expect("batch interval fits chrono");
     let mut next_send_at = started_at;
 
-    for (batch_index, batch) in recipients.chunks(CONTACTS_PER_HOUR).enumerate() {
+    for (batch_index, batch) in recipients.chunks(MAX_RECIPIENTS_PER_MESSAGE).enumerate() {
         if batch_index > 0 {
             while next_send_at <= Utc::now() {
                 next_send_at += schedule_interval;
