@@ -16,3 +16,7 @@
 # Agent worktrees live here. Keep this anchored: an unanchored '.phoenix' also
 # matches the parent directory of every source file in an agent worktree.
 /.phoenix
+
+# Subscriber/contact exports. These carry names, emails, phone numbers and home
+# addresses for real people and must never be committed.
+*.csv
