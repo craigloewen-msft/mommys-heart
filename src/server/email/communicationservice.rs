@@ -110,9 +110,61 @@ pub async fn send_contact_batch(
     subject: &str,
     body: &str,
 ) -> Vec<EmailBatchOutcome> {
+    let (allowed, mut outcomes) = filter_do_not_contact(task_id, recipients).await;
+    if allowed.is_empty() {
+        return outcomes;
+    }
     let email = templates::contact_mail(&Brand::from_env(), subject, body);
     let context = format!("Contact mail task {task_id}");
-    send_standard_batch(recipients, &email, &context).await
+    outcomes.extend(send_standard_batch(&allowed, &email, &context).await);
+    outcomes
+}
+
+/// Last-mile fail-safe: drop any address belonging to a contact marked "do not
+/// contact". Reaching this means an earlier guard was bypassed, so it is an error.
+async fn filter_do_not_contact(
+    task_id: &str,
+    recipients: &[EmailBatchRecipient],
+) -> (Vec<EmailBatchRecipient>, Vec<EmailBatchOutcome>) {
+    let addresses: Vec<String> = recipients
+        .iter()
+        .map(|recipient| recipient.address.clone())
+        .collect();
+    let blocked = match crate::server::db::contact_mail::do_not_contact_addresses(&addresses).await
+    {
+        Ok(blocked) => blocked,
+        Err(error) => {
+            // Fail closed: without a verified answer we refuse the whole batch.
+            tracing::error!(task_id = %task_id, "do-not-contact address check failed: {error}");
+            let outcomes = recipients
+                .iter()
+                .cloned()
+                .map(|recipient| EmailBatchOutcome {
+                    recipient,
+                    result: Err("Blocked: could not verify contact preferences.".to_string()),
+                })
+                .collect();
+            return (Vec::new(), outcomes);
+        }
+    };
+
+    let mut allowed = Vec::with_capacity(recipients.len());
+    let mut outcomes = Vec::new();
+    for recipient in recipients {
+        if blocked.contains(&recipient.address.trim().to_lowercase()) {
+            tracing::error!(
+                task_id = %task_id,
+                "blocked send to a do-not-contact recipient at the transport layer"
+            );
+            outcomes.push(EmailBatchOutcome {
+                recipient: recipient.clone(),
+                result: Err("Blocked: recipient is marked do not contact.".to_string()),
+            });
+        } else {
+            allowed.push(recipient.clone());
+        }
+    }
+    (allowed, outcomes)
 }
 
 /// Deliver shared content to hidden-recipient ACS batches and return one outcome

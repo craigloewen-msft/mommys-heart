@@ -1,5 +1,6 @@
 //! Process-local Tokio service for one cancellable contact-mail task at a time.
 
+use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ use crate::server_fns::contact_mail::{
 
 const MAIL_SEND_INTERVAL: Duration = Duration::from_secs(60);
 const FINAL_WRITE_RETRY_DELAY: Duration = Duration::from_secs(5);
+const BLOCKED_ERROR: &str = "Blocked: contact is marked do not contact.";
 
 static SERVICE: OnceLock<ContactMailTaskService> = OnceLock::new();
 
@@ -182,25 +184,61 @@ async fn run_task(task: Arc<Mutex<MailTaskRecord>>, cancel: Arc<Notify>) {
         }
 
         let claimed_at = Utc::now();
+        // Fail-safe: recheck the do-not-contact flag right before dispatch, since a
+        // task can run for hours after its recipient list was frozen.
+        let contact_ids: Vec<String> = batch
+            .iter()
+            .map(|recipient| recipient.contact_id.clone())
+            .collect();
+        let suppression = repository::suppressed_contact_ids(&contact_ids).await;
+        let blocked: HashSet<String> = match &suppression {
+            Ok(blocked) => blocked.clone(),
+            Err(error) => {
+                // Fail closed: if we cannot verify preferences, send nothing.
+                tracing::error!(task_id = %task_id, "do-not-contact recheck failed: {error}");
+                contact_ids.iter().cloned().collect()
+            }
+        };
+        let block_reason = match &suppression {
+            Ok(_) => BLOCKED_ERROR.to_string(),
+            Err(error) => format!("Blocked: could not verify contact preferences ({error})."),
+        };
+
         let batch_recipients = {
             let mut task = task.lock().await;
             if task.status == ContactMailTaskStatus::Cancelling {
                 break;
             }
-            batch
-                .iter()
-                .map(|recipient| {
-                    let record = &mut task.recipients[(recipient.position - 1) as usize];
-                    record.status = "sending".to_string();
+            let mut sendable = Vec::with_capacity(batch.len());
+            for recipient in batch {
+                let record = &mut task.recipients[(recipient.position - 1) as usize];
+                if blocked.contains(&recipient.contact_id) {
+                    record.status = "failed".to_string();
                     record.attempt_started_at = Some(claimed_at);
-                    EmailBatchRecipient {
-                        key: recipient.position,
-                        address: recipient.email.clone(),
-                        name: recipient.name.clone(),
-                    }
-                })
-                .collect::<Vec<_>>()
+                    record.finished_at = Some(claimed_at);
+                    record.error = block_reason.clone();
+                    task.failed_count += 1;
+                    tracing::warn!(
+                        task_id = %task_id,
+                        contact_id = %recipient.contact_id,
+                        "contact mail recipient blocked before send"
+                    );
+                    continue;
+                }
+                record.status = "sending".to_string();
+                record.attempt_started_at = Some(claimed_at);
+                sendable.push(EmailBatchRecipient {
+                    key: recipient.position,
+                    address: recipient.email.clone(),
+                    name: recipient.name.clone(),
+                });
+            }
+            sendable
         };
+
+        if batch_recipients.is_empty() {
+            continue;
+        }
 
         // The hourly task group is the in-flight unit. The lower service owns its
         // provider chunks and returns one final outcome for each contact.

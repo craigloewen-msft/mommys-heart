@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
+use std::collections::HashSet;
 
 use crate::server::db::{ids, pool};
 use crate::server_fns::contact_mail::{
@@ -50,6 +51,7 @@ impl From<CandidateRow> for ContactMailCandidate {
 #[derive(Clone, Debug)]
 pub struct MailRecipientRecord {
     pub position: i32,
+    pub contact_id: String,
     pub name: String,
     pub email: String,
     pub status: String,
@@ -285,6 +287,7 @@ pub async fn start_task(
         .await?;
         recipient_records.push(MailRecipientRecord {
             position,
+            contact_id: recipient.id,
             name: recipient.name,
             email: recipient.email,
             status: "pending".to_string(),
@@ -314,6 +317,46 @@ pub async fn start_task(
         error: String::new(),
         recipients: recipient_records,
     })
+}
+
+/// Contacts that must not be mailed right now: flagged "do not contact" or
+/// archived since the task started. Used as a pre-send fail-safe.
+pub async fn suppressed_contact_ids(
+    contact_ids: &[String],
+) -> Result<HashSet<String>, sqlx::Error> {
+    if contact_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT id FROM contacts WHERE id = ANY($1::text[]) AND (do_not_contact OR archived)",
+    )
+    .bind(contact_ids)
+    .fetch_all(pool())
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Addresses belonging to any contact flagged "do not contact", matched
+/// case-insensitively on the effective (contact or linked user) email.
+pub async fn do_not_contact_addresses(
+    addresses: &[String],
+) -> Result<HashSet<String>, sqlx::Error> {
+    if addresses.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let lowered: Vec<String> = addresses
+        .iter()
+        .map(|address| address.trim().to_lowercase())
+        .collect();
+    let rows: Vec<(String,)> = sqlx::query_as(&format!(
+        "SELECT DISTINCT lower(btrim({EFFECTIVE_EMAIL})) AS email
+         {ELIGIBLE_FROM}
+         WHERE c.do_not_contact AND lower(btrim({EFFECTIVE_EMAIL})) = ANY($1::text[])"
+    ))
+    .bind(&lowered)
+    .fetch_all(pool())
+    .await?;
+    Ok(rows.into_iter().map(|(email,)| email).collect())
 }
 
 /// Commit one terminal task snapshot and all final recipient outcomes once.
