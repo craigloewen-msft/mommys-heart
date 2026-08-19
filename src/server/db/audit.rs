@@ -208,6 +208,48 @@ pub async fn record_in_transaction(
     .await
 }
 
+/// Append one audit entry per `(entity_id, old_value)` pair in a single
+/// statement, all sharing the same field and new value.
+///
+/// A bulk edit touches many records at once; recording them one row at a time
+/// would issue thousands of round trips inside a single transaction, holding
+/// locks for the whole run.
+pub async fn record_many_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entity: Entity,
+    entries: &[(String, String)],
+    actor_user_id: &str,
+    actor: &str,
+    field: &str,
+    new_value: &str,
+) -> Result<(), sqlx::Error> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let entity_ids: Vec<&str> = entries.iter().map(|(id, _)| id.as_str()).collect();
+    let old_values: Vec<&str> = entries.iter().map(|(_, old)| old.as_str()).collect();
+    sqlx::query(
+        "INSERT INTO audit_log
+            (id, entity_type, entity_id, actor_user_id, actor, field, old_value,
+             new_value, at, visibility)
+         SELECT 'cl-' || nextval('app_id_seq'), $1, entry.entity_id, $2, $3, $4,
+                entry.old_value, $5, $6, $7
+         FROM unnest($8::text[], $9::text[]) AS entry(entity_id, old_value)",
+    )
+    .bind(entity.as_str())
+    .bind(actor_user_id)
+    .bind(actor)
+    .bind(field)
+    .bind(new_value)
+    .bind(now_stamp())
+    .bind(Visibility::Shared.slug())
+    .bind(&entity_ids)
+    .bind(&old_values)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
 /// Record a mutation with both stable actor identity and its historical display
 /// snapshot. Legacy callers may continue using [`record_in_transaction`].
 pub async fn record_in_transaction_by(

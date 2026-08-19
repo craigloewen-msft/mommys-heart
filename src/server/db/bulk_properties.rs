@@ -212,13 +212,17 @@ fn condition_params(condition: &PropertyCondition) -> Vec<String> {
     params
 }
 
-/// A lateral join exposing the target property's current value, matched on the
-/// same normalized pair the write path uses.
+/// A lateral join exposing the target property's current value and the `ord` it
+/// lives at, matched on the same normalized pair the write path uses.
+///
+/// `ord` is carried through so an update can address the exact row rather than
+/// every row whose normalized name collides: a record may legitimately carry the
+/// same name twice, and only the first is the one shown and edited.
 fn target_join(subject: PropertySubject, first_param: usize) -> String {
     let t = tables(subject);
     format!(
         "LEFT JOIN LATERAL (
-             SELECT p.value FROM {table} p
+             SELECT p.value, p.ord FROM {table} p
              WHERE p.{owner} = {alias}.id
                AND {key} = ${key_param}
                AND {section} = ${section_param}
@@ -366,19 +370,52 @@ struct TargetRow {
     id: String,
     name: String,
     current_value: Option<String>,
+    /// The `ord` the matched row sits at, so a write can address it exactly.
+    current_ord: Option<i32>,
     property_count: i64,
+}
+
+impl TargetRow {
+    /// How this record would be affected by setting the property to `value`.
+    ///
+    /// Stored values are compared trimmed, because the edit is trimmed on the
+    /// way in: an untrimmed " yes " already means "yes" and must not be reported
+    /// or audited as a change.
+    fn classify(&self, value: &str) -> Outcome {
+        match self.current_value.as_deref() {
+            Some(existing) if existing.trim() == value => Outcome::Unchanged,
+            Some(existing) => Outcome::Overwrite(existing.to_string()),
+            None if self.property_count >= MAX_PROPERTIES as i64 => Outcome::AtLimit,
+            None => Outcome::Add,
+        }
+    }
+}
+
+enum Outcome {
+    Unchanged,
+    Overwrite(String),
+    Add,
+    AtLimit,
 }
 
 /// Load each target's current value for the property and how many properties it
 /// already holds, so both preview and apply classify from the same data.
-async fn target_rows(
+///
+/// Takes an executor so `apply` can read this *inside* its transaction: reading
+/// on the pool first would let a concurrent per-record edit change the value or
+/// push the record past the property limit between the read and the write.
+async fn target_rows<'e, E>(
+    executor: E,
     subject: PropertySubject,
     ids: &[String],
     target: &PropertyRef,
-) -> Result<Vec<TargetRow>, sqlx::Error> {
+) -> Result<Vec<TargetRow>, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     let t = tables(subject);
     let sql = format!(
-        "SELECT {columns}, target.value AS current_value,
+        "SELECT {columns}, target.value AS current_value, target.ord AS current_ord,
                 (SELECT count(*) FROM {table} pc WHERE pc.{owner} = {alias}.id) AS property_count
          {joins} {join}
          WHERE {alias}.id = ANY($3::text[])
@@ -395,7 +432,7 @@ async fn target_rows(
         .bind(&params[0])
         .bind(&params[1])
         .bind(ids)
-        .fetch_all(pool())
+        .fetch_all(executor)
         .await
 }
 
@@ -408,17 +445,17 @@ pub async fn preview(
     if ids.is_empty() {
         return Ok(BulkPropertyPreview::default());
     }
-    let rows = target_rows(subject, ids, &edit.property).await?;
+    let rows = target_rows(pool(), subject, ids, &edit.property).await?;
     let mut preview = BulkPropertyPreview {
         total: rows.len() as i64,
         ..Default::default()
     };
     for row in &rows {
-        match row.current_value.as_deref() {
-            Some(existing) if existing == edit.value => preview.unchanged += 1,
-            Some(_) => preview.will_overwrite += 1,
-            None if row.property_count >= MAX_PROPERTIES as i64 => preview.at_property_limit += 1,
-            None => preview.will_add += 1,
+        match row.classify(&edit.value) {
+            Outcome::Unchanged => preview.unchanged += 1,
+            Outcome::Overwrite(_) => preview.will_overwrite += 1,
+            Outcome::AtLimit => preview.at_property_limit += 1,
+            Outcome::Add => preview.will_add += 1,
         }
     }
     Ok(preview)
@@ -429,6 +466,10 @@ pub async fn preview(
 /// An existing row keeps its `ord` and its stored spelling of the section and
 /// name: only the value changes, so a bulk save never reorders or re-cases a
 /// record's list. A record that does not have the property gets one appended.
+///
+/// The writes are set-based — one UPDATE, one INSERT, one audit INSERT — rather
+/// than a statement per record, so a full batch is a handful of statements
+/// instead of thousands, and rows are locked only briefly.
 pub async fn apply(
     subject: PropertySubject,
     ids: &[String],
@@ -437,71 +478,95 @@ pub async fn apply(
     actor: &str,
 ) -> Result<BulkPropertyOutcome, sqlx::Error> {
     let t = tables(subject);
-    let rows = target_rows(subject, ids, &edit.property).await?;
-    let (section_norm, key_norm) = edit.property.normalized();
     let mut outcome = BulkPropertyOutcome::default();
 
     let mut tx = pool().begin().await?;
     audit::set_actor_in_transaction(&mut tx, actor_user_id).await?;
 
-    for row in rows {
-        let previous = match row.current_value.as_deref() {
-            Some(existing) if existing == edit.value => {
-                outcome.unchanged += 1;
-                continue;
-            }
-            Some(existing) => {
-                sqlx::query(&format!(
-                    "UPDATE {table} SET value = $1
-                     WHERE {owner} = $2 AND {key} = $3 AND {section} = $4",
-                    table = t.properties_table,
-                    owner = t.owner_column,
-                    key = normalized("key"),
-                    section = normalized("section"),
-                ))
-                .bind(&edit.value)
-                .bind(&row.id)
-                .bind(&key_norm)
-                .bind(&section_norm)
-                .execute(&mut *tx)
-                .await?;
-                outcome.overwritten += 1;
-                existing.to_string()
-            }
-            None => {
-                if row.property_count >= MAX_PROPERTIES as i64 {
-                    outcome.skipped.push(row.name);
-                    continue;
-                }
-                sqlx::query(&format!(
-                    "INSERT INTO {table} ({owner}, ord, key, value, section)
-                     SELECT $1, coalesce(max(ord) + 1, 0), $2, $3, $4
-                     FROM {table} WHERE {owner} = $1",
-                    table = t.properties_table,
-                    owner = t.owner_column,
-                ))
-                .bind(&row.id)
-                .bind(&edit.property.key)
-                .bind(&edit.value)
-                .bind(&edit.property.section)
-                .execute(&mut *tx)
-                .await?;
-                outcome.added += 1;
-                String::new()
-            }
-        };
+    // Read inside the transaction so the classification cannot go stale between
+    // the decision and the write.
+    let rows = target_rows(&mut *tx, subject, ids, &edit.property).await?;
 
-        audit::record_in_transaction(
-            &mut tx,
-            t.entity,
-            &row.id,
-            actor,
-            &format!("property: {}", edit.property.label()),
-            &previous,
-            &edit.value,
-        )
+    // (id, ord) of rows to rewrite, and the ids needing a fresh row.
+    let mut update_ids: Vec<String> = Vec::new();
+    let mut update_ords: Vec<i32> = Vec::new();
+    let mut insert_ids: Vec<String> = Vec::new();
+    // (entity id, previous value) for the audit trail.
+    let mut audited: Vec<(String, String)> = Vec::new();
+
+    for row in rows {
+        match row.classify(&edit.value) {
+            Outcome::Unchanged => outcome.unchanged += 1,
+            Outcome::AtLimit => outcome.skipped.push(row.name),
+            Outcome::Overwrite(previous) => {
+                // `current_ord` is always present alongside `current_value`.
+                let Some(ord) = row.current_ord else {
+                    continue;
+                };
+                update_ids.push(row.id.clone());
+                update_ords.push(ord);
+                audited.push((row.id, previous));
+                outcome.overwritten += 1;
+            }
+            Outcome::Add => {
+                insert_ids.push(row.id.clone());
+                audited.push((row.id, String::new()));
+                outcome.added += 1;
+            }
+        }
+    }
+
+    if !update_ids.is_empty() {
+        // Addressed by (owner, ord) so a record carrying the same property name
+        // twice keeps its other row untouched.
+        sqlx::query(&format!(
+            "UPDATE {table} SET value = $1
+             FROM unnest($2::text[], $3::int[]) AS target(owner_id, ord)
+             WHERE {table}.{owner} = target.owner_id AND {table}.ord = target.ord",
+            table = t.properties_table,
+            owner = t.owner_column,
+        ))
+        .bind(&edit.value)
+        .bind(&update_ids)
+        .bind(&update_ords)
+        .execute(&mut *tx)
         .await?;
     }
+
+    if !insert_ids.is_empty() {
+        // The property count is re-checked here rather than trusted from the
+        // read above, so a concurrent edit cannot push a record past the limit.
+        sqlx::query(&format!(
+            "INSERT INTO {table} ({owner}, ord, key, value, section)
+             SELECT target.owner_id,
+                    coalesce((SELECT max(p.ord) + 1 FROM {table} p
+                              WHERE p.{owner} = target.owner_id), 0),
+                    $2, $3, $4
+             FROM unnest($1::text[]) AS target(owner_id)
+             WHERE (SELECT count(*) FROM {table} p
+                    WHERE p.{owner} = target.owner_id) < $5",
+            table = t.properties_table,
+            owner = t.owner_column,
+        ))
+        .bind(&insert_ids)
+        .bind(&edit.property.key)
+        .bind(&edit.value)
+        .bind(&edit.property.section)
+        .bind(MAX_PROPERTIES as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    audit::record_many_in_transaction(
+        &mut tx,
+        t.entity,
+        &audited,
+        actor_user_id,
+        actor,
+        &format!("property: {}", edit.property.label()),
+        &edit.value,
+    )
+    .await?;
 
     tx.commit().await?;
     Ok(outcome)

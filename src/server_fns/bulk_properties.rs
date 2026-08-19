@@ -325,7 +325,12 @@ pub fn validate_filters(filters: &BulkPropertyFilters) -> Result<(), String> {
     Ok(())
 }
 
-/// Every entry point here is the same bar as editing one record's properties.
+/// Every entry point here is the same bar as editing one record's properties:
+/// bulk editing is a faster way to do what the per-record panel already allows,
+/// not a wider power, so it does not additionally require operations admin the
+/// way the contact-mail tool does (that gate is about sending outside email).
+///
+/// Enforced here rather than relying on the route guard, which is UI-only.
 #[cfg(feature = "ssr")]
 async fn authorize() -> Result<crate::server_fns::users::User, ServerFnError> {
     let user = crate::server::permissions::require_user().await?;

@@ -202,16 +202,16 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
         notice.set(String::new());
     };
 
-    let build_filters = move || {
-        let property = current_property();
+    // Takes the property explicitly so the filter condition and the displayed
+    // current-value column can never be keyed to different properties.
+    let build_filters = move |property: &PropertyRef| {
         let kind = match_kind.get_untracked();
-        let condition = (property.is_named() && kind != PropertyValueMatch::Any).then(|| {
-            PropertyCondition {
+        let condition =
+            (property.is_named() && kind != PropertyValueMatch::Any).then(|| PropertyCondition {
                 property: property.clone(),
                 match_kind: kind,
                 value: condition_value.get_untracked(),
-            }
-        });
+            });
         BulkPropertyFilters {
             keyword: keyword.get_untracked(),
             contact_type: ContactType::from_slug(&contact_type.get_untracked()),
@@ -223,11 +223,12 @@ fn BulkPropertiesWorkspace() -> impl IntoView {
     };
 
     let apply_filters = move |_| {
+        let property = current_property();
         offset.set(0);
         clear_selection();
         outcome.set(None);
-        applied_target.set(current_property());
-        applied_filters.set(build_filters());
+        applied_filters.set(build_filters(&property));
+        applied_target.set(property);
     };
 
     let build_selection = move || BulkPropertySelection {
