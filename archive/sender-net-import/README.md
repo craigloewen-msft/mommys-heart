@@ -4,67 +4,59 @@ Migrated the sender.net export `Subscribers-export-x0ZWAi.csv` — 1255
 subscribers, 35 columns — into `contacts`, `organizations` and
 `contact_properties`.
 
-Archived rather than deleted so the next export can reuse it. It is **not**
-compiled into the application: `import_senderdotnet.rs` lives here, outside
-`src/`, and the app builds without it.
-
-## Reinstating it
-
-1. `cp import_senderdotnet.rs ../../src/server/`
-2. In `src/server/mod.rs`, add `pub mod import_senderdotnet;`
-3. In `Cargo.toml`, add `csv = { version = "1", optional = true }` to
-   `[dependencies]` and `"dep:csv"` to the `ssr` feature list.
-4. In `src/main.rs`, add the CLI branch beside the existing `seed` branch:
-
-```rust
-if std::env::args().nth(1).as_deref() == Some("import-contacts") {
-    let args: Vec<String> = std::env::args().skip(2).collect();
-    let dry_run = args.iter().any(|a| a == "--dry-run");
-    let actor_at = args.iter().position(|a| a == "--actor");
-    let actor = actor_at
-        .and_then(|i| args.get(i + 1))
-        .cloned()
-        .unwrap_or_else(|| "admin@example.com".to_string());
-    let Some(path) = args
-        .iter()
-        .enumerate()
-        .find(|(i, a)| !a.starts_with("--") && Some(*i) != actor_at.map(|at| at + 1))
-        .map(|(_, a)| a)
-    else {
-        panic!("usage: import-contacts <file.csv> [--dry-run] [--actor <email>]");
-    };
-    if let Err(e) = mommys_heart_app::server::db::init().await {
-        panic!("failed to initialize database: {e}");
-    }
-    if let Err(e) =
-        mommys_heart_app::server::import_senderdotnet::run(path, dry_run, &actor).await
-    {
-        panic!("import failed: {e}");
-    }
-    return;
-}
-```
+A **self-contained crate**: it builds and runs from this directory with no
+edits anywhere else. It depends on the app as a path dependency and writes
+through the same repository functions the UI uses, so every validation rule and
+database CHECK still applies. Nothing here is compiled into or shipped with the
+application — the parent `Cargo.toml` does not reference it.
 
 ## Running it
 
-`--actor` must be an existing account's email; the import writes as that person,
-so the Change Log attributes it to someone real.
-
 ```bash
+cd archive/sender-net-import
+
 # Preview. Reads the file and the database, writes nothing.
-RUST_LOG=info etc/dev.sh -- cargo run --no-default-features --features ssr -- \
-  import-contacts Subscribers-export.csv --dry-run --actor admin@mommysheart.org
+cargo run --release -- ../../Subscribers-export-x0ZWAi.csv \
+  --actor you@mommysheart.org --dry-run
 
 # Import.
-RUST_LOG=info etc/dev.sh -- cargo run --no-default-features --features ssr -- \
-  import-contacts Subscribers-export.csv --actor admin@mommysheart.org
+cargo run --release -- ../../Subscribers-export-x0ZWAi.csv \
+  --actor you@mommysheart.org
 ```
 
-`RUST_LOG=info` is required — the whole report goes through `tracing`.
+`--actor` must be an existing account's email; the import is recorded as that
+person, so the Change Log attributes it to someone real. An unknown address
+exits before anything is written.
+
+The first build takes a few minutes (it compiles the app as a library). No
+`RUST_LOG` needed — the report prints on its own, and an inherited `RUST_LOG`
+cannot suppress it.
+
+### Which database it writes to
+
+`DATABASE_URL` decides, and it is echoed on startup with the password redacted.
+Check that line before answering the LIVE warning.
+
+* **Local dev** — set nothing. It falls back to `../../.env.local`, this
+  checkout's container.
+* **Production** — pass it explicitly. When `DATABASE_URL` is already set, the
+  local `.env.local` is ignored entirely, so it cannot silently redirect a
+  production run:
+
+```bash
+DATABASE_URL="postgres://user:pass@host:5432/db?sslmode=require" \
+  cargo run --release -- /path/to/export.csv --actor you@mommysheart.org --dry-run
+```
+
+> Do **not** run this through `etc/dev.sh --`. That wrapper sources
+> `.env.local` with `set -a`, which overwrites `DATABASE_URL` and would point a
+> production import at the local container.
 
 **Idempotent by email.** A contact whose address already exists is skipped, so an
-interrupted run can simply be repeated. Verified: a second run over the same file
-reported `0 created, 1255 skipped, 0 failed` and left every count unchanged.
+interrupted run is resumed by re-running it. Verified twice: a second full run
+reported `0 created, 1255 skipped`, and a run interrupted mid-flight (351
+organizations written, 0 contacts) recovered on the next attempt to exactly
+1255 contacts / 357 organizations with no duplicates.
 
 ## Mapping
 
@@ -119,7 +111,8 @@ segments, preserved as properties; a contact with no mapped label gets `Other`.
 1255 created / 0 failed, 351 organizations, 93 do-not-contact, 9127 properties.
 A cell-by-cell audit of all 16150 non-empty CSV values found every one present.
 Contacts, organizations, the property section and the "Do not contact" badge all
-render correctly.
+render correctly in the UI.
+
 
 ## The export itself
 

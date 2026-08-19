@@ -1,6 +1,9 @@
 # Rust / cargo-leptos
 /target
 /dist
+# Nested crates (archive/) build into their own target/; the anchored rule above
+# does not cover those.
+target/
 
 # Env
 .env

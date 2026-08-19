@@ -6,10 +6,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::server::db::{contact_properties, contacts, organizations, pool};
-use crate::server_fns::contact_properties::ContactProperty;
-use crate::server_fns::contacts::{ContactInput, ContactType};
-use crate::server_fns::organizations::{OrganizationInput, OrganizationKind};
+use mommys_heart_app::server::db::{contact_properties, contacts, organizations, pool};
+use mommys_heart_app::server_fns::contact_properties::ContactProperty;
+use mommys_heart_app::server_fns::contacts::{ContactInput, ContactType};
+use mommys_heart_app::server_fns::organizations::{OrganizationInput, OrganizationKind};
 
 /// The section every imported property is filed under.
 const SECTION: &str = "Sender.net import";
