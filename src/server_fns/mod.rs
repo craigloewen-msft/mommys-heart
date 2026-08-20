@@ -32,6 +32,7 @@ pub mod contact_mail;
 pub mod contact_properties;
 pub mod contacts;
 pub mod crm;
+pub mod crm_import;
 pub mod email_failures;
 pub mod evidence;
 pub mod funding;

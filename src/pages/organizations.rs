@@ -68,6 +68,9 @@ pub fn ManageOrganizations(selected_id: Option<String>) -> impl IntoView {
 fn OrganizationDirectory() -> impl IntoView {
     let state = expect_context::<AppState>();
     let can_manage = state.has_information_management_access();
+    // Importing writes records wholesale, so it needs the admin gate too.
+    let can_import =
+        state.has_operations_admin_permissions() && state.has_information_management_access();
 
     // Seed the filters from the query string, so a shared link opens the view
     // its sender was looking at.
@@ -247,6 +250,14 @@ fn OrganizationDirectory() -> impl IntoView {
                         >
                             "Bulk edit properties"
                         </A>
+                        <Show when=move || can_import>
+                            <A
+                                href="/import?subject=organization"
+                                attr:class="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                            >
+                                "Import from file"
+                            </A>
+                        </Show>
                         <button
                             type="button"
                             on:click=move |_| creating.update(|c| *c = !*c)

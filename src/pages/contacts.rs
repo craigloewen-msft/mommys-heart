@@ -589,6 +589,9 @@ fn ContactsDirectory() -> impl IntoView {
     let can_send_mail =
         state.has_operations_admin_permissions() && state.has_information_management_access();
     let can_bulk_edit = state.has_information_management_access();
+    // Importing writes records wholesale, so it needs the admin gate the mail
+    // tool has rather than the bulk-edit one.
+    let can_import = can_send_mail;
 
     // Seed every filter from the query string, so a shared link opens the view
     // its sender was looking at.
@@ -925,6 +928,14 @@ fn ContactsDirectory() -> impl IntoView {
                             attr:class="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
                         >
                             "Bulk edit properties"
+                        </A>
+                    </Show>
+                    <Show when=move || can_import>
+                        <A
+                            href="/import?subject=contact"
+                            attr:class="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                        >
+                            "Import from file"
                         </A>
                     </Show>
                     <Show when=move || can_send_mail>

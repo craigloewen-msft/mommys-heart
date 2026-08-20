@@ -14,6 +14,7 @@ use crate::pages::{
     cases::{CaseHomePage, NewCasePage},
     contact_mail::ContactMailPage,
     contacts::ContactsPage,
+    crm_import::CrmImportPage,
     forgot_password::ForgotPasswordPage,
     funding::FundingPage,
     inbox::InboxPage,
@@ -138,6 +139,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/organizations") view=OrganizationsPage />
                 <Route path=path!("/organizations/:id") view=OrganizationsPage />
                 <Route path=path!("/properties/bulk") view=BulkPropertiesPage />
+                <Route path=path!("/import") view=CrmImportPage />
                 <Route path=path!("/funding") view=FundingPage />
                 <Route path=path!("/funding/:id") view=FundingPage />
                 <Route path=path!("/inbox") view=InboxPage />

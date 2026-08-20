@@ -83,6 +83,11 @@ async fn main() {
         panic!("failed to initialize contact mail tasks: {error}");
     }
 
+    // Same for spreadsheet imports, which also start the staged-upload purge.
+    if let Err(error) = mommys_heart_app::server::crm_import::initialize().await {
+        panic!("failed to initialize import tasks: {error}");
+    }
+
     // Prune case-chat notifications that were never read within the retention
     // window (unread ones a user never opened), on startup and every 30 days.
     mommys_heart_app::server::db::channel_notifications::start_retention_task();
