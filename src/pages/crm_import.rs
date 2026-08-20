@@ -388,7 +388,7 @@ fn CrmImportWorkspace() -> impl IntoView {
 
             // One import at a time: while it runs, the whole form is inert. The
             // server refuses a second start regardless.
-            <fieldset prop:disabled=move || active.get() class="space-y-5 disabled:opacity-60">
+            <fieldset prop:disabled=move || active.get() class="min-w-0 space-y-5 disabled:opacity-60">
                 <section class=PANEL>
                     <h2 class="text-lg font-semibold text-slate-100">"1. Choose the file"</h2>
                     <div class="mt-3 flex flex-wrap gap-2">
@@ -561,7 +561,7 @@ fn FilePreview(preview: RwSignal<Option<ImportPreview>>) -> impl IntoView {
                     </div>
                 </div>
 
-                <div class="mt-4 overflow-x-auto rounded-lg border border-slate-800 bg-slate-950">
+                <div class="mt-4 w-full max-w-full overflow-x-auto rounded-lg border border-slate-800 bg-slate-950">
                     <table class="w-full min-w-max text-left text-xs">
                         <thead>
                             <tr class="border-b border-slate-800">
