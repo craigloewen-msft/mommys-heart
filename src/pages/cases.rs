@@ -135,6 +135,9 @@ pub fn CaseHomePage() -> impl IntoView {
     let load_error = RwSignal::new(None::<String>);
     // Bumped after a mutation to force the current window to reload.
     let reload = RwSignal::new(0u32);
+    // Shown after a withdrawal, since the case itself disappears from the list
+    // and would otherwise vanish with no acknowledgement.
+    let notice = RwSignal::new(String::new());
 
     Effect::new(move |_| {
         let count = window.get();
@@ -274,7 +277,16 @@ pub fn CaseHomePage() -> impl IntoView {
         Some(id) => {
             match cases.get().into_iter().find(|c| c.id == id) {
                 Some(c) => view! {
-                    <CaseDetail summary=c reload=reload open_folder=open_folder admin_read=false />
+                    <CaseDetail
+                        summary=c
+                        reload=reload
+                        open_folder=open_folder
+                        admin_read=false
+                        on_withdrawn=Callback::new(move |_| {
+                            selected.set(None);
+                            notice.set("Case withdrawn. An administrator can restore it if you need it back.".to_string());
+                        })
+                    />
                 }
                 .into_any(),
                 None => view! {
@@ -308,6 +320,19 @@ pub fn CaseHomePage() -> impl IntoView {
                     >
                         "+ New case"
                     </A>
+                    <Show when=move || !notice.get().is_empty()>
+                        <div class="flex items-start justify-between gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+                            <p class="text-xs text-emerald-200" role="status">{move || notice.get()}</p>
+                            <button
+                                type="button"
+                                on:click=move |_| notice.set(String::new())
+                                aria-label="Dismiss"
+                                class="shrink-0 text-xs font-medium text-emerald-300 hover:text-emerald-200"
+                            >
+                                "\u{2715}"
+                            </button>
+                        </div>
+                    </Show>
                     <input
                         class=input_class
                         placeholder="Search cases by name"
@@ -461,6 +486,11 @@ pub fn CaseDetail(
     reload: RwSignal<u32>,
     open_folder: RwSignal<Option<String>>,
     admin_read: bool,
+    /// Called after the owner withdraws the case, so a list view can drop the
+    /// selection instead of showing "Case not found" when the case leaves the
+    /// list. Admin surfaces keep showing the case, so they pass nothing.
+    #[prop(optional)]
+    on_withdrawn: Option<Callback<()>>,
 ) -> impl IntoView {
     let state = expect_context::<AppState>();
     let case_id = summary.id.clone();
@@ -483,6 +513,13 @@ pub fn CaseDetail(
     let is_site_admin = role.is_some_and(|role| role.is_site_admin());
     let is_client = matches!(role, Some(AccountRole::Client));
     let can_note = caps.contains(&CaseCapability::AddNotes) && accepts_changes;
+    // Withdrawal is an ownership right, not a case capability: signup grants the
+    // client owner every capability, so capabilities cannot express "this is
+    // mine". The server enforces the same rule.
+    let is_owner = state.current_user_summary.with_untracked(|user| {
+        user.as_ref()
+            .is_some_and(|user| user.id == summary.owner_id)
+    });
     let can_view_evidence = caps.contains(&CaseCapability::ViewEvidence);
     let can_manage_case_information = can_edit;
     let has_stored_write_capability = caps.iter().any(|cap| cap.is_write());
@@ -571,6 +608,57 @@ pub fn CaseDetail(
     let edit_props: RwSignal<Vec<PropRow>> = RwSignal::new(Vec::new());
     let props_error = RwSignal::new(String::new());
     let row_seq = RwSignal::new(0usize);
+
+    // --- withdraw / restore ---
+    // Two-step: the button reveals a confirm panel, matching the admin decline
+    // flow. Withdrawal frees nothing and deletes nothing; it freezes the case.
+    let withdrawing = RwSignal::new(false);
+    let withdraw_reason = RwSignal::new(String::new());
+    let withdraw_error = RwSignal::new(String::new());
+    let withdraw_saving = RwSignal::new(false);
+    let withdraw_reason_id = StoredValue::new(format!("case-withdraw-reason-{case_id}"));
+
+    let confirm_withdraw = move |_| {
+        let case_id = case_sv.get_value();
+        let reason = withdraw_reason.get_untracked();
+        withdraw_saving.set(true);
+        withdraw_error.set(String::new());
+        spawn_local(async move {
+            match cases::withdraw_case(case_id, reason).await {
+                Ok(()) => {
+                    withdrawing.set(false);
+                    withdraw_saving.set(false);
+                    withdraw_reason.set(String::new());
+                    reload.update(|n| *n += 1);
+                    if let Some(callback) = on_withdrawn {
+                        callback.run(());
+                    }
+                }
+                Err(e) => {
+                    withdraw_error.set(err_text(e));
+                    withdraw_saving.set(false);
+                }
+            }
+        });
+    };
+
+    let restore = move |_| {
+        let case_id = case_sv.get_value();
+        withdraw_saving.set(true);
+        withdraw_error.set(String::new());
+        spawn_local(async move {
+            match cases::restore_case(case_id).await {
+                Ok(()) => {
+                    withdraw_saving.set(false);
+                    reload.update(|n| *n += 1);
+                }
+                Err(e) => {
+                    withdraw_error.set(err_text(e));
+                    withdraw_saving.set(false);
+                }
+            }
+        });
+    };
 
     // Keep the shared case-detail signature stable while evidence is unavailable.
     let _ = open_folder;
@@ -1025,6 +1113,125 @@ pub fn CaseDetail(
             } else {
                 ().into_any()
             };
+            // Withdraw (owner) and restore (admin) live together: both are
+            // lifecycle actions on a case rather than edits to its contents.
+            let withdrawal = c.withdrawal.clone();
+            let withdraw_panel = {
+                let show_withdraw = is_owner && status.can_be_withdrawn();
+                let show_restore =
+                    has_operations_admin_permissions && status == CaseStatus::Withdrawn;
+                let withdrawn_note = withdrawal.map(|w| {
+                    let who = if w.by.is_empty() { "someone".to_string() } else { w.by };
+                    let when = if w.at.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" on {}", w.at)
+                    };
+                    let reason = (!w.reason.is_empty())
+                        .then(|| view! {
+                            <p class="mt-1 text-xs text-slate-400">"Reason given: " {w.reason}</p>
+                        });
+                    view! {
+                        <div class="mt-3 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">
+                            <p class="text-xs text-slate-300">
+                                "Withdrawn by " {who} {when}
+                                ". Nothing was deleted \u{2014} the case is frozen and can be restored by an administrator."
+                            </p>
+                            {reason}
+                        </div>
+                    }
+                });
+
+                if !show_withdraw && !show_restore && withdrawn_note.is_none() {
+                    ().into_any()
+                } else {
+                    view! {
+                        <div>
+                            {withdrawn_note}
+                            <Show when=move || !withdraw_error.get().is_empty()>
+                                <p class="mt-2 text-xs text-rose-300" role="alert">
+                                    {move || withdraw_error.get()}
+                                </p>
+                            </Show>
+                            {show_restore.then(|| view! {
+                                <button
+                                    type="button"
+                                    on:click=restore
+                                    prop:disabled=move || withdraw_saving.get()
+                                    class="mt-3 rounded-lg border border-emerald-500/40 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+                                >
+                                    {move || if withdraw_saving.get() { "Restoring\u{2026}" } else { "Restore case" }}
+                                </button>
+                            })}
+                            {show_withdraw.then(|| view! {
+                                <div>
+                                    <Show when=move || !withdrawing.get()>
+                                        <button
+                                            type="button"
+                                            on:click=move |_| {
+                                                withdrawing.set(true);
+                                                withdraw_error.set(String::new());
+                                            }
+                                            class="mt-3 rounded-lg border border-rose-500/40 px-3 py-1.5 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
+                                        >
+                                            "Withdraw this case"
+                                        </button>
+                                    </Show>
+                                    <Show when=move || withdrawing.get()>
+                                        <div class="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/5 p-3">
+                                            <p class="text-sm text-slate-200">
+                                                "Withdraw this case?"
+                                            </p>
+                                            <p class="mt-1 text-xs text-slate-400">
+                                                "It will be removed from your list and no longer accept messages, notes, or files. Nothing is deleted, and an administrator can restore it if you change your mind."
+                                            </p>
+                                            <label
+                                                for=withdraw_reason_id.get_value()
+                                                class="mt-3 block text-xs font-medium text-slate-300"
+                                            >
+                                                "Reason (optional)"
+                                            </label>
+                                            <textarea
+                                                id=withdraw_reason_id.get_value()
+                                                rows="2"
+                                                maxlength="1000"
+                                                class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+                                                placeholder="e.g. I filed this by mistake."
+                                                prop:disabled=move || withdraw_saving.get()
+                                                prop:value=move || withdraw_reason.get()
+                                                on:input=move |ev| withdraw_reason.set(event_target_value(&ev))
+                                            ></textarea>
+                                            <div class="mt-2 flex flex-wrap gap-2">
+                                                <button
+                                                    type="button"
+                                                    on:click=confirm_withdraw
+                                                    prop:disabled=move || withdraw_saving.get()
+                                                    class="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-50"
+                                                >
+                                                    {move || if withdraw_saving.get() { "Withdrawing\u{2026}" } else { "Confirm withdrawal" }}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    on:click=move |_| {
+                                                        withdrawing.set(false);
+                                                        withdraw_error.set(String::new());
+                                                    }
+                                                    prop:disabled=move || withdraw_saving.get()
+                                                    class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                                                >
+                                                    "Keep the case"
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </Show>
+                                </div>
+                            })}
+                        </div>
+                    }
+                    .into_any()
+                }
+            };
+
             return view! {
                 <div class=panel>
                     <div class="flex items-start justify-between gap-3">
@@ -1046,6 +1253,7 @@ pub fn CaseDetail(
                         </div>
                     </div>
                     {client_banner}
+                    {withdraw_panel}
                     {if admin_read && !has_stored_write_capability {
                         view! {
                             <p class="mt-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-200">

@@ -10,6 +10,39 @@ server layer.
 
 ---
 
+## The case lifecycle
+
+A case moves through `Pending review` → `Open` / `Monitor` / `Closed`, or is
+`Declined` at review. A case can also be **withdrawn** by the person who filed
+it.
+
+- **Withdrawn, never deleted.** A case row cannot be deleted at all: it cascades
+  to `case_channels` and `case_notes`, both of which reject `DELETE` outright.
+  Withdrawal is therefore a status, following the same archive-not-delete
+  reasoning as ADR-0002.
+- The **owner** may withdraw a case from any state except `Declined` (already
+  finished) and `Withdrawn` (already done). Operations admins may withdraw on an
+  owner's behalf; the audit entry names whoever actually did it.
+- Withdrawal is gated on **ownership**, not a case capability. The public signup
+  flow grants the client owner every capability, so capabilities cannot
+  distinguish "this is my case" from "I may edit this case".
+- A withdrawn case is **frozen**: `accepts_changes()` is false, so the existing
+  capability gate rejects every write — edits, notes, files, and chat — exactly
+  as it does for a declined case.
+- A withdrawn case **disappears from the Cases list and the Inbox** for everyone
+  who is not an operations admin. It stays readable by direct link and stays in
+  the admin case directory, which is how an admin finds one to restore. It is
+  also excluded from the case picker used to link contacts.
+- **Only an operations admin can restore it**, and a restore returns the case to
+  exactly the status it held before, from `status_before_withdrawal`.
+- Case assignments survive withdrawal, so a restore is lossless.
+- **Database-enforced:** a row with status `withdrawn` must carry both a
+  withdrawal timestamp and the status to restore it to
+  (`cases_withdrawal_complete`), so the state can never become unexplainable or
+  unrecoverable.
+
+---
+
 ## Phase 1: secure case messaging
 
 *Requirements: `REQ-MSG-001` – `REQ-MSG-009`.*
@@ -318,3 +351,4 @@ that must not depend on application code at all live in the schema:
 | One contact per account | `contacts_user_id_key` |
 | A contact has a surname or an organization | `contacts_named_check` |
 | Referenced contacts/organizations/grants cannot be deleted | `ON DELETE RESTRICT` foreign keys |
+| A withdrawn case can always be explained and restored | `cases_withdrawal_complete` check |

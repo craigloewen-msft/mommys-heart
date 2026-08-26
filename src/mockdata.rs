@@ -14,7 +14,7 @@
 use crate::helpers::visibility::Visibility;
 use crate::server_fns::capabilities::{CaseAssignment, CasePreset};
 use crate::server_fns::case_properties::CaseProperty;
-use crate::server_fns::cases::{Case, CaseNote, CaseStatus};
+use crate::server_fns::cases::{Case, CaseNote, CaseStatus, CaseWithdrawal};
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::evidence::Evidence;
 use crate::server_fns::message::Message;
@@ -117,7 +117,9 @@ const USERS: [SeedUser; 9] = [
         email: "emma.johnson@example.com",
         password: "client123",
         role: Client,
-        assignments: &[(5, Contributor), (3, Viewer)],
+        // Case 9 is the withdrawn demo case she owns, with the full access the
+        // signup flow grants an owner.
+        assignments: &[(5, Contributor), (3, Viewer), (9, Manager)],
     },
     SeedUser {
         first: "Owen",
@@ -125,7 +127,8 @@ const USERS: [SeedUser; 9] = [
         email: "operations@mommysheart.org",
         password: "operations123",
         role: OperationsAdmin,
-        assignments: &[(2, Manager), (4, Viewer)],
+        // Case 9 is the withdrawn demo case, so the restore path has a reviewer.
+        assignments: &[(2, Manager), (4, Viewer), (9, Viewer)],
     },
 ];
 
@@ -192,6 +195,15 @@ type SeedNote = (&'static str, &'static str, &'static str);
 /// A metadata-only piece of evidence: `(name, uploaded_by, uploaded_at, description)`.
 type SeedEvidence = (&'static str, &'static str, &'static str, &'static str);
 
+/// A seeded withdrawal: `(who withdrew it, when, why)`. The status it held
+/// before is [`WITHDRAWN_CASE_PREVIOUS_STATUS`], which the seeder needs in order
+/// to satisfy the schema's withdrawal CHECK.
+type SeedWithdrawal = (&'static str, &'static str, &'static str);
+
+/// What the demo withdrawn case is restored to, so the admin restore path lands
+/// somewhere sensible.
+pub const WITHDRAWN_CASE_PREVIOUS_STATUS: CaseStatus = CaseStatus::Open;
+
 /// One hand-crafted case with its owner, court metadata, notes, and evidence.
 struct SeedCase {
     name: &'static str,
@@ -203,14 +215,16 @@ struct SeedCase {
     docket: &'static str,
     notes: &'static [SeedNote],
     evidence: &'static [SeedEvidence],
+    /// Set only when `status` is `Withdrawn`.
+    withdrawal: Option<SeedWithdrawal>,
 }
 
-use CaseStatus::{Closed, Declined, Monitor, Open, PendingReview};
+use CaseStatus::{Closed, Declined, Monitor, Open, PendingReview, Withdrawn};
 
 /// The eight targeted cases. Each is owned by one user and (via the assignments
 /// on [`USERS`]) worked by several others, so the case directory, assignment
 /// screens, and chat threads all have interconnected data.
-const CASES: [SeedCase; 8] = [
+const CASES: [SeedCase; 9] = [
     SeedCase {
         name: "Nguyen custody matter",
         status: Open,
@@ -222,6 +236,7 @@ const CASES: [SeedCase; 8] = [
             "Client prefers phone contact in the evenings.",
             "2026-02-04 09:00",
         )],
+        withdrawal: None,
         evidence: &[(
             "Court summons",
             "Jamie Rivera",
@@ -236,6 +251,7 @@ const CASES: [SeedCase; 8] = [
         owner: 2,
         docket: "FC-2026-0002-A",
         notes: &[],
+        withdrawal: None,
         evidence: &[],
     },
     SeedCase {
@@ -249,6 +265,7 @@ const CASES: [SeedCase; 8] = [
             "Case closed favorably; retain records for three years.",
             "2026-02-20 10:00",
         )],
+        withdrawal: None,
         evidence: &[(
             "Benefits appeal packet",
             "James Garcia",
@@ -263,6 +280,7 @@ const CASES: [SeedCase; 8] = [
         owner: 7,
         docket: "FC-2026-0004",
         notes: &[],
+        withdrawal: None,
         evidence: &[(
             "Signed guardianship petition",
             "Noah Kim",
@@ -277,6 +295,7 @@ const CASES: [SeedCase; 8] = [
         owner: 8,
         docket: "FC-2026-0005",
         notes: &[],
+        withdrawal: None,
         evidence: &[],
     },
     SeedCase {
@@ -290,6 +309,7 @@ const CASES: [SeedCase; 8] = [
             "Safety plan reviewed with the client.",
             "2026-05-04 09:30",
         )],
+        withdrawal: None,
         evidence: &[],
     },
     SeedCase {
@@ -299,6 +319,7 @@ const CASES: [SeedCase; 8] = [
         owner: 6,
         docket: "FC-2026-0007",
         notes: &[],
+        withdrawal: None,
         evidence: &[],
     },
     SeedCase {
@@ -309,6 +330,21 @@ const CASES: [SeedCase; 8] = [
         docket: "FC-2026-0008",
         notes: &[],
         evidence: &[],
+        withdrawal: None,
+    },
+    SeedCase {
+        name: "Johnson benefits appeal",
+        status: Withdrawn,
+        review_reason: "",
+        owner: 8,
+        docket: "FC-2026-0009",
+        notes: &[],
+        evidence: &[],
+        withdrawal: Some((
+            "Emma Johnson",
+            "2026-05-12 11:20",
+            "I filed this twice by mistake.",
+        )),
     },
 ];
 
@@ -563,6 +599,11 @@ pub fn cases() -> Vec<Case> {
                 message_count: MESSAGES.iter().filter(|(case, ..)| *case == n).count(),
                 capabilities: Vec::new(),
                 terms_accepted: None,
+                withdrawal: sc.withdrawal.map(|(by, at, reason)| CaseWithdrawal {
+                    by: by.into(),
+                    at: at.into(),
+                    reason: reason.into(),
+                }),
             }
         })
         .collect()
