@@ -171,11 +171,11 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
                                     let blank = p.value.trim().is_empty();
                                     view! {
                                         <div class="border-b border-slate-800/60 py-2">
-                                            <dt class="text-xs font-medium text-slate-500">{p.key}</dt>
+                                            <dt class="wrap-anywhere text-xs font-medium text-slate-500">{p.key}</dt>
                                             <dd class=if blank {
-                                                "mt-0.5 text-sm italic text-slate-600"
+                                                "mt-0.5 wrap-anywhere text-sm italic text-slate-600"
                                             } else {
-                                                "mt-0.5 whitespace-pre-wrap text-sm text-slate-200"
+                                                "mt-0.5 wrap-anywhere whitespace-pre-wrap text-sm text-slate-200"
                                             }>
                                                 {if blank { "Not filled in".to_string() } else { p.value }}
                                             </dd>
