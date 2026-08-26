@@ -123,15 +123,29 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 2. Cases + their default chat channels, notes, evidence, properties, and
     //    case audit log.
     for c in crate::mockdata::cases() {
+        // A withdrawn case must carry its withdrawal metadata and the status to
+        // restore it to, or the schema's CHECK rejects the row.
+        let withdrawal = c.withdrawal.clone();
+        let previous_status = if withdrawal.is_some() {
+            crate::mockdata::WITHDRAWN_CASE_PREVIOUS_STATUS.slug()
+        } else {
+            ""
+        };
         sqlx::query(
-            "INSERT INTO cases (id, name, status, review_reason, owner_id)
-             VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO cases (id, name, status, review_reason, owner_id,
+                                withdrawn_by, withdrawn_at, withdrawal_reason,
+                                status_before_withdrawal)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(&c.id)
         .bind(&c.name)
         .bind(c.status.slug())
         .bind(&c.review_reason)
         .bind(&c.owner_id)
+        .bind(withdrawal.as_ref().map(|w| w.by.as_str()).unwrap_or(""))
+        .bind(withdrawal.as_ref().map(|w| w.at.as_str()).unwrap_or(""))
+        .bind(withdrawal.as_ref().map(|w| w.reason.as_str()).unwrap_or(""))
+        .bind(previous_status)
         .execute(pool)
         .await?;
 

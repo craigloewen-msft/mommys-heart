@@ -66,6 +66,14 @@ delete path.
 A contact or organization retired from use. It disappears from pickers, but every
 existing reference to it keeps working. The counterpart of channel archival.
 
+## Withdrawn
+
+A case taken back by the person who filed it — the answer to "I opened this by
+mistake". The case is frozen and drops out of every non-admin list, but nothing
+is deleted, and an administrator can restore it to exactly the status it held
+before. Distinct from *archived* (contacts, channels) and from *declined*, which
+is the organization's decision rather than the client's.
+
 ## Case management MVP
 
 The bounded product increment defined by the approved task. It adds secure

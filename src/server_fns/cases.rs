@@ -28,15 +28,19 @@ pub enum CaseStatus {
     Closed,
     /// Not taken on. Terminal, and carries a reason the client is shown.
     Declined,
+    /// Taken back by the owner. Frozen, hidden from non-admin case lists, and
+    /// restorable only by an admin.
+    Withdrawn,
 }
 
 impl CaseStatus {
-    pub const ALL: [CaseStatus; 5] = [
+    pub const ALL: [CaseStatus; 6] = [
         CaseStatus::PendingReview,
         CaseStatus::Open,
         CaseStatus::Monitor,
         CaseStatus::Closed,
         CaseStatus::Declined,
+        CaseStatus::Withdrawn,
     ];
 
     pub const STAFF_SELECTABLE: [CaseStatus; 3] =
@@ -49,6 +53,7 @@ impl CaseStatus {
             CaseStatus::Monitor => "Monitor",
             CaseStatus::Closed => "Closed",
             CaseStatus::Declined => "Declined",
+            CaseStatus::Withdrawn => "Withdrawn",
         }
     }
 
@@ -59,6 +64,7 @@ impl CaseStatus {
             CaseStatus::Monitor => "monitor",
             CaseStatus::Closed => "closed",
             CaseStatus::Declined => "declined",
+            CaseStatus::Withdrawn => "withdrawn",
         }
     }
 
@@ -75,10 +81,17 @@ impl CaseStatus {
 
     /// Whether the case still accepts new work (messages, files, notes, edits).
     ///
-    /// Only a declined case is frozen; it stays readable so the client can see
-    /// why. A pending case stays writable so documents can still be attached.
+    /// Declined and withdrawn cases are frozen; both stay readable so the client
+    /// can see why. A pending case stays writable so documents can still be
+    /// attached.
     pub fn accepts_changes(self) -> bool {
-        !matches!(self, CaseStatus::Declined)
+        !matches!(self, CaseStatus::Declined | CaseStatus::Withdrawn)
+    }
+
+    /// Whether the owner may still take this case back. A declined case is
+    /// already finished, and a withdrawn one cannot be withdrawn twice.
+    pub fn can_be_withdrawn(self) -> bool {
+        !matches!(self, CaseStatus::Declined | CaseStatus::Withdrawn)
     }
 
     pub fn badge_classes(self) -> &'static str {
@@ -88,6 +101,7 @@ impl CaseStatus {
             CaseStatus::Monitor => "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30",
             CaseStatus::Closed => "bg-slate-500/15 text-slate-400 ring-1 ring-slate-500/30",
             CaseStatus::Declined => "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30",
+            CaseStatus::Withdrawn => "bg-slate-500/15 text-slate-400 ring-1 ring-slate-500/30",
         }
     }
 
@@ -101,6 +115,9 @@ impl CaseStatus {
             }
             CaseStatus::Declined => format!("This case was not accepted: {reason}"),
             CaseStatus::Closed => "This case is closed.".to_string(),
+            CaseStatus::Withdrawn => {
+                "You withdrew this case. Contact a coordinator if you need it reopened.".to_string()
+            }
             CaseStatus::Open | CaseStatus::Monitor => {
                 "Accepted \u{2014} your case team is working on it.".to_string()
             }
@@ -127,6 +144,17 @@ pub struct CaseNote {
     pub created_at: String,
     #[serde(default)]
     pub addenda: Vec<LegacyCaseNoteAddendum>,
+}
+
+/// Who took a case back, when, and why. Present only on a withdrawn case.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaseWithdrawal {
+    /// Display name of whoever withdrew it.
+    pub by: String,
+    /// Pre-formatted 'YYYY-MM-DD HH:MM', because it is only ever shown.
+    pub at: String,
+    /// Optional context the owner typed. Empty when they gave none.
+    pub reason: String,
 }
 
 /// A support case tracked by the organization.
@@ -168,6 +196,10 @@ pub struct Case {
     /// it is only ever shown, never compared.
     #[serde(default)]
     pub terms_accepted: Option<String>,
+    /// Set only while the case is withdrawn, so the detail view can say who took
+    /// it back and an admin can decide whether to restore it.
+    #[serde(default)]
+    pub withdrawal: Option<CaseWithdrawal>,
 }
 
 /// A sparse view of a case for list/directory screens: the header fields only
@@ -219,6 +251,9 @@ impl Case {
 /// message counts are resolved server-side. Paginated ("Load more") so the
 /// browser never pulls every case at once; the full detail for one case is
 /// loaded on demand via [`load_case`].
+///
+/// Withdrawn cases are omitted unless the caller is an operations admin, who is
+/// the only one who can restore one.
 #[server(prefix = "/api")]
 pub async fn load_case_summaries_for_user(
     offset: i64,
@@ -229,7 +264,8 @@ pub async fn load_case_summaries_for_user(
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    cases::get_summaries_for_user(offset, limit, &search, &user.id)
+    let include_withdrawn = user.role.has_operations_admin_permissions();
+    cases::get_summaries_for_user(offset, limit, &search, &user.id, include_withdrawn)
         .await
         .map_err(ServerFnError::new)
 }
@@ -477,6 +513,90 @@ pub async fn set_case_status(case_id: String, status: CaseStatus) -> Result<(), 
         user.full_name(),
         crate::server_fns::settings::NotificationKind::CaseData,
         format!("changed the status to \"{}\"", status.label()),
+        crate::server::notifications::Audience::Everyone,
+    );
+    Ok(())
+}
+
+/// The longest withdrawal reason we store, matching the other free-text boxes.
+#[cfg(feature = "ssr")]
+const MAX_WITHDRAWAL_REASON_CHARS: usize = 1_000;
+
+/// Turn a database-layer refusal into a message worth showing the user.
+#[cfg(feature = "ssr")]
+fn withdrawal_error(error: sqlx::Error) -> ServerFnError {
+    match error {
+        sqlx::Error::Protocol(message) => ServerFnError::new(message),
+        other => ServerFnError::new(other),
+    }
+}
+
+/// Withdraw a case, taking it out of the owner's list without destroying
+/// anything. The case is frozen and only an admin can restore it.
+///
+/// Gated on ownership rather than a case capability, for the same reason
+/// [`set_case_review_decision`] is gated on account role: the signup flow grants
+/// the client owner every capability, so capabilities cannot distinguish "this
+/// is my case" from "I may edit this case". Operations admins may also withdraw
+/// on an owner's behalf; the audit entry records who actually did it.
+#[server(prefix = "/api")]
+pub async fn withdraw_case(case_id: String, reason: String) -> Result<(), ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::require_user;
+
+    let user = require_user().await?;
+    let owner = cases::owner_id(&case_id)
+        .await
+        .map_err(ServerFnError::new)?
+        .ok_or_else(|| ServerFnError::new("Case not found."))?;
+    if owner != user.id && !user.role.has_operations_admin_permissions() {
+        return Err(ServerFnError::new(
+            "Only the person who filed this case can withdraw it.",
+        ));
+    }
+
+    let reason = reason.trim();
+    if reason.chars().count() > MAX_WITHDRAWAL_REASON_CHARS {
+        return Err(ServerFnError::new(format!(
+            "Please keep the reason under {MAX_WITHDRAWAL_REASON_CHARS} characters."
+        )));
+    }
+
+    // The status is re-checked under a row lock inside `withdraw`, so this is a
+    // fast path for a readable error, not the authoritative gate.
+    cases::withdraw(&case_id, &user.full_name(), reason)
+        .await
+        .map_err(withdrawal_error)?;
+
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::CaseData,
+        "withdrew this case".to_string(),
+        crate::server::notifications::Audience::Everyone,
+    );
+    Ok(())
+}
+
+/// Put a withdrawn case back where it was (admin only).
+#[server(prefix = "/api")]
+pub async fn restore_case(case_id: String) -> Result<(), ServerFnError> {
+    use crate::server::db::cases;
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+    let restored = cases::restore(&case_id, &user.full_name())
+        .await
+        .map_err(withdrawal_error)?;
+
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::CaseData,
+        format!("restored this case to \"{}\"", restored.label()),
         crate::server::notifications::Audience::Everyone,
     );
     Ok(())

@@ -6,7 +6,7 @@ use crate::server::db::{
 };
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
-use crate::server_fns::cases::{Case, CaseStatus, CaseSummary};
+use crate::server_fns::cases::{Case, CaseStatus, CaseSummary, CaseWithdrawal};
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::pagination::Page;
 use crate::server_fns::users::AccountRole;
@@ -18,6 +18,9 @@ struct CaseRow {
     status: String,
     review_reason: String,
     owner_id: String,
+    withdrawn_by: String,
+    withdrawn_at: String,
+    withdrawal_reason: String,
 }
 
 /// Flat row shape for the sparse [`CaseSummary`] projection (header fields plus
@@ -178,12 +181,17 @@ pub async fn name(case_id: &str) -> Result<Option<String>, sqlx::Error> {
     Ok(name)
 }
 
-/// One page of sparse cases visible to a user_id
+/// One page of sparse cases visible to a user_id.
+///
+/// `include_withdrawn` is the operations-admin escape hatch: a withdrawn case is
+/// meant to be gone from an ordinary list, but admins are the only ones who can
+/// restore one, so they must still be able to find it.
 pub async fn get_summaries_for_user(
     offset: i64,
     limit: i64,
     search: &str,
     user_id: &str,
+    include_withdrawn: bool,
 ) -> Result<Page<CaseSummary>, sqlx::Error> {
     let limit = limit.clamp(1, 100);
     let offset = offset.max(0);
@@ -204,16 +212,23 @@ pub async fn get_summaries_for_user(
          WHERE a.case_id = c.id AND a.user_id = $VIEWER AND a.capability = '{}')",
         CaseCapability::ViewCase.slug()
     );
+    // Drops withdrawn cases out of both this list and the Inbox, which share this
+    // query. The status slug is an internal constant, never user input.
+    let withdrawn = if include_withdrawn {
+        String::new()
+    } else {
+        format!(" AND c.status <> '{}'", CaseStatus::Withdrawn.slug())
+    };
 
     let count_sql = format!(
-        "SELECT count(*) FROM cases c WHERE {SEARCH} AND {}",
+        "SELECT count(*) FROM cases c WHERE {SEARCH} AND {}{withdrawn}",
         scope.replace("$VIEWER", "$2")
     );
     // The viewer's own account role decides whether the volunteer-only channel
     // counts toward the message total they see; clients are never told it exists.
     let page_sql = format!(
         "{}
-         WHERE {SEARCH} AND {}
+         WHERE {SEARCH} AND {}{withdrawn}
          ORDER BY c.id LIMIT $2 OFFSET $3",
         summary_select(&format!(
             "(SELECT v.role FROM users v WHERE v.id = $4) <> '{}'",
@@ -309,6 +324,7 @@ pub async fn search_editable(
         "SELECT c.id, c.name, c.status
          FROM cases c
          WHERE c.status <> 'declined'
+           AND c.status <> 'withdrawn'
            AND EXISTS (
                SELECT 1 FROM case_assignments assignment
                WHERE assignment.case_id = c.id
@@ -389,7 +405,9 @@ pub async fn get(
     has_volunteer_access: bool,
 ) -> Result<Option<Case>, sqlx::Error> {
     let Some(row) = sqlx::query_as::<_, CaseRow>(
-        "SELECT id, name, status, review_reason, owner_id FROM cases WHERE id = $1",
+        "SELECT id, name, status, review_reason, owner_id,
+                withdrawn_by, withdrawn_at, withdrawal_reason
+           FROM cases WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool())
@@ -416,10 +434,18 @@ pub async fn get(
         )
     });
 
+    let status = CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open);
+    // Only a withdrawn case carries this; the columns are empty otherwise.
+    let withdrawal = (status == CaseStatus::Withdrawn).then(|| CaseWithdrawal {
+        by: row.withdrawn_by,
+        at: row.withdrawn_at,
+        reason: row.withdrawal_reason,
+    });
+
     Ok(Some(Case {
         id: row.id,
         name: row.name,
-        status: CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open),
+        status,
         review_reason: row.review_reason,
         owner_id: row.owner_id,
         notes,
@@ -429,6 +455,7 @@ pub async fn get(
         message_count: 0,
         capabilities: capabilities::get_single_case(user_id, id).await?,
         terms_accepted,
+        withdrawal,
     }))
 }
 
@@ -636,6 +663,115 @@ pub async fn set_owner(case_id: &str, owner_id: &str, actor: &str) -> Result<(),
         &new_display,
     )
     .await
+}
+
+/// A refusal the caller should show verbatim, rather than a database fault.
+/// Mirrors the helper in [`crate::server::db::case_notes`].
+fn domain_error(message: &str) -> sqlx::Error {
+    sqlx::Error::Protocol(message.to_string())
+}
+
+/// Take a case back on the owner's behalf, recording who did it and what status
+/// to restore it to. Rejects a case that is already finished or already
+/// withdrawn.
+///
+/// The status is read `FOR UPDATE` inside the transaction that writes it, so two
+/// concurrent requests cannot both withdraw the same case and clobber
+/// `status_before_withdrawal`.
+pub async fn withdraw(case_id: &str, actor: &str, reason: &str) -> Result<(), sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT status FROM cases WHERE id = $1 FOR UPDATE")
+            .bind(case_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(current) = current else {
+        return Err(domain_error("Case not found."));
+    };
+    let status = CaseStatus::from_slug(&current).unwrap_or(CaseStatus::Open);
+    if !status.can_be_withdrawn() {
+        let message = if status == CaseStatus::Withdrawn {
+            "This case has already been withdrawn.".to_string()
+        } else {
+            format!(
+                "This case is {} and cannot be withdrawn.",
+                status.label().to_lowercase()
+            )
+        };
+        return Err(domain_error(&message));
+    }
+
+    sqlx::query(
+        "UPDATE cases
+            SET status = $1, status_before_withdrawal = $2,
+                withdrawn_by = $3, withdrawn_at = $4, withdrawal_reason = $5
+          WHERE id = $6",
+    )
+    .bind(CaseStatus::Withdrawn.slug())
+    .bind(&current)
+    .bind(actor)
+    .bind(now_stamp())
+    .bind(reason)
+    .bind(case_id)
+    .execute(&mut *tx)
+    .await?;
+
+    audit::record_in_transaction(
+        &mut tx,
+        audit::Entity::Case,
+        case_id,
+        actor,
+        "status",
+        &current,
+        CaseStatus::Withdrawn.slug(),
+    )
+    .await?;
+    tx.commit().await
+}
+
+/// Put a withdrawn case back exactly where it was, clearing the withdrawal
+/// metadata. Callers gate on operations admin.
+pub async fn restore(case_id: &str, actor: &str) -> Result<CaseStatus, sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT status, status_before_withdrawal FROM cases WHERE id = $1 FOR UPDATE",
+    )
+    .bind(case_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((current, previous)) = row else {
+        return Err(domain_error("Case not found."));
+    };
+    if CaseStatus::from_slug(&current) != Some(CaseStatus::Withdrawn) {
+        return Err(domain_error("This case is not withdrawn."));
+    }
+    // The migration's CHECK guarantees a non-empty previous status, so the
+    // fallback only covers an unrecognized slug.
+    let restored = CaseStatus::from_slug(&previous).unwrap_or(CaseStatus::PendingReview);
+
+    sqlx::query(
+        "UPDATE cases
+            SET status = $1, status_before_withdrawal = '',
+                withdrawn_by = '', withdrawn_at = '', withdrawal_reason = ''
+          WHERE id = $2",
+    )
+    .bind(restored.slug())
+    .bind(case_id)
+    .execute(&mut *tx)
+    .await?;
+
+    audit::record_in_transaction(
+        &mut tx,
+        audit::Entity::Case,
+        case_id,
+        actor,
+        "status",
+        &current,
+        restored.slug(),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(restored)
 }
 
 /// Display name for a user id, falling back to the id.
