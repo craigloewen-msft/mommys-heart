@@ -892,15 +892,27 @@ pub fn CaseDetail(
                         .into_iter()
                         .map(|p| {
                             let value = p.value.clone();
+                            // A long property name is free text, so it must be
+                            // able to wrap mid-token; otherwise it sets the row's
+                            // intrinsic width and stretches the whole page.
                             let shown = if value.trim().is_empty() {
-                                view! { <span class="text-slate-600 italic">"Not filled in"</span> }
+                                view! {
+                                    <span class="min-w-0 wrap-anywhere text-slate-600 italic sm:text-right">
+                                        "Not filled in"
+                                    </span>
+                                }
                                     .into_any()
                             } else {
-                                view! { <span class="text-slate-200">{value}</span> }.into_any()
+                                view! {
+                                    <span class="min-w-0 wrap-anywhere text-slate-200 sm:text-right">
+                                        {value}
+                                    </span>
+                                }
+                                    .into_any()
                             };
                             view! {
-                                <div class="flex justify-between gap-4 border-b border-slate-800 py-1.5 text-sm">
-                                    <span class="text-slate-400">{p.key}</span>
+                                <div class="flex flex-col gap-1 border-b border-slate-800 py-1.5 text-sm sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+                                    <span class="min-w-0 wrap-anywhere text-slate-400 sm:flex-1">{p.key}</span>
                                     {shown}
                                 </div>
                             }

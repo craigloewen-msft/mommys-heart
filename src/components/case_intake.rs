@@ -68,7 +68,9 @@ impl CaseIntakeState {
 }
 
 const INPUT_CLASS: &str = "mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/30";
-const LABEL_CLASS: &str = "block text-sm font-medium text-slate-300";
+// `wrap-anywhere`: question labels are long free text, so they must break
+// mid-token rather than stretching the form past the viewport.
+const LABEL_CLASS: &str = "block wrap-anywhere text-sm font-medium text-slate-300";
 
 #[component]
 pub fn CaseIntakeFields(state: CaseIntakeState) -> impl IntoView {
