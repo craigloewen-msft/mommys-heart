@@ -44,6 +44,8 @@ pub fn UserCard(
     let current_role = user.role;
     let can_edit_capabilities_directly = is_site_admin || user_id == actor_user_id;
     let can_request_role_change = !is_site_admin && user_id != actor_user_id;
+    let is_deactivated = user.role.is_deactivated();
+    let deactivation = user.deactivation.clone();
 
     // --- account role ------------------------------------------------------
     let role_target = StoredValue::new(user_id.clone());
@@ -127,6 +129,55 @@ pub fn UserCard(
             information_busy.set(false);
         });
     };
+
+    // --- account status (deactivation) ------------------------------------
+    let status_target = StoredValue::new(user_id.clone());
+    let status_busy = RwSignal::new(false);
+    let status_feedback = RwSignal::new(None::<Result<String, String>>);
+    // Two-step, like the case-withdraw control: reveal, type an optional
+    // reason, then confirm. Retiring an account should not be one stray click.
+    let status_confirming = RwSignal::new(false);
+    let status_reason = RwSignal::new(String::new());
+    let status_reason_id = StoredValue::new(format!("account-status-reason-{user_id}"));
+    let is_self_account = user_id == actor_user_id;
+
+    let apply_status_change = move |deactivate: bool| {
+        move |_| {
+            if status_busy.get_untracked() {
+                return;
+            }
+            status_busy.set(true);
+            status_feedback.set(None);
+            spawn_local(async move {
+                let result = crate::server_fns::users::set_account_deactivated(
+                    status_target.get_value(),
+                    deactivate,
+                    status_reason.get_untracked(),
+                )
+                .await
+                .map(|_| {
+                    if deactivate {
+                        "Account deactivated.".to_string()
+                    } else {
+                        "Account reactivated.".to_string()
+                    }
+                })
+                .map_err(err_text);
+                match result {
+                    Ok(message) => {
+                        status_feedback.set(Some(Ok(message)));
+                        status_confirming.set(false);
+                        status_reason.set(String::new());
+                        reload.update(|value| *value += 1);
+                    }
+                    Err(message) => status_feedback.set(Some(Err(message))),
+                }
+                status_busy.set(false);
+            });
+        }
+    };
+    let deactivate_account = apply_status_change(true);
+    let reactivate_account = apply_status_change(false);
 
     let apply_role_change = move |_| {
         if role_busy.get_untracked() {
@@ -462,8 +513,154 @@ pub fn UserCard(
         .into_any()
     };
 
+    let account_status_section = move || {
+        let deactivation = deactivation.clone();
+        let detail = deactivation.map(|d| {
+            let restores_to = d.previous_role.label();
+            let reason = (!d.reason.is_empty()).then(|| {
+                view! {
+                    <p class="mt-1 text-sm text-slate-300">"“" {d.reason} "”"</p>
+                }
+            });
+            view! {
+                <div class="mt-3 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+                    <p class="text-xs text-slate-500">
+                        "Deactivated by " {d.by} " on " {d.at}
+                        " · reactivating restores the " {restores_to} " role."
+                    </p>
+                    {reason}
+                </div>
+            }
+        });
+
+        let controls = if !is_site_admin {
+            let message = if is_deactivated {
+                "Only a site admin can reactivate an account."
+            } else {
+                "Only a site admin can deactivate an account."
+            };
+            view! { <p class="mt-4 text-sm text-slate-500">{message}</p> }.into_any()
+        } else if is_self_account {
+            view! {
+                <p class="mt-4 text-sm text-slate-500">
+                    "You cannot deactivate your own account."
+                </p>
+            }
+            .into_any()
+        } else if is_deactivated {
+            view! {
+                <div class="mt-4">
+                    <button
+                        type="button"
+                        on:click=reactivate_account
+                        prop:disabled=move || status_busy.get()
+                        class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                    >
+                        {move || if status_busy.get() { "Reactivating…" } else { "Reactivate account" }}
+                    </button>
+                </div>
+            }
+            .into_any()
+        } else {
+            view! {
+                <div class="mt-4">
+                    <Show
+                        when=move || status_confirming.get()
+                        fallback=move || view! {
+                            <button
+                                type="button"
+                                on:click=move |_| status_confirming.set(true)
+                                class="rounded-lg border border-rose-500/50 px-3 py-2 text-sm font-semibold text-rose-300 hover:bg-rose-500/10"
+                            >
+                                "Deactivate account"
+                            </button>
+                        }
+                    >
+                        <div class="space-y-3 rounded-lg border border-rose-500/30 bg-rose-500/5 p-3">
+                            <p class="text-sm text-slate-300">
+                                "They will be signed out and will no longer appear in lists or pickers. Nothing is deleted, and you can reactivate them later."
+                            </p>
+                            <div>
+                                <label
+                                    class="block text-xs font-medium text-slate-400"
+                                    for=status_reason_id.get_value()
+                                >
+                                    "Reason (optional)"
+                                </label>
+                                <textarea
+                                    id=status_reason_id.get_value()
+                                    rows="2"
+                                    maxlength="1000"
+                                    class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+                                    placeholder="e.g. Duplicate account — merged into their other login"
+                                    prop:disabled=move || status_busy.get()
+                                    prop:value=move || status_reason.get()
+                                    on:input=move |event| status_reason.set(event_target_value(&event))
+                                ></textarea>
+                            </div>
+                            <div class="flex flex-wrap gap-2">
+                                <button
+                                    type="button"
+                                    on:click=deactivate_account
+                                    prop:disabled=move || status_busy.get()
+                                    class="rounded-lg bg-rose-500 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-600 disabled:opacity-50"
+                                >
+                                    {move || if status_busy.get() { "Deactivating…" } else { "Confirm deactivation" }}
+                                </button>
+                                <button
+                                    type="button"
+                                    on:click=move |_| status_confirming.set(false)
+                                    prop:disabled=move || status_busy.get()
+                                    class="rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                                >
+                                    "Cancel"
+                                </button>
+                            </div>
+                        </div>
+                    </Show>
+                </div>
+            }
+            .into_any()
+        };
+
+        view! {
+            <section class="mt-4 border-t border-slate-800 pt-4">
+                <div class="flex flex-wrap items-center gap-2">
+                    <h3 class="text-sm font-semibold text-slate-200">"Account status"</h3>
+                    <span class=badge(if is_deactivated {
+                        "bg-slate-700/40 text-slate-400 ring-1 ring-slate-600"
+                    } else {
+                        "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+                    })>{if is_deactivated { "Deactivated" } else { "Active" }}</span>
+                </div>
+                <p class="mt-1 text-xs text-slate-500">
+                    "A deactivated account cannot sign in and is hidden from lists and pickers. Its role, case access, and history are kept so reactivating restores everything."
+                </p>
+                {detail}
+                {controls}
+                <Show when=move || status_feedback.get().is_some()>
+                    {move || status_feedback.get().map(|feedback| match feedback {
+                        Ok(message) => view! {
+                            <p class="mt-3 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300" aria-live="polite">
+                                {message}
+                            </p>
+                        }.into_any(),
+                        Err(message) => view! {
+                            <p class="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-300" role="alert">
+                                {message}
+                            </p>
+                        }.into_any(),
+                    })}
+                </Show>
+            </section>
+        }
+        .into_any()
+    };
+
     let account_role_section = move || {
-        let helper = if is_site_admin {
+        let helper = if is_deactivated {
+            "Reactivate this account before changing its role."
+        } else if is_site_admin {
             "Site admins apply account-role changes directly."
         } else if can_request_role_change {
             "Operations admins can request account-role changes for other users."
@@ -471,7 +668,16 @@ pub fn UserCard(
             "Only a site admin can change your own account role."
         };
 
-        let controls = if is_site_admin {
+        let controls = if is_deactivated {
+            // The role select would show a role this account does not currently
+            // hold, and applying it would silently un-retire them.
+            view! {
+                <p class="mt-4 text-sm text-slate-500">
+                    "This account is deactivated. Reactivate it under Account status to change its role."
+                </p>
+            }
+            .into_any()
+        } else if is_site_admin {
             view! {
                 <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
                     <div class="sm:min-w-[14rem]">
@@ -488,7 +694,7 @@ pub fn UserCard(
                             prop:value=move || selected_role.get()
                             on:change=move |event| selected_role.set(event_target_value(&event))
                         >
-                            {AccountRole::ALL
+                            {AccountRole::ASSIGNABLE
                                 .into_iter()
                                 .map(|role| {
                                     view! { <option value=role.slug()>{role.label()}</option> }
@@ -526,7 +732,7 @@ pub fn UserCard(
                             prop:value=move || selected_role.get()
                             on:change=move |event| selected_role.set(event_target_value(&event))
                         >
-                            {AccountRole::ALL
+                            {AccountRole::ASSIGNABLE
                                 .into_iter()
                                 .map(|role| {
                                     view! { <option value=role.slug()>{role.label()}</option> }
@@ -634,7 +840,17 @@ pub fn UserCard(
                 <p class="mt-1 text-xs text-slate-500">
                     "This grant enables Contacts, Organizations, and Funding management. It does not grant Admin dashboard or case permissions, and it never gives a client access."
                 </p>
-                {if is_site_admin {
+                {if is_deactivated {
+                    // Consistent with the role section: a retired account's grants are
+                    // frozen until it is restored, so they cannot drift while it
+                    // is out of service.
+                    view! {
+                        <p class="mt-4 text-sm text-slate-500">
+                            "This account is deactivated. Reactivate it under Account status to change this grant."
+                        </p>
+                    }
+                    .into_any()
+                } else if is_site_admin {
                     view! {
                         <div class="mt-4 space-y-3">
                             <label class="flex items-start gap-3 text-sm text-slate-200">
@@ -724,7 +940,9 @@ pub fn UserCard(
     };
 
     let case_access_section = move || {
-        let helper = if is_site_admin {
+        let helper = if is_deactivated {
+            "Case access is preserved while the account is deactivated, and is restored with it."
+        } else if is_site_admin {
             "Site admins apply case-access changes directly."
         } else if can_edit_capabilities_directly {
             "You can edit your own case access directly."
@@ -732,7 +950,12 @@ pub fn UserCard(
             "Operations admins can draft changes here and submit them for site-admin approval."
         };
 
-        let header_buttons = if editing.get() {
+        // A retired account's assignments are shown read-only: they survive
+        // deactivation so the restore is lossless, and editing them here would
+        // change access for an account that cannot use it.
+        let header_buttons = if is_deactivated {
+            ().into_any()
+        } else if editing.get() {
             view! {
                 <button
                     type="button"
@@ -1116,6 +1339,7 @@ pub fn UserCard(
             </div>
 
             {account_role_section}
+            {account_status_section}
             {information_access_section}
             {case_access_section}
 

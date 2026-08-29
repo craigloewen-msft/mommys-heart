@@ -11,8 +11,12 @@ use crate::server_fns::users::{User, UserSummary};
 /// The result of a successful password check
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum LoginOutcome {
-    /// Password *and* second factor satisfied
-    Authenticated(User),
+    /// Password *and* second factor satisfied.
+    ///
+    /// Boxed so the enum is not sized by its largest variant: [`User`] carries
+    /// the account's case assignments and deactivation record. `Box<T>`
+    /// serializes exactly as `T`, so the wire format is unchanged.
+    Authenticated(Box<User>),
     /// Password correct, but an emailed one-time code is still required. The
     /// client should route to the MFA screen and call [`verify_mfa`].
     MfaRequired,
@@ -99,6 +103,14 @@ pub async fn login(email: String, password: String) -> Result<LoginOutcome, Serv
     // Correct password: reset the failure counter for this account.
     let _ = throttle::clear(throttle::Action::Login, email).await;
 
+    // Checked after the password verify, deliberately: answering before it
+    // would turn this into an oracle for which addresses have accounts.
+    if user.role.is_deactivated() {
+        return Err(ServerFnError::new(
+            "This account has been deactivated. Please contact an administrator.",
+        ));
+    }
+
     // Skip the second factor when this browser is a live trusted device for
     // *this* user (the "remember this device" grant).
     if let Some(token) = request_cookie(TRUSTED_DEVICE_COOKIE_NAME).await {
@@ -110,7 +122,7 @@ pub async fn login(email: String, password: String) -> Result<LoginOutcome, Serv
                 .await
                 .map_err(ServerFnError::new)?;
             append_cookie(build_session_cookie(raw))?;
-            return Ok(LoginOutcome::Authenticated(user));
+            return Ok(LoginOutcome::Authenticated(Box::new(user)));
         }
     }
 
@@ -124,7 +136,7 @@ pub async fn login(email: String, password: String) -> Result<LoginOutcome, Serv
             .await
             .map_err(ServerFnError::new)?;
         append_cookie(build_session_cookie(raw))?;
-        return Ok(LoginOutcome::Authenticated(user));
+        return Ok(LoginOutcome::Authenticated(Box::new(user)));
     }
 
     // Otherwise start an email one-time-code challenge

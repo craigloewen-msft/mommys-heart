@@ -5,6 +5,11 @@
 A row in `users`: something that can **sign in**. It requires a unique email and
 a password hash, and it carries the account role that governs app-level access.
 
+An account whose role is **deactivated** is retired: it cannot sign in and grants
+nothing, but it is never deleted. It keeps its email address, its case
+assignments, and its history, and a site admin can restore it to the role it held
+before (recorded in `account_deactivations`).
+
 ## Contact (person)
 
 A row in `contacts`: a **person the organization has a relationship with**. Most

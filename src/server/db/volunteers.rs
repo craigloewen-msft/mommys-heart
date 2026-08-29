@@ -391,6 +391,7 @@ pub async fn list_pending() -> Result<Vec<Volunteer>, sqlx::Error> {
          FROM volunteers v
          JOIN users u ON u.id = v.user_id
          WHERE v.status = 'pending'
+           AND u.role <> 'deactivated'
          ORDER BY v.agreed_at",
     )
     .fetch_all(pool())
@@ -411,9 +412,15 @@ pub async fn list_pending() -> Result<Vec<Volunteer>, sqlx::Error> {
 
 /// How many applications are waiting on a decision.
 pub async fn pending_count() -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT count(*) FROM volunteers WHERE status = 'pending'")
-        .fetch_one(pool())
-        .await
+    // Matches `list_pending`: deactivating a pending applicant takes them out of
+    // the queue, so the badge cannot count someone the list will not show.
+    sqlx::query_scalar(
+        "SELECT count(*) FROM volunteers v
+         JOIN users u ON u.id = v.user_id
+         WHERE v.status = 'pending' AND u.role <> 'deactivated'",
+    )
+    .fetch_one(pool())
+    .await
 }
 
 /// Approve or decline a pending application. Approving delegates to
