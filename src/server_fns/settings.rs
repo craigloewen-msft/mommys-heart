@@ -40,16 +40,20 @@ pub enum NotificationKind {
     AccountPermissionsChanged,
     /// An administrative request changes or a client completes a case signup.
     AdminRequests,
+    /// A periodic digest of the work happening across the site, for
+    /// administrators only (see [`NotificationKind::is_admin_only`]).
+    AdminActivity,
 }
 
 impl NotificationKind {
-    pub const ALL: [NotificationKind; 6] = [
+    pub const ALL: [NotificationKind; 7] = [
         NotificationKind::NewMessage,
         NotificationKind::CaseData,
         NotificationKind::NoteAdded,
         NotificationKind::EvidenceChanged,
         NotificationKind::AccountPermissionsChanged,
         NotificationKind::AdminRequests,
+        NotificationKind::AdminActivity,
     ];
 
     pub fn label(self) -> &'static str {
@@ -60,7 +64,14 @@ impl NotificationKind {
             NotificationKind::EvidenceChanged => "Evidence changed",
             NotificationKind::AccountPermissionsChanged => "Account permissions changed",
             NotificationKind::AdminRequests => "Administrative updates",
+            NotificationKind::AdminActivity => "Admin activity alert",
         }
+    }
+
+    /// Whether only administrators are ever sent this category, so the settings
+    /// page can hide a toggle that would do nothing for everyone else.
+    pub fn is_admin_only(self) -> bool {
+        matches!(self, NotificationKind::AdminActivity)
     }
 
     /// Short helper text shown under each toggle on the settings page.
@@ -80,6 +91,9 @@ impl NotificationKind {
             NotificationKind::AdminRequests => {
                 "A client completes a case signup, an admin request needs review, or a request you filed is decided."
             }
+            NotificationKind::AdminActivity => {
+                "A summary of new cases, notes, documents, and contact changes across the site. Administrators only."
+            }
         }
     }
 
@@ -91,6 +105,7 @@ impl NotificationKind {
             NotificationKind::EvidenceChanged => "evidence_changed",
             NotificationKind::AccountPermissionsChanged => "account_permissions_changed",
             NotificationKind::AdminRequests => "admin_requests",
+            NotificationKind::AdminActivity => "admin_activity",
         }
     }
 
@@ -113,6 +128,7 @@ pub struct NotificationSettings {
     pub evidence_changed: bool,
     pub account_permissions_changed: bool,
     pub admin_requests: bool,
+    pub admin_activity: bool,
 }
 
 impl Default for NotificationSettings {
@@ -133,6 +149,7 @@ impl NotificationSettings {
             evidence_changed: true,
             account_permissions_changed: true,
             admin_requests: true,
+            admin_activity: true,
         }
     }
 
@@ -145,6 +162,7 @@ impl NotificationSettings {
             NotificationKind::EvidenceChanged => self.evidence_changed,
             NotificationKind::AccountPermissionsChanged => self.account_permissions_changed,
             NotificationKind::AdminRequests => self.admin_requests,
+            NotificationKind::AdminActivity => self.admin_activity,
         }
     }
 
@@ -157,6 +175,7 @@ impl NotificationSettings {
             NotificationKind::EvidenceChanged => &mut self.evidence_changed,
             NotificationKind::AccountPermissionsChanged => &mut self.account_permissions_changed,
             NotificationKind::AdminRequests => &mut self.admin_requests,
+            NotificationKind::AdminActivity => &mut self.admin_activity,
         }
     }
 

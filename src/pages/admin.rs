@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos_router::components::{Redirect, A};
 use leptos_router::hooks::use_params_map;
 
+use crate::components::admin_activity::AdminActivityFeed;
 use crate::components::admin_manage_cases::ManageCases;
 use crate::components::admin_manage_users::ManageUsers;
 use crate::components::email_failures::EmailFailureLog;
@@ -16,6 +17,7 @@ use crate::state::AppState;
 enum AdminWorkspace {
     Cases,
     Users,
+    Activity,
 }
 
 impl AdminWorkspace {
@@ -24,6 +26,7 @@ impl AdminWorkspace {
         match self {
             Self::Cases => "cases",
             Self::Users => "users",
+            Self::Activity => "activity",
         }
     }
 }
@@ -51,6 +54,13 @@ pub fn AdminCaseDetailPage() -> impl IntoView {
 #[component]
 pub fn AdminUsersPage() -> impl IntoView {
     admin_page(AdminWorkspace::Users, None)
+}
+
+/// The recorded site-activity feed — the in-app half of the "Admin activity
+/// alert" notification category.
+#[component]
+pub fn AdminActivityPage() -> impl IntoView {
+    admin_page(AdminWorkspace::Activity, None)
 }
 
 #[component]
@@ -93,6 +103,20 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
                 />
             }
             .into_any(),
+            AdminWorkspace::Activity => view! {
+                <section class="rounded-xl border border-slate-800 bg-slate-900 p-5">
+                    <h2 class="text-sm font-semibold text-slate-200">"Site activity"</h2>
+                    <p class="mt-1 text-xs text-slate-500">
+                        "New cases, case notes, information edits, documents, and contact changes \
+                         across the site, newest first \u{2014} drawn from the same change history \
+                         each record keeps. Administrators who have the \
+                         \u{201C}Admin activity alert\u{201D} notification turned on also get this \
+                         as a daily summary email."
+                    </p>
+                    <AdminActivityFeed />
+                </section>
+            }
+            .into_any(),
         };
 
         view! {
@@ -127,7 +151,7 @@ pub fn AdminWorkspaceNav(#[prop(into)] selected: String) -> impl IntoView {
     });
     view! {
         <nav
-            class="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5"
+            class="mt-5 grid grid-cols-3 gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5"
             aria-label="Admin workspaces"
         >
             <WorkspaceLink
@@ -141,6 +165,12 @@ pub fn AdminWorkspaceNav(#[prop(into)] selected: String) -> impl IntoView {
                 label="Users"
                 selected=selected == "users"
                 badge=user_attention
+            />
+            <WorkspaceLink
+                href="/admin/activity"
+                label="Activity"
+                selected=selected == "activity"
+                badge=Signal::derive(|| 0)
             />
         </nav>
     }

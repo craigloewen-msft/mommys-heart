@@ -92,6 +92,10 @@ async fn main() {
     // window (unread ones a user never opened), on startup and every 30 days.
     mommys_heart_app::server::db::channel_notifications::start_retention_task();
 
+    // Mail administrators a daily digest of the activity the audit logs record.
+    // The feed itself needs no task: it is a read over those logs.
+    mommys_heart_app::server::notifications::start_admin_activity_digest_task();
+
     let conf = get_configuration(None).unwrap();
     let leptos_options = conf.leptos_options;
     let addr = leptos_options.site_addr;

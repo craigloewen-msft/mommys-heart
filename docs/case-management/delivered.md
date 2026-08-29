@@ -128,6 +128,47 @@ PDF output, no field-level sensitivity controls, no cross-case note search.
   task. That is the real, observable limit. Legal holds and an
   organization-approved retention policy do not exist yet.
 
+### Admin activity alerts
+
+A notification category, **Admin activity alert**, that answers "what has been
+happening on the site?" for administrators.
+
+- It is a **view over the audit trail, not a second record of it**. Every event
+  shown is a row the Change Log already wrote, plus finalized notes and addenda
+  projected from the restricted note audit table. Nothing writes an event twice,
+  so the feed cannot drift from the audit history.
+- Covers case creation (including client signups), finalized case notes and
+  addenda, case information and intake property edits, documents and folders,
+  and contact, case-contact and organization changes. Account administration
+  (role changes, capability grants, information-access decisions) and chat are
+  deliberately excluded: they have their own notification categories.
+- Offered and delivered to **site and operations administrators only**. The
+  toggle does not appear on a volunteer's or client's Settings page, and the feed
+  route is admin-gated on the server.
+- Two surfaces: a paginated, category-filterable feed under **Admin → Activity**,
+  and a **daily** roll-up email to administrators who have the category enabled.
+- The digest tracks what it has already sent with a **watermark** (the last
+  sequence mailed from each log), so it never marks or mutates an append-only
+  audit table. When email is unconfigured the watermark holds still and nothing
+  is lost.
+- Events are **content-free**: who acted, what kind of thing they did, and which
+  record. No note, message, or document content enters the feed or the email.
+- Subject names are resolved when read, so a renamed case shows its current name
+  and a deleted one falls back to its id.
+- Retention is the audit log's own **10-year** window; the feed adds no separate
+  retention because it stores no events.
+
+This work also closed a real gap in the Change Log: creating a case now writes a
+`case / created` audit entry. Previously a case's history began with a change to
+a case that never appeared to have been created.
+
+**Limits, stated on purpose:** no per-admin unread badge or read state, no
+per-category subscription (the toggle is all-or-nothing), no digest for
+non-administrators, a single request scans a bounded window of recent history,
+and no first-class "Zoom interview link" record — a videoconference is covered as
+a document filed in the case's Zoom Video folder or as a case note with that
+interaction type.
+
 ---
 
 ## Phase 2: the CRM
