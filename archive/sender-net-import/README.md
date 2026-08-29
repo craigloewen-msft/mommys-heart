@@ -48,9 +48,11 @@ DATABASE_URL="postgres://user:pass@host:5432/db?sslmode=require" \
   cargo run --release -- /path/to/export.csv --actor you@mommysheart.org --dry-run
 ```
 
-> Do **not** run this through `etc/dev.sh --`. That wrapper sources
-> `.env.local` with `set -a`, which overwrites `DATABASE_URL` and would point a
-> production import at the local container.
+> **Always pass `DATABASE_URL` explicitly**, as above. This tool writes to
+> whichever database it is given, so an ambiguous environment is the one thing
+> that could point a production import at a local container. (The old
+> `etc/dev.sh --` wrapper, which sourced `.env.local` and would have overwritten
+> `DATABASE_URL`, is archived and no longer exists.)
 
 **Idempotent by email.** A contact whose address already exists is skipped, so an
 interrupted run is resumed by re-running it. Verified twice: a second full run

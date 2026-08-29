@@ -7,9 +7,12 @@ target/
 
 # Env
 .env
-# Generated per checkout by etc/dev.sh — points this instance at its own
-# database, blob container and web port.
-.env.local
+
+# Agent worktrees live under .kingdom/, but the service manifest beside them is
+# the project's own and is committed: it declares the shared database and blob
+# storage Kingdom raises for every agent working here.
+/.kingdom/*
+!/.kingdom/services.toml
 
 # Editor / OS
 .DS_Store

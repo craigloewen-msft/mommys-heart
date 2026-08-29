@@ -1,0 +1,28 @@
+# Shared resources for this project, raised by Kingdom IDE.
+#
+# One set, shared by every agent working on the project -- not one per agent.
+# Kingdom starts these while a plan is live, stops them when the last one
+# finishes, and keeps the volumes either way. Reach them at localhost on the
+# ports below; a plan on the machine's own network is told the container's
+# address instead.
+
+# The application database. Kingdom knows postgres, so it supplies the data
+# directory and the POSTGRES_PASSWORD the image needs to boot: the connection
+# string is postgres://postgres:postgres@localhost:5432/postgres.
+[[service]]
+type   = "docker"
+name   = "db"
+image  = "postgres:16"
+port   = 5432
+volume = "mommys-heart-db"
+
+# Blob storage for case evidence (the Azure Storage emulator).
+# --skipApiVersionCheck: the azure_storage_blob SDK sends a newer x-ms-version
+# than Azurite 3.36 knows, which it rejects outright without this.
+[[service]]
+type   = "docker"
+name   = "storage"
+image  = "mcr.microsoft.com/azure-storage/azurite"
+port   = 10000
+volume = "mommys-heart-blob"
+args   = ["azurite-blob", "--blobHost", "0.0.0.0", "--skipApiVersionCheck"]

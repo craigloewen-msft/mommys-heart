@@ -19,10 +19,10 @@ pub async fn seed_if_empty() -> Result<(), Box<dyn std::error::Error + Send + Sy
 }
 
 /// Force-refresh the demo/test data: wipe every domain table and re-insert the
-/// mock fixtures. Invoked by `mommys-heart-app seed`, which `etc/dev.sh` runs
-/// once to bake the pre-seeded database image that every instance starts from.
-/// Not used by the normal server startup path, which only seeds an empty
-/// database via [`seed_if_empty`].
+/// mock fixtures. Invoked by `mommys-heart-app seed`, which is how you put the
+/// shared development database back to known fixtures. The normal server
+/// startup path does not use this; it only fills an *empty* database via
+/// [`seed_if_empty`].
 pub async fn reseed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!("wiping existing application data before reseeding");
     // One statement so FK constraints are satisfied atomically; RESTART IDENTITY
