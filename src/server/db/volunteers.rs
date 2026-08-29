@@ -8,7 +8,7 @@
 use std::fmt;
 
 use crate::helpers::volunteer_details::{VolunteerDetails, VolunteerDetailsView};
-use crate::server::db::{audit, pool, users};
+use crate::server::db::{audit, contacts, pool, users};
 use crate::server_fns::users::AccountRole;
 use crate::server_fns::volunteers::{Volunteer, VolunteerApplication, VolunteerStatus};
 
@@ -391,6 +391,7 @@ pub async fn list_pending() -> Result<Vec<Volunteer>, sqlx::Error> {
          FROM volunteers v
          JOIN users u ON u.id = v.user_id
          WHERE v.status = 'pending'
+           AND u.role <> 'deactivated'
          ORDER BY v.agreed_at",
     )
     .fetch_all(pool())
@@ -411,9 +412,15 @@ pub async fn list_pending() -> Result<Vec<Volunteer>, sqlx::Error> {
 
 /// How many applications are waiting on a decision.
 pub async fn pending_count() -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT count(*) FROM volunteers WHERE status = 'pending'")
-        .fetch_one(pool())
-        .await
+    // Matches `list_pending`: deactivating a pending applicant takes them out of
+    // the queue, so the badge cannot count someone the list will not show.
+    sqlx::query_scalar(
+        "SELECT count(*) FROM volunteers v
+         JOIN users u ON u.id = v.user_id
+         WHERE v.status = 'pending' AND u.role <> 'deactivated'",
+    )
+    .fetch_one(pool())
+    .await
 }
 
 /// Approve or decline a pending application. Approving delegates to
@@ -427,6 +434,8 @@ pub async fn decide(
     note: &str,
 ) -> Result<(), Error> {
     let mut tx = pool().begin().await?;
+    // CRM audit rows written below inherit the deciding admin's stable identity.
+    audit::set_actor_in_transaction(&mut tx, actor_id).await?;
     // Role changes take this lock before any user/volunteer row lock.
     users::lock_role_changes_in(&mut tx).await?;
 
@@ -444,6 +453,9 @@ pub async fn decide(
     if approve {
         // Sets the role *and* flips this record to approved, together.
         users::set_role_in(&mut tx, user_id, AccountRole::Volunteer, actor_name).await?;
+        // `set_role_in` returns early when the account already holds the role,
+        // so the contact record is ensured here too. It is idempotent.
+        contacts::ensure_volunteer_in(&mut tx, user_id, actor_name).await?;
     }
 
     // Record the decision itself. On approval the status is already 'approved';

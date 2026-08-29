@@ -96,6 +96,8 @@ pub async fn list(case_id: &str) -> Result<Vec<CaseContact>, sqlx::Error> {
 }
 
 /// Every case link for a person, including whether this viewer may mutate it.
+/// A site admin holds every capability on every case, so they see and may edit
+/// every link; everyone else needs the stored capability on that case.
 pub async fn list_for_contact(
     contact_id: &str,
     user_id: &str,
@@ -103,11 +105,17 @@ pub async fn list_for_contact(
     let rows = sqlx::query_as::<_, ContactCaseRow>(
         "SELECT cc.id, cc.case_id, ca.name AS case_name, ca.status AS case_status,
                 cc.role, cc.note, cc.is_primary,
-                (ca.status <> 'declined' AND EXISTS (
-                    SELECT 1 FROM case_assignments assignment
-                    WHERE assignment.case_id = ca.id
-                      AND assignment.user_id = $2
-                      AND assignment.capability = 'edit_case'
+                (ca.status <> 'declined' AND (
+                    EXISTS (
+                        SELECT 1 FROM case_assignments assignment
+                        WHERE assignment.case_id = ca.id
+                          AND assignment.user_id = $2
+                          AND assignment.capability = 'edit_case'
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM users viewer
+                        WHERE viewer.id = $2 AND viewer.role = 'site_admin'
+                    )
                 )) AS can_edit
          FROM case_contacts cc
          JOIN cases ca ON ca.id = cc.case_id
@@ -121,8 +129,7 @@ pub async fn list_for_contact(
                )
                OR EXISTS (
                    SELECT 1 FROM users viewer
-                   WHERE viewer.id = $2
-                     AND viewer.role IN ('operations_admin', 'site_admin')
+                   WHERE viewer.id = $2 AND viewer.role = 'site_admin'
                )
            )
          ORDER BY ca.id, cc.is_primary DESC, cc.seq DESC",

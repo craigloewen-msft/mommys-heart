@@ -1,7 +1,12 @@
 //! The unified append-only audit log shared by users and cases.
+//!
+//! As well as writing and paging the log, this module serves the admin activity
+//! feed and its digest, which are reads over the same table — see the
+//! "Admin activity feed" section below.
 
 use crate::helpers::visibility::Visibility;
 use crate::server::db::{ids, now_stamp, pool};
+use crate::server_fns::admin_activity::{AdminActivityCategory, AdminActivityEvent};
 use crate::server_fns::audit::ChangeLogEntry;
 use crate::server_fns::pagination::Page;
 
@@ -402,4 +407,252 @@ pub fn start_retention_task() {
             tokio::time::sleep(RETENTION_INTERVAL).await;
         }
     });
+}
+
+// ─── Admin activity feed ─────────────────────────────────────────────────────
+//
+// The feed administrators read under Admin → Activity, and the daily digest
+// email, are both *views over this log* (plus the restricted
+// `case_note_audit_log`, unioned in without any note content). They record
+// nothing of their own: the only state is a one-row watermark saying how far the
+// digest has mailed, so the digest never marks or mutates an append-only log.
+//
+// What these add over `page` above is *classification*: audit rows are
+// field-level and include work administrators did not ask to be alerted about.
+// `AdminActivityCategory::classify` decides what belongs in the feed; everything
+// here is the SQL that feeds it.
+
+/// How far the digest has got through each log.
+#[derive(Clone, Copy, Debug)]
+pub struct DigestWatermark {
+    pub last_audit_seq: i64,
+    pub last_note_seq: i64,
+}
+
+/// A row from either log, before classification. `entity`/`field` come from
+/// `audit_log`; the note log maps onto the same shape.
+#[derive(sqlx::FromRow)]
+struct ActivityRow {
+    id: String,
+    seq: i64,
+    entity: String,
+    entity_id: String,
+    actor: String,
+    field: String,
+    old_value: String,
+    new_value: String,
+    subject_name: Option<String>,
+    at: String,
+}
+
+/// `audit_log` rows joined to their subject's current name. Restricted to the
+/// entity types the feed classifies, so the scan never walks user/permission
+/// history. `$1` is an exclusive lower bound on `seq` (0 for "from the start").
+const AUDIT_SELECT: &str = "
+    SELECT a.id, a.seq, a.entity_type AS entity, a.entity_id, a.actor, a.field,
+           a.old_value, a.new_value, a.at,
+           COALESCE(
+               c.name,
+               NULLIF(btrim(concat_ws(' ',
+                   NULLIF(ct.preferred_name, ''), ct.first_name, ct.last_name)), ''),
+               o.name
+           ) AS subject_name
+    FROM audit_log a
+    LEFT JOIN cases c ON a.entity_type = 'case' AND c.id = a.entity_id
+    LEFT JOIN contacts ct ON a.entity_type = 'contact' AND ct.id = a.entity_id
+    LEFT JOIN organizations o ON a.entity_type = 'organization' AND o.id = a.entity_id
+    WHERE a.entity_type IN ('case', 'contact', 'organization')
+      AND a.seq > $1
+";
+
+/// Finalized notes and addenda from the restricted note log, projected onto the
+/// same shape. Only these two actions are surfaced: drafts are private to their
+/// author until finalized, and no note *content* is ever selected.
+const NOTE_SELECT: &str = "
+    SELECT n.id, n.seq, 'case' AS entity, n.case_id AS entity_id, n.actor,
+           'case note' AS field, '' AS old_value, n.action AS new_value, n.at,
+           c.name AS subject_name
+    FROM case_note_audit_log n
+    LEFT JOIN cases c ON c.id = n.case_id
+    WHERE n.action IN ('finalize_note', 'add_addendum')
+      AND n.seq > $1
+";
+
+impl ActivityRow {
+    /// Classify and render, or `None` when this row is not feed material.
+    fn into_event(self) -> Option<AdminActivityEvent> {
+        let category = AdminActivityCategory::classify(&self.entity, &self.field)?;
+        let subject = AdminActivityCategory::subject_for(&self.entity)?;
+        Some(AdminActivityEvent {
+            id: self.id,
+            category,
+            actor: self.actor,
+            summary: summarize(&self.field, &self.old_value, &self.new_value),
+            subject,
+            subject_id: self.entity_id.clone(),
+            // A deleted record leaves the join empty; its id is still meaningful.
+            subject_name: self.subject_name.unwrap_or(self.entity_id),
+            at: self.at,
+        })
+    }
+}
+
+/// Turn an audit row's field/old/new into the sentence the feed shows.
+///
+/// Audit rows are field-level (`status: Open -> Closed`); the feed reads as prose
+/// (`changed the status from "Open" to "Closed"`). Only the shapes the feed
+/// actually surfaces are special-cased; anything else falls back to a faithful
+/// generic rendering rather than inventing wording.
+fn summarize(field: &str, old_value: &str, new_value: &str) -> String {
+    match (field, new_value) {
+        ("case", "created") => "created the case".to_string(),
+        ("case", value) => format!("{value} the case"),
+        ("case note", "finalize_note") => "finalized a case note".to_string(),
+        ("case note", _) => "added an addendum to a case note".to_string(),
+        ("properties", _) => "updated the case information".to_string(),
+        ("evidence", _) if old_value.is_empty() => format!("added the file \"{new_value}\""),
+        ("evidence", _) => format!("changed the file \"{new_value}\""),
+        ("folder", _) if old_value.is_empty() => format!("added the folder \"{new_value}\""),
+        ("folder", _) => format!("removed the folder \"{old_value}\""),
+        ("case contact", _) => format!("{new_value} on the case"),
+        ("contact", value) => format!("{value} the contact"),
+        ("organization", value) if old_value.is_empty() => format!("{value} the organization"),
+        ("categories", _) => "changed the contact's categories".to_string(),
+        ("account link", value) => format!("{value} the contact and an account"),
+        // Field-level fallback: name the field and both values honestly.
+        (field, _) if old_value.is_empty() => format!("set {field} to \"{new_value}\""),
+        (field, _) => format!("changed {field} from \"{old_value}\" to \"{new_value}\""),
+    }
+}
+
+/// One page of activity, newest first, optionally narrowed to one category.
+///
+/// Classification happens in Rust, not SQL, so the category rules live in one
+/// place. That means the page is assembled by scanning recent rows and keeping
+/// the ones that classify — the `seq` indexes make that walk cheap, and the
+/// window is bounded by [`SCAN_LIMIT`].
+pub async fn activity_page(
+    category: Option<AdminActivityCategory>,
+    offset: i64,
+    limit: i64,
+) -> Result<Page<AdminActivityEvent>, sqlx::Error> {
+    /// How far back a single request will look. Bounds the work regardless of
+    /// how much history exists; the feed is a recent-activity view, and the
+    /// Change Log remains the exhaustive record.
+    const SCAN_LIMIT: i64 = 2_000;
+
+    let rows = sqlx::query_as::<_, ActivityRow>(&format!(
+        "SELECT * FROM (
+             ({AUDIT_SELECT} ORDER BY a.seq DESC LIMIT {SCAN_LIMIT})
+             UNION ALL
+             ({NOTE_SELECT} ORDER BY n.seq DESC LIMIT {SCAN_LIMIT})
+         ) rows ORDER BY at DESC, seq DESC"
+    ))
+    .bind(0i64)
+    .fetch_all(pool())
+    .await?;
+
+    let events: Vec<AdminActivityEvent> = rows
+        .into_iter()
+        .filter_map(ActivityRow::into_event)
+        .filter(|event| category.is_none_or(|wanted| event.category == wanted))
+        .collect();
+
+    let total = events.len() as i64;
+    Ok(Page {
+        items: events
+            .into_iter()
+            .skip(offset.max(0) as usize)
+            .take(limit.max(0) as usize)
+            .collect(),
+        total,
+    })
+}
+
+/// The digest's current position in each log.
+///
+/// A watermark ahead of the log it tracks is clamped back to the log's end. That
+/// only happens when a log has been truncated and its sequence restarted (which
+/// `etc/dev.sh reset` does); without the clamp the digest would sit past every
+/// row and silently report nothing forever.
+pub async fn activity_watermark() -> Result<DigestWatermark, sqlx::Error> {
+    let stored: Option<(i64, i64)> =
+        sqlx::query_as("SELECT last_audit_seq, last_note_seq FROM admin_activity_digest_state")
+            .fetch_optional(pool())
+            .await?;
+    let (last_audit_seq, last_note_seq) = stored.unwrap_or((0, 0));
+
+    let (audit_max, note_max): (i64, i64) = sqlx::query_as(
+        "SELECT COALESCE((SELECT max(seq) FROM audit_log), 0),
+                COALESCE((SELECT max(seq) FROM case_note_audit_log), 0)",
+    )
+    .fetch_one(pool())
+    .await?;
+
+    Ok(DigestWatermark {
+        last_audit_seq: last_audit_seq.min(audit_max),
+        last_note_seq: last_note_seq.min(note_max),
+    })
+}
+
+/// Everything worth reporting since `watermark`, oldest first, with the new
+/// watermark to store once it has been sent. Returns at most `limit` events plus
+/// a count of how many further ones were left for the next run.
+pub async fn activity_since(
+    watermark: DigestWatermark,
+    limit: i64,
+) -> Result<(Vec<AdminActivityEvent>, i64, DigestWatermark), sqlx::Error> {
+    let audit_rows = sqlx::query_as::<_, ActivityRow>(&format!("{AUDIT_SELECT} ORDER BY a.seq"))
+        .bind(watermark.last_audit_seq)
+        .fetch_all(pool())
+        .await?;
+    let note_rows = sqlx::query_as::<_, ActivityRow>(&format!("{NOTE_SELECT} ORDER BY n.seq"))
+        .bind(watermark.last_note_seq)
+        .fetch_all(pool())
+        .await?;
+
+    // Advance past everything examined, including rows that did not classify —
+    // otherwise unclassified rows would be rescanned forever.
+    let next = DigestWatermark {
+        last_audit_seq: audit_rows
+            .iter()
+            .map(|row| row.seq)
+            .max()
+            .unwrap_or(watermark.last_audit_seq),
+        last_note_seq: note_rows
+            .iter()
+            .map(|row| row.seq)
+            .max()
+            .unwrap_or(watermark.last_note_seq),
+    };
+
+    let mut events: Vec<AdminActivityEvent> = audit_rows
+        .into_iter()
+        .chain(note_rows)
+        .filter_map(ActivityRow::into_event)
+        .collect();
+    events.sort_by(|a, b| a.at.cmp(&b.at));
+
+    let overflow = (events.len() as i64 - limit).max(0);
+    events.truncate(limit.max(0) as usize);
+    Ok((events, overflow, next))
+}
+
+/// Store the digest's new position after a successful send. Upserts, so a
+/// missing state row (only possible if it were deleted out of band) heals.
+pub async fn set_activity_watermark(next: DigestWatermark) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO admin_activity_digest_state
+             (id, last_audit_seq, last_note_seq, last_sent_at)
+         VALUES (true, $1, $2, now())
+         ON CONFLICT (id) DO UPDATE SET
+             last_audit_seq = EXCLUDED.last_audit_seq,
+             last_note_seq  = EXCLUDED.last_note_seq,
+             last_sent_at   = EXCLUDED.last_sent_at",
+    )
+    .bind(next.last_audit_seq)
+    .bind(next.last_note_seq)
+    .execute(pool())
+    .await?;
+    Ok(())
 }

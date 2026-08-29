@@ -301,6 +301,13 @@ pub async fn create_role(
             .fetch_optional(&mut *tx)
             .await?;
     let current_role = current_role.ok_or(Error::NotFound)?;
+    // A retired account has no role to change: it must be reactivated first,
+    // and it must not be reachable as a requested role either.
+    if current_role == AccountRole::Deactivated.slug() || requested_role.is_deactivated() {
+        return Err(Error::InvalidData(
+            "Deactivated accounts are managed through the account status controls.".to_string(),
+        ));
+    }
     if current_role == requested_role.slug() {
         return Err(Error::NoChange);
     }
@@ -334,13 +341,18 @@ pub async fn create_case_capabilities(
         ));
     }
     let mut tx = pool().begin().await?;
-    let target_exists: Option<i32> =
-        sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR SHARE")
+    let target_exists: Option<String> =
+        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR SHARE")
             .bind(target_user_id)
             .fetch_optional(&mut *tx)
             .await?;
-    if target_exists.is_none() {
+    let Some(target_role) = target_exists else {
         return Err(Error::NotFound);
+    };
+    if target_role == AccountRole::Deactivated.slug() {
+        return Err(Error::InvalidData(
+            "This account is deactivated. Reactivate it first.".to_string(),
+        ));
     }
 
     let mut request_ids = Vec::with_capacity(changes.len());
@@ -414,6 +426,11 @@ pub async fn create_information_access(
     let (role, current_access) = target.ok_or(Error::NotFound)?;
     let role = AccountRole::from_slug(&role)
         .ok_or_else(|| Error::InvalidData(format!("unknown account role {role:?}")))?;
+    if role.is_deactivated() {
+        return Err(Error::InvalidData(
+            "This account is deactivated. Reactivate it first.".to_string(),
+        ));
+    }
     if !role.has_volunteer_privileges() {
         return Err(Error::InvalidData(
             "Information access cannot be requested for a client account.".to_string(),

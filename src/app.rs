@@ -5,8 +5,8 @@ use leptos_router::path;
 
 use crate::pages::{
     admin::{
-        AdminCaseDetailPage, AdminCasesPage, AdminDashboardPage, AdminUserDetailPage,
-        AdminUsersPage,
+        AdminActivityPage, AdminCaseDetailPage, AdminCasesPage, AdminDashboardPage,
+        AdminUserDetailPage, AdminUsersPage,
     },
     bulk_properties::BulkPropertiesPage,
     case_notes::{CaseNoteDetailPage, NewCaseNotePage},
@@ -152,6 +152,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/admin/cases/:id") view=AdminCaseDetailPage />
                 <Route path=path!("/admin/users") view=AdminUsersPage />
                 <Route path=path!("/admin/users/:id") view=AdminUserDetailPage />
+                <Route path=path!("/admin/activity") view=AdminActivityPage />
             </Routes>
         </Router>
     }

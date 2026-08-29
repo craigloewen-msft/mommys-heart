@@ -266,7 +266,7 @@ impl AppState {
 
     pub fn is_volunteer_or_admin(&self) -> bool {
         self.role()
-            .map(|r| !matches!(r, AccountRole::Client))
+            .map(|r| r.has_volunteer_privileges())
             .unwrap_or(false)
     }
 
@@ -276,7 +276,8 @@ impl AppState {
             .await
             .map_err(err_text)?;
         if let LoginOutcome::Authenticated(user) = &outcome {
-            self.current_user_summary.set(Some(user.clone().into()));
+            self.current_user_summary
+                .set(Some((**user).clone().into()));
             self.refresh_badges();
         }
         Ok(outcome)

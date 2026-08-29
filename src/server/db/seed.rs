@@ -114,6 +114,26 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     .execute(pool)
                     .await?;
             }
+            AccountRole::Deactivated => {
+                // The subtype row this role implies, exactly as the two arms
+                // above do for theirs. `previous_role` is what a reactivation
+                // restores, so the schema's completeness CHECK is satisfied.
+                let deactivation = u
+                    .deactivation
+                    .as_ref()
+                    .expect("a seeded deactivated user carries its deactivation record");
+                sqlx::query(
+                    "INSERT INTO account_deactivations
+                         (user_id, previous_role, reason, deactivated_by_name)
+                     VALUES ($1, $2, $3, $4)",
+                )
+                .bind(&u.id)
+                .bind(deactivation.previous_role.slug())
+                .bind(&deactivation.reason)
+                .bind(&deactivation.by)
+                .execute(pool)
+                .await?;
+            }
             _ => {}
         }
 

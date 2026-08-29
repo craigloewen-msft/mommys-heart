@@ -9,7 +9,7 @@ use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::cases::{Case, CaseStatus, CaseSummary, CaseWithdrawal};
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::pagination::Page;
-use crate::server_fns::users::AccountRole;
+use crate::server_fns::users::{AccountRole, User};
 
 #[derive(sqlx::FromRow)]
 struct CaseRow {
@@ -118,7 +118,7 @@ pub async fn admin_page(
     offset: i64,
     limit: i64,
     search: &str,
-    user_id: &str,
+    user: &User,
 ) -> Result<Page<CaseSummary>, sqlx::Error> {
     let limit = limit.clamp(1, 1_000);
     let offset = offset.max(0);
@@ -150,7 +150,7 @@ pub async fn admin_page(
     let mut capabilities_by_case = if ids.is_empty() {
         Default::default()
     } else {
-        capabilities::get_multi_case(user_id, &ids).await?
+        capabilities::get_multi_case(user, &ids).await?
     };
     let threshold = inactivity_threshold();
     let items = rows
@@ -181,7 +181,7 @@ pub async fn name(case_id: &str) -> Result<Option<String>, sqlx::Error> {
     Ok(name)
 }
 
-/// One page of sparse cases visible to a user_id.
+/// One page of sparse cases visible to a user.
 ///
 /// `include_withdrawn` is the operations-admin escape hatch: a withdrawn case is
 /// meant to be gone from an ordinary list, but admins are the only ones who can
@@ -190,7 +190,7 @@ pub async fn get_summaries_for_user(
     offset: i64,
     limit: i64,
     search: &str,
-    user_id: &str,
+    user: &User,
     include_withdrawn: bool,
 ) -> Result<Page<CaseSummary>, sqlx::Error> {
     let limit = limit.clamp(1, 100);
@@ -231,8 +231,8 @@ pub async fn get_summaries_for_user(
          WHERE {SEARCH} AND {}{withdrawn}
          ORDER BY c.id LIMIT $2 OFFSET $3",
         summary_select(&format!(
-            "(SELECT v.role FROM users v WHERE v.id = $4) <> '{}'",
-            AccountRole::Client.slug()
+            "(SELECT v.role FROM users v WHERE v.id = $4) IN {}",
+            AccountRole::STAFF_ROLES_SQL
         )),
         scope.replace("$VIEWER", "$4")
     );
@@ -241,13 +241,13 @@ pub async fn get_summaries_for_user(
     // one fewer sequential round-trip against a networked database.
     let count_fut = sqlx::query_scalar::<_, i64>(&count_sql)
         .bind(&pattern)
-        .bind(user_id)
+        .bind(&user.id)
         .fetch_one(pool());
     let rows_fut = sqlx::query_as::<_, SummaryRow>(&page_sql)
         .bind(&pattern)
         .bind(limit)
         .bind(offset)
-        .bind(user_id)
+        .bind(&user.id)
         .fetch_all(pool());
     let (total, rows) = tokio::try_join!(count_fut, rows_fut)?;
 
@@ -258,7 +258,7 @@ pub async fn get_summaries_for_user(
     let mut capabilities_by_case = if ids.is_empty() {
         Default::default()
     } else {
-        capabilities::get_multi_case(user_id, &ids).await?
+        capabilities::get_multi_case(user, &ids).await?
     };
     let threshold = inactivity_threshold();
     let items = rows
@@ -271,11 +271,11 @@ pub async fn get_summaries_for_user(
     Ok(Page { items, total })
 }
 
-/// One admin directory summary by primary key, including the viewer's stored
+/// One admin directory summary by primary key, including the viewer's
 /// capabilities. This avoids resolving detail routes through fuzzy search.
 pub async fn admin_summary(
     case_id: &str,
-    user_id: &str,
+    user: &User,
 ) -> Result<Option<CaseSummary>, sqlx::Error> {
     let row =
         sqlx::query_as::<_, SummaryRow>(&format!("{} WHERE c.id = $1", summary_select("true")))
@@ -285,7 +285,7 @@ pub async fn admin_summary(
     let Some(row) = row else {
         return Ok(None);
     };
-    let caps = capabilities::get_single_case(user_id, case_id).await?;
+    let caps = capabilities::get_single_case(user, case_id).await?;
     Ok(Some(row.into_summary(caps, &inactivity_threshold())))
 }
 
@@ -313,29 +313,39 @@ pub async fn search_lite(search: &str, limit: i64) -> Result<Vec<CaseSummary>, s
         .collect())
 }
 
-/// Cases the caller may edit, for the person-side relationship picker.
+/// Cases the caller may edit, for the person-side relationship picker. A role
+/// with full case access may edit every live case, so its scope clause is
+/// simply true.
 pub async fn search_editable(
     search: &str,
-    user_id: &str,
+    user: &User,
     limit: i64,
 ) -> Result<Vec<crate::server_fns::case_contacts::EditableCaseSummary>, sqlx::Error> {
     let pattern = escaped_like_pattern(search);
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT c.id, c.name, c.status
-         FROM cases c
-         WHERE c.status <> 'declined'
-           AND c.status <> 'withdrawn'
-           AND EXISTS (
+    // The capability slug is an internal constant, never user input. The
+    // full-access branch still references `$2` (the viewer id) so the statement
+    // keeps the same parameter list either way.
+    let scope = if user.role.has_full_case_access() {
+        "$2::text IS NOT NULL"
+    } else {
+        "EXISTS (
                SELECT 1 FROM case_assignments assignment
                WHERE assignment.case_id = c.id
                  AND assignment.user_id = $2
                  AND assignment.capability = 'edit_case'
-           )
+           )"
+    };
+    let rows: Vec<(String, String, String)> = sqlx::query_as(&format!(
+        "SELECT c.id, c.name, c.status
+         FROM cases c
+         WHERE c.status <> 'declined'
+           AND c.status <> 'withdrawn'
+           AND {scope}
            AND ($1::text IS NULL OR c.id ILIKE $1 OR c.name ILIKE $1)
-         ORDER BY c.id LIMIT $3",
-    )
+         ORDER BY c.id LIMIT $3"
+    ))
     .bind(&pattern)
-    .bind(user_id)
+    .bind(&user.id)
     .bind(limit.clamp(1, 50))
     .fetch_all(pool())
     .await?;
@@ -398,10 +408,10 @@ pub async fn get_summaries_by_ids(ids: &[String]) -> Result<Vec<CaseSummary>, sq
 }
 
 /// A single case by id, hydrated without the temporarily unavailable evidence
-/// data, including the capabilities `user_id` holds on it.
+/// data, including the capabilities `user` holds on it.
 pub async fn get(
     id: &str,
-    user_id: &str,
+    user: &User,
     has_volunteer_access: bool,
 ) -> Result<Option<Case>, sqlx::Error> {
     let Some(row) = sqlx::query_as::<_, CaseRow>(
@@ -453,7 +463,7 @@ pub async fn get(
         folders,
         properties,
         message_count: 0,
-        capabilities: capabilities::get_single_case(user_id, id).await?,
+        capabilities: capabilities::get_single_case(user, id).await?,
         terms_accepted,
         withdrawal,
     }))
@@ -494,6 +504,19 @@ pub async fn create(
         .await?;
 
     users::assign_capabilities_in(&mut tx, owner_id, &id, &CaseCapability::ALL, owner_name).await?;
+    // The case's own creation belongs in its history: without this the Change
+    // Log's earliest entry is a change to a case that never appears to have been
+    // created. Also what the admin activity feed reads for "new case".
+    audit::record_in_transaction(
+        &mut tx,
+        audit::Entity::Case,
+        &id,
+        owner_name,
+        "case",
+        "",
+        "created",
+    )
+    .await?;
     tx.commit().await?;
     Ok(id)
 }
@@ -523,6 +546,17 @@ pub async fn create_from_signup_in(
         .await?;
     terms_acceptances::insert_in(tx, owner_id, Some(case_id), terms_version).await?;
     users::assign_capabilities_in(tx, owner_id, case_id, &CaseCapability::ALL, owner_name).await?;
+    // Same as [`create`]: a signup's case is created too, and the feed reads it.
+    audit::record_in_transaction(
+        tx,
+        audit::Entity::Case,
+        case_id,
+        owner_name,
+        "case",
+        "",
+        "created from a client signup",
+    )
+    .await?;
     Ok(())
 }
 

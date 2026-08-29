@@ -81,9 +81,9 @@ pub async fn record_for_channel_message_in(
          WHERE a.case_id = $1
            AND a.capability = 'view_case'
            AND a.user_id <> $4
-           AND (NOT $5 OR u.role <> '{client}')
+           AND (NOT $5 OR u.role IN {staff})
          ON CONFLICT DO NOTHING",
-        client = AccountRole::Client.slug()
+        staff = AccountRole::STAFF_ROLES_SQL
     ))
     .bind(case_id)
     .bind(channel_id)
@@ -111,7 +111,7 @@ pub async fn mark_channel_read(user_id: &str, channel_id: &str) -> Result<u64, s
 /// channel. Drives both the "Case Chat" nav badge (any rows at all) and the
 /// per-channel dots in the case list.
 pub async fn unread_for_user(user_id: &str) -> Result<Vec<ChannelUnread>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, UnreadRow>(
+    let rows = sqlx::query_as::<_, UnreadRow>(&format!(
         "SELECT n.case_id, n.channel_id, COUNT(*) AS count
          FROM channel_notifications n
          JOIN case_channels ch ON ch.id = n.channel_id AND ch.case_id = n.case_id
@@ -123,9 +123,10 @@ pub async fn unread_for_user(user_id: &str) -> Result<Vec<ChannelUnread>, sqlx::
                  AND a.case_id = n.case_id
                  AND a.capability = 'view_case'
            )
-           AND (u.role <> 'client' OR ch.kind <> 'volunteer_only')
+           AND (u.role IN {staff} OR ch.kind <> 'volunteer_only')
          GROUP BY n.case_id, n.channel_id",
-    )
+        staff = AccountRole::STAFF_ROLES_SQL
+    ))
     .bind(user_id)
     .fetch_all(pool())
     .await?;

@@ -41,6 +41,65 @@ it.
   (`cases_withdrawal_complete`), so the state can never become unexplainable or
   unrecoverable.
 
+### Case access
+
+- What a user may do on a case is the set of `CaseCapability`s stored for them
+  in `case_assignments`. Owning a case grants nothing by itself.
+- **Site admins are the one exception:** they hold every capability on every
+  case, with no assignment and nothing to grant. There is no separate read-only
+  inspection mode — they get the ordinary case view, fully editable.
+- **Operations admins hold only their stored capabilities.** They can grant
+  themselves access to any case from the user directory without approval, and
+  that grant is audited; the case directory shows "No access" for cases they hold
+  nothing on.
+- A declined or withdrawn case still refuses **every** write, from everyone
+  including a site admin. Capability and lifecycle are checked separately.
+- Case lists stay assignment-scoped: the Cases list and Case Chat show the cases
+  a user is actually assigned to, so full access does not mean every case in the
+  system appears in a site admin's own lists or unread counts.
+
+---
+
+## Account status
+
+An account can be **deactivated** by a site admin — the way duplicate accounts get
+cleaned up without destroying anything.
+
+- **A role, not a deletion.** Deactivating sets the account role to
+  `deactivated`. A `users` row cannot be deleted at all: `cases.owner_id` is
+  `ON DELETE RESTRICT`, and audit, contact, and funding rows reference it. This
+  follows the same archive-not-delete reasoning as case withdrawal and ADR-0002.
+- **Site admins only.** Operations admins see the status read-only and cannot
+  request the change.
+- **It stops being a login.** Existing sessions and remembered devices are
+  dropped in the same transaction, so a browser already signed in as that account
+  is logged out on its next request. A sign-in attempt is refused *after* the
+  password is checked, so the message is not an oracle for which addresses exist.
+- **It disappears from the working lists**: the volunteer list, the Volunteers,
+  Clients, and Other directory sections, the volunteer-application queue, the
+  case-owner picker, the case-access picker, and the contact account-linking
+  picker. It receives no notification emails and no unread badges.
+- **It is still findable**, in its own "Deactivated accounts" section of Manage
+  users, which is how an admin finds one to restore.
+- **Nothing else changes.** The role held before, the case assignments, the
+  volunteer agreement and its version, the information-management grant, the
+  linked contact, and the audit history are all kept, so reactivating restores
+  exactly the previous state.
+- **The email address stays claimed**, so nobody re-registers over a retired
+  duplicate by accident.
+- **You cannot deactivate your own account**, which is also what makes it
+  impossible to retire the last site admin: the actor must be a site admin and
+  cannot be the target, so an active site admin always remains. Separately, a
+  deactivated ex-admin does not count toward the "final site admin" check that
+  guards ordinary demotions.
+- Deactivation does **not** withdraw the account's cases. A case with staff work
+  on it belongs to the organization, not to the account that filed it.
+- Both transitions are audited, so the user's Change Log names who did it and when.
+
+**Limits, stated on purpose:** there is no operations-admin request path for
+deactivation, and no merging of two accounts' records — deactivating the
+duplicate leaves the good account untouched rather than moving anything onto it.
+
 ---
 
 ## Phase 1: secure case messaging
@@ -127,6 +186,47 @@ PDF output, no field-level sensitivity controls, no cross-case note search.
 - Audit entries are pruned on a **10-year** retention window by a background
   task. That is the real, observable limit. Legal holds and an
   organization-approved retention policy do not exist yet.
+
+### Admin activity alerts
+
+A notification category, **Admin activity alert**, that answers "what has been
+happening on the site?" for administrators.
+
+- It is a **view over the audit trail, not a second record of it**. Every event
+  shown is a row the Change Log already wrote, plus finalized notes and addenda
+  projected from the restricted note audit table. Nothing writes an event twice,
+  so the feed cannot drift from the audit history.
+- Covers case creation (including client signups), finalized case notes and
+  addenda, case information and intake property edits, documents and folders,
+  and contact, case-contact and organization changes. Account administration
+  (role changes, capability grants, information-access decisions) and chat are
+  deliberately excluded: they have their own notification categories.
+- Offered and delivered to **site and operations administrators only**. The
+  toggle does not appear on a volunteer's or client's Settings page, and the feed
+  route is admin-gated on the server.
+- Two surfaces: a paginated, category-filterable feed under **Admin → Activity**,
+  and a **daily** roll-up email to administrators who have the category enabled.
+- The digest tracks what it has already sent with a **watermark** (the last
+  sequence mailed from each log), so it never marks or mutates an append-only
+  audit table. When email is unconfigured the watermark holds still and nothing
+  is lost.
+- Events are **content-free**: who acted, what kind of thing they did, and which
+  record. No note, message, or document content enters the feed or the email.
+- Subject names are resolved when read, so a renamed case shows its current name
+  and a deleted one falls back to its id.
+- Retention is the audit log's own **10-year** window; the feed adds no separate
+  retention because it stores no events.
+
+This work also closed a real gap in the Change Log: creating a case now writes a
+`case / created` audit entry. Previously a case's history began with a change to
+a case that never appeared to have been created.
+
+**Limits, stated on purpose:** no per-admin unread badge or read state, no
+per-category subscription (the toggle is all-or-nothing), no digest for
+non-administrators, a single request scans a bounded window of recent history,
+and no first-class "Zoom interview link" record — a videoconference is covered as
+a document filed in the case's Zoom Video folder or as a case note with that
+interaction type.
 
 ---
 
@@ -235,7 +335,8 @@ attorneys, court clerks, board members, and emergency contacts.
   record the role only — never the note text.
 - The same links are shown on person detail with stable admin case links.
   Add/edit/remove remains authorized by the target case's stored `EditCase`
-  capability, even when the workflow starts from a person or an admin read view.
+  capability (which a site admin always holds), even when the workflow starts
+  from a person rather than the case.
 - New verified client accounts receive a linked person record and defaults; a
   case signup also links that person to the new case as its primary Client.
 - Active person and editable-case pickers use bounded, debounced server-side
@@ -278,7 +379,7 @@ extended in place so existing rows survived.
 | --- | --- | --- | --- |
 | Contacts, organizations | none | full management when granted; sign-in account linking excluded | full management when granted |
 | Contact and organization properties | none | full management when granted | full management when granted |
-| Case contacts | none | information grant plus `ViewCase` to read and `EditCase` to edit | same, plus admin case inspection |
+| Case contacts | none | information grant plus `ViewCase` to read and `EditCase` to edit | same; a site admin holds both on every case |
 | Grants, funding | none | full management when granted | full management when granted |
 
 Every information server function rejects a client account.
@@ -352,3 +453,4 @@ that must not depend on application code at all live in the schema:
 | A contact has a surname or an organization | `contacts_named_check` |
 | Referenced contacts/organizations/grants cannot be deleted | `ON DELETE RESTRICT` foreign keys |
 | A withdrawn case can always be explained and restored | `cases_withdrawal_complete` check |
+| A stored deactivation names who did it and the role to restore | `account_deactivations_complete` check |

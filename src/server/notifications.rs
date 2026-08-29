@@ -12,6 +12,7 @@
 
 use crate::helpers::visibility::Visibility;
 use crate::server::config::{Brand, EmailConfig};
+use crate::server::db::audit;
 use crate::server::db::cases;
 use crate::server::db::settings::{self, Recipient};
 use crate::server::email::templates::{self, RenderedEmail};
@@ -21,6 +22,16 @@ use crate::server::email::{
 };
 use crate::server_fns::admin_requests::AdminRequest;
 use crate::server_fns::settings::NotificationKind;
+
+/// The most events one digest email will list. Any beyond this are reported as
+/// a count and remain visible in the Admin activity feed.
+const MAX_DIGEST_EVENTS: i64 = 200;
+
+/// How often the admin-activity digest is mailed — once a day. A constant
+/// rather than configuration, like the retention schedules in
+/// [`crate::server::db::audit`]: it is a product decision, not a deployment knob.
+const ADMIN_ACTIVITY_DIGEST_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(24 * 60 * 60);
 
 /// The active email config, or `None` when neither delivery nor dry-run logging
 /// is configured.
@@ -329,6 +340,77 @@ pub fn notify_case_signup(client_name: String, client_email: String, case_name: 
             templates::case_signup(&Brand::from_env(), &client_name, &client_email, &case_name);
         dispatch(&cfg, recipients, &email, "Case signup notification").await;
     });
+}
+
+/// Spawn the background task that mails the admin activity digest, once a day
+/// ([`ADMIN_ACTIVITY_DIGEST_INTERVAL`]).
+///
+/// The digest reports what the audit logs recorded since the last one, tracked
+/// by a watermark rather than by marking the audit rows themselves — nothing
+/// here ever writes to an append-only log.
+///
+/// When email is neither configured nor in dry-run mode the watermark is left
+/// alone: activity keeps accumulating and stays visible in the feed, so turning
+/// email on later loses nothing. A send that fails is recorded in
+/// `email_failures`.
+pub fn start_admin_activity_digest_task() {
+    tokio::spawn(async {
+        loop {
+            // Wait first: a restart should not fire a digest of whatever was
+            // pending, and an app that restarts often would otherwise spam.
+            tokio::time::sleep(ADMIN_ACTIVITY_DIGEST_INTERVAL).await;
+            send_admin_activity_digest().await;
+        }
+    });
+}
+
+/// One digest pass. Separated from the loop so the logic reads on its own.
+async fn send_admin_activity_digest() {
+    let Some(cfg) = configured_email() else {
+        return;
+    };
+
+    let mut recipients = match settings::recipients_for_admins().await {
+        Ok(recipients) => recipients,
+        Err(error) => {
+            tracing::warn!("admin activity digest: recipient lookup failed: {error}");
+            return;
+        }
+    };
+    recipients.retain(|recipient| recipient.settings.wants(NotificationKind::AdminActivity));
+    if recipients.is_empty() {
+        // Nobody wants it, so leave the watermark for whoever opts in later.
+        return;
+    }
+
+    let watermark = match audit::activity_watermark().await {
+        Ok(watermark) => watermark,
+        Err(error) => {
+            tracing::warn!("admin activity digest: watermark read failed: {error}");
+            return;
+        }
+    };
+    let (events, overflow, next) = match audit::activity_since(watermark, MAX_DIGEST_EVENTS).await {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::warn!("admin activity digest: activity lookup failed: {error}");
+            return;
+        }
+    };
+    if events.is_empty() {
+        // Still advance: the window may have held only unclassified rows, and
+        // rescanning them every day would grow without bound.
+        if let Err(error) = audit::set_activity_watermark(next).await {
+            tracing::warn!("admin activity digest: watermark update failed: {error}");
+        }
+        return;
+    }
+
+    let email = templates::admin_activity_digest(&Brand::from_env(), &events, overflow);
+    dispatch(&cfg, recipients, &email, "Admin activity digest").await;
+    if let Err(error) = audit::set_activity_watermark(next).await {
+        tracing::warn!("admin activity digest: watermark update failed: {error}");
+    }
 }
 
 /// Send one direct message or BCC chunks when the rendered content is shared.

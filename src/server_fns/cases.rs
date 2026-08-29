@@ -265,12 +265,13 @@ pub async fn load_case_summaries_for_user(
 
     let user = require_user().await?;
     let include_withdrawn = user.role.has_operations_admin_permissions();
-    cases::get_summaries_for_user(offset, limit, &search, &user.id, include_withdrawn)
+    cases::get_summaries_for_user(offset, limit, &search, &user, include_withdrawn)
         .await
         .map_err(ServerFnError::new)
 }
 
-/// Load a fully hydrated case through an ordinary `ViewCase` assignment.
+/// Load a fully hydrated case through an ordinary `ViewCase` assignment. A site
+/// admin holds `ViewCase` on every case, so this is also the admin path.
 #[server(prefix = "/api")]
 pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
     use crate::server::db::cases;
@@ -278,23 +279,7 @@ pub async fn load_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
 
     let user = require_user().await?;
     require_cap(&user, &case_id, CaseCapability::ViewCase).await?;
-    cases::get(&case_id, &user.id, has_volunteer_access(&user))
-        .await
-        .map_err(ServerFnError::new)
-}
-
-/// Load a fully hydrated case for the admin case detail view. This is read-only:
-/// admins do not gain stored capabilities, write access, or chat access.
-#[server(prefix = "/api")]
-pub async fn load_admin_case(case_id: String) -> Result<Option<Case>, ServerFnError> {
-    use crate::server::db::cases;
-    use crate::server::permissions::{
-        has_volunteer_access, require_case_view_or_admin_read, require_user,
-    };
-
-    let user = require_user().await?;
-    require_case_view_or_admin_read(&user, &case_id).await?;
-    cases::get(&case_id, &user.id, has_volunteer_access(&user))
+    cases::get(&case_id, &user, has_volunteer_access(&user))
         .await
         .map_err(ServerFnError::new)
 }
@@ -336,7 +321,7 @@ pub async fn admin_case_summary(case_id: String) -> Result<Option<CaseSummary>, 
 
     let user = require_user().await?;
     require_operations_admin(&user)?;
-    cases::admin_summary(case_id.trim(), &user.id)
+    cases::admin_summary(case_id.trim(), &user)
         .await
         .map_err(ServerFnError::new)
 }
@@ -354,7 +339,7 @@ pub async fn admin_list_cases_page(
 
     let user = require_user().await?;
     require_operations_admin(&user)?;
-    cases::admin_page(offset, limit, &search, &user.id)
+    cases::admin_page(offset, limit, &search, &user)
         .await
         .map_err(ServerFnError::new)
 }
