@@ -281,7 +281,6 @@ pub fn CaseHomePage() -> impl IntoView {
                         summary=c
                         reload=reload
                         open_folder=open_folder
-                        admin_read=false
                         on_withdrawn=Callback::new(move |_| {
                             selected.set(None);
                             notice.set("Case withdrawn. An administrator can restore it if you need it back.".to_string());
@@ -479,13 +478,14 @@ pub fn NewCasePage() -> impl IntoView {
     })
 }
 
-/// The case detail panel shared by the normal case page and the admin read view.
+/// The case detail panel shared by the normal case page and the admin case
+/// view. Both load the case the same way; a site admin simply holds every
+/// capability on it.
 #[component]
 pub fn CaseDetail(
     summary: CaseSummary,
     reload: RwSignal<u32>,
     open_folder: RwSignal<Option<String>>,
-    admin_read: bool,
     /// Called after the owner withdraws the case, so a list view can drop the
     /// selection instead of showing "Case not found" when the case leaves the
     /// list. Admin surfaces keep showing the case, so they pass nothing.
@@ -498,7 +498,7 @@ pub fn CaseDetail(
     let owner = StoredValue::new(Owner::current().expect("component owner"));
 
     // Capability gates for this case, resolved server-side and delivered with
-    // the case summary. No implicit grants for owners or admins.
+    // the case summary. Site admins arrive here holding every capability.
     let caps = summary.capabilities.clone();
     // Mirrors `CaseStatus::accepts_changes`: a declined case refuses writes
     // server-side, so the UI hides the write affordances too.
@@ -522,8 +522,7 @@ pub fn CaseDetail(
     });
     let can_view_evidence = caps.contains(&CaseCapability::ViewEvidence);
     let can_manage_case_information = can_edit;
-    let has_stored_write_capability = caps.iter().any(|cap| cap.is_write());
-    let can_read_case_material = admin_read || can_view_evidence;
+    let can_read_case_material = can_view_evidence;
 
     // The full case behind the summary — the heavy sub-resources are pulled on
     // demand only for the open case, keeping the list load lightweight.
@@ -542,11 +541,7 @@ pub fn CaseDetail(
             detail_generation.update(|generation| *generation += 1);
             let generation = detail_generation.get_untracked();
             spawn_local(async move {
-                let loaded = if admin_read {
-                    cases::load_admin_case(case_id).await
-                } else {
-                    cases::load_case(case_id).await
-                };
+                let loaded = cases::load_case(case_id).await;
                 if detail_generation.get_untracked() != generation {
                     return;
                 }
@@ -1266,23 +1261,11 @@ pub fn CaseDetail(
                     </div>
                     {client_banner}
                     {withdraw_panel}
-                    {if admin_read && !has_stored_write_capability {
-                        view! {
-                            <p class="mt-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-200">
-                                "Admin read-only view. You can inspect this case without assigning yourself, but stored case capabilities are still required for any changes."
-                            </p>
-                        }
-                            .into_any()
-                    } else {
-                        view! {
-                            <Show when=move || !can_edit && !can_note>
-                                <p class="mt-2 text-xs text-slate-500">
-                                    "You have view-only access to this case."
-                                </p>
-                            </Show>
-                        }
-                            .into_any()
-                    }}
+                    <Show when=move || !can_edit && !can_note>
+                        <p class="mt-2 text-xs text-slate-500">
+                            "You have view-only access to this case."
+                        </p>
+                    </Show>
                 </div>
             }
             .into_any();

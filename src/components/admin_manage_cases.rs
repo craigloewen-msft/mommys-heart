@@ -54,8 +54,8 @@ fn badge(classes: &str) -> String {
 fn access_label(caps: &[CaseCapability]) -> (&'static str, &'static str) {
     if caps.is_empty() {
         (
-            "Admin read-only",
-            "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
+            "No access",
+            "bg-slate-700/40 text-slate-300 ring-1 ring-slate-600",
         )
     } else if caps.len() == CaseCapability::ALL.len() {
         (
@@ -174,6 +174,15 @@ pub fn ManageCases(
         parse_window(current_query.get("w")),
     );
     let back_href = StoredValue::new(format!("/admin/cases{back_suffix}"));
+    // The admin's own user page, where an operations admin can grant themselves
+    // capabilities on a case they cannot currently open.
+    let access_href = StoredValue::new(
+        state
+            .current_user_summary
+            .get_untracked()
+            .map(|user| format!("/admin/users/{}", user.id))
+            .unwrap_or_else(|| "/admin/users".to_string()),
+    );
 
     let detail_view = move || {
         if let Some(message) = detail_error.get() {
@@ -199,6 +208,28 @@ pub fn ManageCases(
             .into_any();
         }
         match detail_summary.get() {
+            // Without `ViewCase` the case body would load nothing, so say why
+            // and point at the page where an admin can grant themselves access.
+            Some(summary) if !summary.capabilities.contains(&CaseCapability::ViewCase) => {
+                view! {
+                    <div class="space-y-4">
+                        <BackToCases href=back_href.get_value() />
+                        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+                            <h2 class="text-lg font-semibold text-slate-100">{summary.name.clone()}</h2>
+                            <p class="mt-2 text-sm text-slate-400">
+                                "You do not have access to this case. An operations admin can give themselves access from the user directory."
+                            </p>
+                            <A
+                                href=access_href.get_value()
+                                attr:class="mt-3 inline-flex items-center rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                            >
+                                "Manage my case access"
+                            </A>
+                        </div>
+                    </div>
+                }
+                .into_any()
+            }
             Some(summary) => view! {
                 <div class="space-y-4">
                     <BackToCases href=back_href.get_value() />
@@ -206,7 +237,6 @@ pub fn ManageCases(
                         summary=summary
                         reload=reload
                         open_folder=open_folder
-                        admin_read=true
                     />
                 </div>
             }
@@ -347,7 +377,7 @@ pub fn ManageCases(
                 <div>
                     <h2 class="text-base font-semibold text-slate-100">"All cases"</h2>
                     <p class="mt-1 text-sm text-slate-400">
-                        "Open any case without assigning it to yourself. Changes still require stored case permissions."
+                        "Every case in the system. Site admins can open and change any of them; other admins need case permissions."
                     </p>
                 </div>
                 <div>
