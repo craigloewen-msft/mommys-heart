@@ -15,6 +15,7 @@
 //! (`/api/chat`), which is called cross-origin from the Squarespace site and so
 //! cannot use same-origin server functions.
 
+pub mod admin_activity;
 pub mod admin_requests;
 pub mod audit;
 pub mod auth;

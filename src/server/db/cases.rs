@@ -504,6 +504,19 @@ pub async fn create(
         .await?;
 
     users::assign_capabilities_in(&mut tx, owner_id, &id, &CaseCapability::ALL, owner_name).await?;
+    // The case's own creation belongs in its history: without this the Change
+    // Log's earliest entry is a change to a case that never appears to have been
+    // created. Also what the admin activity feed reads for "new case".
+    audit::record_in_transaction(
+        &mut tx,
+        audit::Entity::Case,
+        &id,
+        owner_name,
+        "case",
+        "",
+        "created",
+    )
+    .await?;
     tx.commit().await?;
     Ok(id)
 }
@@ -533,6 +546,17 @@ pub async fn create_from_signup_in(
         .await?;
     terms_acceptances::insert_in(tx, owner_id, Some(case_id), terms_version).await?;
     users::assign_capabilities_in(tx, owner_id, case_id, &CaseCapability::ALL, owner_name).await?;
+    // Same as [`create`]: a signup's case is created too, and the feed reads it.
+    audit::record_in_transaction(
+        tx,
+        audit::Entity::Case,
+        case_id,
+        owner_name,
+        "case",
+        "",
+        "created from a client signup",
+    )
+    .await?;
     Ok(())
 }
 

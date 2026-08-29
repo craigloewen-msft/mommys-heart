@@ -18,6 +18,7 @@
 
 use crate::server::config::Brand;
 use crate::server::email::palette;
+use crate::server_fns::admin_activity::{AdminActivityCategory, AdminActivityEvent};
 use crate::server_fns::admin_requests::{AdminRequest, AdminRequestStatus};
 use crate::server_fns::settings::NotificationKind;
 
@@ -64,6 +65,12 @@ fn theme(kind: NotificationKind) -> Theme {
             accent: palette::color("amber-300"),
             emoji: "\u{1F4CB}",
         }, // 📋
+        NotificationKind::AdminActivity => Theme {
+            // The palette only carries the tokens `style/tailwind.css` defines;
+            // sky-200 is the darkest blue in it and is unused by other kinds.
+            accent: palette::color("sky-200"),
+            emoji: "\u{1F4E1}",
+        }, // 📡
     }
 }
 
@@ -649,6 +656,131 @@ pub fn contact_mail(brand: &Brand, subject: &str, body: &str) -> RenderedEmail {
     }
 }
 
+/// Build the periodic admin activity digest: everything recorded since the last
+/// one, grouped by category. `extra` is how many further events did not fit in
+/// this batch (0 when none), so the email never understates the period.
+///
+/// Content-free by construction: it lists who did what kind of thing to which
+/// record, never note, message, or document contents.
+pub fn admin_activity_digest(
+    brand: &Brand,
+    events: &[AdminActivityEvent],
+    extra: i64,
+) -> RenderedEmail {
+    let theme = theme(NotificationKind::AdminActivity);
+    let count = events.len();
+    let subject = format!(
+        "[{}] Site activity: {} update{}",
+        brand.name,
+        count,
+        if count == 1 { "" } else { "s" }
+    );
+
+    // Group by category, preserving the order the categories are declared in so
+    // the same headings always appear in the same sequence.
+    let mut callout = String::new();
+    let mut lines = Vec::new();
+    for category in AdminActivityCategory::ALL.iter().copied() {
+        let grouped: Vec<&AdminActivityEvent> =
+            events.iter().filter(|e| e.category == category).collect();
+        if grouped.is_empty() {
+            continue;
+        }
+        callout.push_str(&format!(
+            "<div style=\"margin-top:14px;font-size:12px;font-weight:700;text-transform:uppercase;\
+             letter-spacing:0.08em;color:{muted};\">{label} ({n})</div>",
+            muted = palette::muted(),
+            label = escape(category.label()),
+            n = grouped.len(),
+        ));
+        lines.push(format!("{} ({})", category.label(), grouped.len()));
+        for event in grouped {
+            let subject_name = if event.subject_name.is_empty() {
+                event.subject_id.clone()
+            } else {
+                event.subject_name.clone()
+            };
+            callout.push_str(&format!(
+                "<div style=\"margin-top:6px;font-size:14px;color:{text};\">\
+                 <strong>{actor}</strong> {summary} \u{2014} {name}\
+                 <span style=\"color:{muted};\"> \u{00B7} {at}</span></div>",
+                text = palette::text(),
+                muted = palette::muted(),
+                actor = escape(actor_or_default(&event.actor)),
+                summary = escape(&event.summary),
+                name = escape(&subject_name),
+                at = escape(&event.at),
+            ));
+            lines.push(format!(
+                "  - {} {} \u{2014} {} \u{00B7} {}",
+                actor_or_default(&event.actor),
+                event.summary,
+                subject_name,
+                event.at,
+            ));
+        }
+    }
+    if extra > 0 {
+        callout.push_str(&format!(
+            "<div style=\"margin-top:14px;font-size:13px;color:{muted};\">\
+             and {extra} more \u{2014} see the full feed in the app.</div>",
+            muted = palette::muted(),
+        ));
+        lines.push(format!(
+            "  and {extra} more \u{2014} see the full feed in the app."
+        ));
+    }
+
+    let cta_href = cta_url(brand, "/admin/activity");
+    let footer = notification_footer(brand);
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: &format!("{count} update(s) across cases, notes, files, and contacts."),
+            eyebrow: "Admin activity alert",
+            heading: "Recent activity on the site",
+            callout_html: &callout,
+            cta: cta_href.as_deref().map(|url| (url, "Open the activity feed")),
+            body_note: &format!(
+                "Sign in to {} to see the full activity feed and open any record.",
+                brand.name
+            ),
+            footer_html: &footer,
+        },
+    );
+
+    let action = if brand.app_url.is_empty() {
+        format!("Sign in to {} to see the full activity feed.", brand.name)
+    } else {
+        format!(
+            "Open the activity feed: {}/admin/activity",
+            brand.app_url
+        )
+    };
+    let settings = if brand.app_url.is_empty() {
+        "your Settings page".to_string()
+    } else {
+        format!("{}/settings", brand.app_url)
+    };
+    let plain_text = format!(
+        "Recent activity on the site \u{2014} {count} update(s).\n\n{body}\n\n{action}\n\n\
+         You're receiving this because of your notification settings. \
+         Change what {brand} emails you about on {settings}",
+        count = count,
+        body = lines.join("\n"),
+        action = action,
+        brand = brand.name,
+        settings = settings,
+    );
+
+    RenderedEmail {
+        subject,
+        html,
+        plain_text,
+    }
+}
+
 /// The full CTA url for an in-app path, or `None` when no public app URL is
 /// configured (so the layout renders no button).
 fn cta_url(brand: &Brand, path: &str) -> Option<String> {
@@ -1003,6 +1135,7 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
                 NotificationKind::NewMessage
                     | NotificationKind::AccountPermissionsChanged
                     | NotificationKind::AdminRequests
+                    | NotificationKind::AdminActivity
             )
         })
         .map(|kind| {
@@ -1061,6 +1194,12 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
     });
 
     samples.push(Sample {
+        key: "admin_activity_digest".to_string(),
+        label: "Admin activity alert \u{2014} daily digest".to_string(),
+        email: admin_activity_digest(brand, &sample_activity(case, actor), 12),
+    });
+
+    samples.push(Sample {
         key: "contact_mail".to_string(),
         label: "Administrator contact message".to_string(),
         email: contact_mail(
@@ -1097,6 +1236,58 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
     samples
 }
 
+/// A believable batch of recorded activity for the digest preview sample.
+fn sample_activity(case: &str, actor: &str) -> Vec<AdminActivityEvent> {
+    use crate::server_fns::admin_activity::AdminActivitySubject;
+
+    let event = |category, summary: &str, subject, id: &str, name: &str, at: &str| {
+        AdminActivityEvent {
+            id: format!("aa-{id}"),
+            category,
+            actor: actor.to_string(),
+            summary: summary.to_string(),
+            subject,
+            subject_id: id.to_string(),
+            subject_name: name.to_string(),
+            at: at.to_string(),
+        }
+    };
+    vec![
+        event(
+            AdminActivityCategory::CaseCreated,
+            "created the case",
+            AdminActivitySubject::Case,
+            "c-5001",
+            case,
+            "2025-03-04 09:12",
+        ),
+        event(
+            AdminActivityCategory::CaseNote,
+            "finalized a case note",
+            AdminActivitySubject::Case,
+            "c-5001",
+            case,
+            "2025-03-04 11:40",
+        ),
+        event(
+            AdminActivityCategory::Document,
+            "uploaded a file to Intake / Zoom Video",
+            AdminActivitySubject::Case,
+            "c-5001",
+            case,
+            "2025-03-04 14:02",
+        ),
+        event(
+            AdminActivityCategory::Contact,
+            "updated a contact",
+            AdminActivitySubject::Contact,
+            "ct-5002",
+            "Dana Whitfield",
+            "2025-03-04 16:25",
+        ),
+    ]
+}
+
 /// A believable `detail` sentence for each case-event kind, used only by the
 /// preview/test samples.
 fn sample_detail(kind: NotificationKind) -> &'static str {
@@ -1107,5 +1298,6 @@ fn sample_detail(kind: NotificationKind) -> &'static str {
         NotificationKind::EvidenceChanged => "added evidence \u{201C}hearing-notes.pdf\u{201D}",
         NotificationKind::AccountPermissionsChanged => "changed your account permissions",
         NotificationKind::AdminRequests => "filed an administrative request",
+        NotificationKind::AdminActivity => "was recorded in the activity feed",
     }
 }

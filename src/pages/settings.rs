@@ -89,8 +89,12 @@ pub fn SettingsPage() -> impl IntoView {
         };
 
         let rows = move || {
+            // The admin-only categories would do nothing for everyone else, so
+            // they are not offered as toggles they cannot act on.
+            let is_admin = state.has_operations_admin_permissions();
             NotificationKind::ALL
                 .into_iter()
+                .filter(move |kind| is_admin || !kind.is_admin_only())
                 .map(|kind| {
                     let checked = Signal::derive(move || {
                         settings
