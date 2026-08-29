@@ -1,6 +1,6 @@
 //! Users, their per-case capability assignments, and admin mutations.
 
-use crate::server::db::{audit, clients, deactivations, ids, pool};
+use crate::server::db::{audit, clients, contacts, deactivations, ids, pool};
 use crate::server_fns::capabilities::{CaseAssignment, CaseCapability};
 use crate::server_fns::pagination::Page;
 use crate::server_fns::profile::ProfileEdit;
@@ -416,6 +416,9 @@ pub async fn set_role_in(
             .bind(actor)
             .execute(&mut **tx)
             .await?;
+            // A volunteer belongs in the contact directory, so the CRM record
+            // follows the role in the same transaction.
+            contacts::ensure_volunteer_in(tx, user_id, actor).await?;
         }
         _ if was_volunteer => {
             sqlx::query(

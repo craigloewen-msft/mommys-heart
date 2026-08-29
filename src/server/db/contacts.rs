@@ -440,6 +440,109 @@ pub async fn create_linked_in(
     Ok(id)
 }
 
+/// Make sure an account that has just become a volunteer has a contact record
+/// carrying the `volunteer` type, creating one when they have none.
+///
+/// Runs inside the caller's transaction so the role grant and the CRM record
+/// commit together, and is idempotent: re-approving the same person changes
+/// nothing and writes no audit noise. Returns the contact id, or `None` when the
+/// account cannot be represented as a contact.
+pub async fn ensure_volunteer_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: &str,
+    actor: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let volunteer = ContactType::Volunteer.slug();
+
+    let existing = sqlx::query_as::<_, (String, Vec<String>, bool)>(
+        "SELECT id, types, archived FROM contacts WHERE user_id = $1 FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    if let Some((id, types, archived)) = existing {
+        // A full type list is left alone rather than silently dropping one the
+        // foundation chose; the same limit the edit form enforces.
+        if !types.iter().any(|slug| slug == volunteer)
+            && types.len() < crate::server_fns::contacts::MAX_TYPES
+        {
+            let mut updated = types.clone();
+            updated.push(volunteer.to_string());
+            sqlx::query("UPDATE contacts SET types = $2, updated_at = now() WHERE id = $1")
+                .bind(&id)
+                .bind(&updated)
+                .execute(&mut **tx)
+                .await?;
+            audit::record_in_transaction(
+                tx,
+                audit::Entity::Contact,
+                &id,
+                actor,
+                "types",
+                &types.join(", "),
+                &updated.join(", "),
+            )
+            .await?;
+        }
+        // An approved volunteer is active by definition, so an archived record
+        // comes back rather than staying hidden from the directory.
+        if archived {
+            sqlx::query("UPDATE contacts SET archived = false, updated_at = now() WHERE id = $1")
+                .bind(&id)
+                .execute(&mut **tx)
+                .await?;
+            audit::record_in_transaction(
+                tx,
+                audit::Entity::Contact,
+                &id,
+                actor,
+                "contact",
+                "",
+                "restored",
+            )
+            .await?;
+        }
+        return Ok(Some(id));
+    }
+
+    let account = sqlx::query_as::<_, (String, String, String, String, String)>(
+        "SELECT first_name, last_name, email, phone, home_address FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((first_name, last_name, email, phone, address)) = account else {
+        return Ok(None);
+    };
+    // Matches `contacts_named_check`: a person with neither surname nor employer
+    // has nothing to show, and failing here would block the approval itself.
+    if last_name.trim().is_empty() {
+        tracing::warn!("no volunteer contact created for {user_id}: the account has no last name");
+        return Ok(None);
+    }
+
+    let id = ids::next(&mut **tx, "ct").await?;
+    insert_in(
+        tx,
+        &id,
+        &ContactInput {
+            first_name,
+            last_name,
+            email,
+            phone,
+            address,
+            types: vec![ContactType::Volunteer],
+            source: "Volunteer approval".to_string(),
+            ..Default::default()
+        },
+        Some(user_id),
+        actor,
+    )
+    .await?;
+    Ok(Some(id))
+}
+
 pub async fn update(
     id: &str,
     input: &ContactInput,
