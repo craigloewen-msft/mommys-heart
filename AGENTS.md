@@ -14,6 +14,19 @@ cargo leptos watch     # run it, rebuilding as you edit
 Use `cargo leptos serve` instead of `watch` if you want a build that does not
 rebuild on change. Either prints the address it is serving on.
 
+### Two things that look broken but are not
+
+Kingdom IDE is itself a Leptos app and exports its own `LEPTOS_*` settings into
+your shell. `cargo-leptos` reads those in preference to `[package.metadata.leptos]`,
+so built assets may be named after *its* app (`target/site/pkg/kingdom-ide.*`)
+rather than this one. That is harmless: the served HTML derives every asset URL
+from the build's own output name, so the page is styled and hydrates either way.
+Don't try to "fix" the filenames, and don't hardcode an asset path in the markup.
+
+Evidence storage logging `evidence storage unavailable; uploads disabled` on
+startup is also expected locally, and only disables file upload. Outside
+production the server warns and keeps going; production still fails fast.
+
 **These are shared, not yours.** One database serves every agent on this
 project at once. Rows you insert, edit or delete are seen by everybody, and
 another agent may be reading the table you are writing. Nothing arbitrates that

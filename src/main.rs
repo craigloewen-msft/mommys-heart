@@ -58,10 +58,14 @@ async fn main() {
         panic!("failed to initialize database: {e}");
     }
 
-    // Configure Azure Blob Storage for evidence uploads. Missing configuration
-    // is not fatal — uploads degrade gracefully like the RAG pipeline does.
+    // Configure Azure Blob Storage for evidence uploads. Outside production an
+    // unreachable or misconfigured emulator only disables uploads, matching the
+    // RAG pipeline; production still fails fast, where storage is required.
     if let Err(e) = mommys_heart_app::server::storage::init().await {
-        panic!("failed to initialize evidence storage: {e}");
+        if mommys_heart_app::server::config::is_production() {
+            panic!("failed to initialize evidence storage: {e}");
+        }
+        tracing::warn!("evidence storage unavailable; uploads disabled: {e}");
     }
 
     // Kick off document ingestion in the background so the server starts
