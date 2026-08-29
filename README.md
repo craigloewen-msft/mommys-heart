@@ -23,6 +23,11 @@ work straight away. To reset it to those fixtures, run
 `cargo run --no-default-features --features ssr -- seed` — which wipes data
 anyone else is using.
 
+Under Kingdom IDE the build may name its assets after Kingdom's own Leptos app;
+this is harmless, as asset URLs are derived from the build's output name at
+runtime. Evidence uploads are disabled unless blob storage is configured, and
+the server logs a warning and carries on.
+
 Without Kingdom, any PostgreSQL 16 will do: point `DATABASE_URL` at it and the
 app migrates and seeds on startup.
 

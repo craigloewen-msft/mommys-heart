@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
+use leptos_meta::{provide_meta_context, MetaTags, Title};
 use leptos_router::components::{Redirect, Route, Router, Routes, A};
 use leptos_router::path;
 
@@ -39,6 +39,9 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
                 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+                // Derived from the build's output name, so the link is correct
+                // whatever the app was built as.
+                <link rel="stylesheet" id="leptos" href=options.css_path() />
                 <AutoReload options=options.clone() />
                 <HydrationScripts options=options.clone() />
                 <MetaTags />
@@ -114,7 +117,6 @@ pub fn App() -> impl IntoView {
     });
 
     view! {
-        <Stylesheet id="leptos" href="/pkg/mommys-heart-app.css" />
         <Title text="Mommy's Heart" />
 
         <Router>
