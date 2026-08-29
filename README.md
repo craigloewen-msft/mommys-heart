@@ -7,21 +7,35 @@ cookies).
 
 ## Run
 
+The database and blob storage are declared in `.kingdom/services.toml` and
+raised by Kingdom IDE while anyone is working on this project — one shared set,
+not one per checkout. With them up there is nothing to configure:
+
 ```bash
-etc/dev.sh build      # containers + compile the app (slow the first time)
-etc/dev.sh run        # run that build in the foreground on this checkout's port
+cargo leptos build     # compile (slow the first time)
+cargo leptos watch     # run it, rebuilding as you edit
 ```
 
-That is the whole workflow. Both commands start this checkout's own database
-and storage containers, so several checkouts can run at once without
-interfering. `run` prints the URL and then `MH_READY ...` once the port is
-actually accepting connections. It never builds or watches source: stop it
-before editing, rebuild explicitly, and start a fresh run for the next test pass.
-Stopping `run` also stops this checkout's containers while preserving their data.
+`cargo leptos serve` runs without watching. Leave `DATABASE_URL` unset and the
+app uses `postgres://postgres:postgres@localhost:5432/postgres`; a fresh
+database seeds itself from the mock fixtures on first boot, so the demo logins
+work straight away. To reset it to those fixtures, run
+`cargo run --no-default-features --features ssr -- seed` — which wipes data
+anyone else is using.
 
-Also available: `etc/dev.sh reset` (wipe the database back to fresh seed data),
-`etc/dev.sh clean` (remove all Mommy's Heart dev instances and volumes), and
-`etc/dev.sh -- <cmd>` (run one command with this instance's env).
+Without Kingdom, any PostgreSQL 16 will do: point `DATABASE_URL` at it and the
+app migrates and seeds on startup.
+
+### Upgrading from the old per-checkout containers
+
+`etc/dev.sh` is archived at `etc/archived/dev.sh` and no longer used. It left
+per-checkout containers and volumes behind, which you can clear once you no
+longer want their data:
+
+```bash
+docker rm -f $(docker ps -aq --filter name='^mh-(db|storage)-') 2>/dev/null
+docker volume rm $(docker volume ls -q --filter name='^mh-(pgdata|blobdata)-') 2>/dev/null
+```
 
 ## View email templates
 

@@ -11,7 +11,6 @@ async fn main() {
     use mommys_heart_app::server_fns;
     use tower_http::trace::TraceLayer;
 
-    let _ = dotenvy::from_filename(".env.local");
     let _ = dotenvy::dotenv();
 
     // Start structured logging first so startup (incl. DB migrations/seeding) is

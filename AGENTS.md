@@ -2,62 +2,66 @@
 
 ## Running the app
 
-Every checkout gets its own database and storage containers on its own ports, so
-several agents can run the app at the same time without interfering. You do not
-need to pick ports or configure anything:
+The database and blob storage are **already running**. They are declared in
+`.kingdom/services.toml` and Kingdom IDE raises them while any agent is working
+on this project. There is nothing to start and nothing to configure:
 
 ```bash
-etc/dev.sh build      # containers + compile the app (slow the first time)
-etc/dev.sh run        # run that build in the foreground on this checkout's port
+cargo leptos build     # compile (slow the first time)
+cargo leptos watch     # run it, rebuilding as you edit
 ```
 
-Those two are the whole workflow. Both start this checkout's containers first,
-so stopped containers come back automatically, and `run` prints the URL it is
-serving on.
+Use `cargo leptos serve` instead of `watch` if you want a build that does not
+rebuild on change. Either prints the address it is serving on.
 
-**`run` does not build or watch.** Run `build`, then start `run` and wait for
-`MH_READY`. Test against that foreground process, stop it before editing, then
-rebuild and start a fresh run for the next test pass. When `run` ends it stops
-this checkout's containers but preserves their data. If artifacts are missing,
-`run` exits immediately with `dev: not built yet — run 'etc/dev.sh build' first`.
+**These are shared, not yours.** One database serves every agent on this
+project at once. Rows you insert, edit or delete are seen by everybody, and
+another agent may be reading the table you are writing. Nothing arbitrates that
+— so prefer adding your own rows to mutating fixtures others may be asserting
+on, and do not truncate or reseed while someone else is working.
 
-### Readiness signal (for IDEs and automated harnesses)
+### Reaching the database
 
-Do not wait on an application log line. `etc/dev.sh run` waits until the site
-port genuinely accepts connections and then prints one line:
+Leave `DATABASE_URL` unset and the app connects to
+`postgres://postgres:postgres@localhost:5432/postgres`, which is where an
+isolated plan reaches the shared database.
 
-```
-MH_READY listening on http://127.0.0.1:<port>
-```
-
-If the server dies during startup it prints `MH_FAILED ...` and exits non-zero.
-Wait for `MH_READY`; treat `MH_FAILED` or process exit as immediate failure.
-Run `etc/dev.sh build` to completion first, then a ~120s timeout is plenty.
-
-Run one-off commands against the same instance with `--`. These automatically
-get their own build directory (`target/oneshot`), so their SSR-only artifacts do
-not invalidate the SSR+hydrate artifacts created by `build`:
+If your plan is on the machine's own network rather than its own, `localhost`
+is not it: your system prompt names the container's real address (something
+like `172.31.4.10:5432`). Export it before running:
 
 ```bash
-etc/dev.sh -- cargo run --no-default-features --features ssr -- seed
+export DATABASE_URL=postgres://postgres:postgres@<address>/postgres
 ```
 
-For a quick compile check, prefer the wrapper so it uses that separate build
-directory too; no containers are needed for compiling:
+A fresh database seeds itself from the mock fixtures on first boot, so the demo
+logins work immediately. To put it back to those fixtures deliberately — which
+**wipes data other agents may be using** — run:
 
 ```bash
-etc/dev.sh -- cargo check --no-default-features --features ssr
+cargo run --no-default-features --features ssr --target-dir target/oneshot -- seed
 ```
 
-Running a bare `cargo check` in the repo root still works, but it shares
-`target/` with cargo-leptos. Because the two build different feature sets (SSR
-binary vs hydrate WASM lib), they invalidate each other's fingerprints, so
-alternating between them makes both noticeably slower.
+### One-off commands and compile checks
 
-The only other commands are `etc/dev.sh reset` (wipe the database back to fresh
-seed data) and `etc/dev.sh clean` (remove every Mommy's Heart dev instance,
-volume, generated `.env.local`, and port reservation). `etc/dev.sh --help` lists
-them all.
+Give one-off commands their own build directory so their SSR-only artifacts do
+not invalidate the SSR+hydrate artifacts `cargo leptos build` creates:
+
+```bash
+cargo check --no-default-features --features ssr --target-dir target/oneshot
+```
+
+A bare `cargo check` in the repo root works, but it shares `target/` with
+cargo-leptos. The two build different feature sets (SSR binary vs hydrate WASM
+lib), so they invalidate each other's fingerprints and alternating between them
+makes both noticeably slower.
+
+### The old per-checkout script
+
+`etc/dev.sh` is retired to `etc/archived/dev.sh`. It gave every checkout its own
+containers, ports and baked seed image; Kingdom's shared resources do that job
+now. Nothing calls it, and its `build` / `run` / `reset` / `clean` / `--`
+commands and the `MH_READY` signal no longer exist.
 
 ## Cargo tests
 

@@ -573,8 +573,8 @@ pub async fn activity_page(
 ///
 /// A watermark ahead of the log it tracks is clamped back to the log's end. That
 /// only happens when a log has been truncated and its sequence restarted (which
-/// `etc/dev.sh reset` does); without the clamp the digest would sit past every
-/// row and silently report nothing forever.
+/// `mommys-heart-app seed` does); without the clamp the digest would sit past
+/// every row and silently report nothing forever.
 pub async fn activity_watermark() -> Result<DigestWatermark, sqlx::Error> {
     let stored: Option<(i64, i64)> =
         sqlx::query_as("SELECT last_audit_seq, last_note_seq FROM admin_activity_digest_state")

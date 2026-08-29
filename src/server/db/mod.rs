@@ -57,11 +57,33 @@ pub fn pool() -> &'static PgPool {
         .expect("database pool not initialized; call server::db::init() first")
 }
 
+/// Where development connects when `DATABASE_URL` says nothing.
+///
+/// The shared database Kingdom raises from `.kingdom/services.toml`, which an
+/// isolated plan reaches on its own loopback at the stock port. The credentials
+/// are the image's defaults because that is all a service manifest can ask for:
+/// it declares an image and a port, and Kingdom supplies `POSTGRES_PASSWORD` to
+/// make `postgres:16` boot at all.
+const DEV_DATABASE_URL: &str = "postgres://postgres:postgres@localhost:5432/postgres";
+
 /// Connect to `DATABASE_URL`, run migrations, and seed the database if it is
 /// empty. Safe to call once at startup.
+///
+/// Outside production the URL defaults to [`DEV_DATABASE_URL`], so an agent
+/// runs the app with nothing configured at all. Production keeps failing fast
+/// on a missing variable: defaulting there would silently point a deployment at
+/// a database that is not its own.
 pub async fn init() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let url = std::env::var("DATABASE_URL")
-        .map_err(|_| "DATABASE_URL is not set (see .env / .env.example)")?;
+    let url = match std::env::var("DATABASE_URL") {
+        Ok(url) if !url.trim().is_empty() => url,
+        _ if crate::server::config::is_production() => {
+            return Err("DATABASE_URL is not set (see .env / .env.example)".into())
+        }
+        _ => {
+            tracing::info!("DATABASE_URL unset; using the shared dev database at {DEV_DATABASE_URL}");
+            DEV_DATABASE_URL.to_string()
+        }
+    };
 
     let pool = PgPoolOptions::new()
         .max_connections(10)
@@ -73,6 +95,13 @@ pub async fn init() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     POOL.set(pool)
         .map_err(|_| "database pool already initialized")?;
+
+    // A fresh volume comes up with a schema and no users, which would leave no
+    // way to log in. Seeding is skipped the moment any user exists, so this is
+    // a one-off cost on a new database rather than something every boot pays.
+    if !crate::server::config::is_production() {
+        seed::seed_if_empty().await?;
+    }
 
     Ok(())
 }
