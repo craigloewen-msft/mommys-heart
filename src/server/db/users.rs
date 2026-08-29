@@ -75,6 +75,7 @@ impl DirectoryRow {
             ),
             assignment_count,
             assignment_summary: assignment_summary(
+                role,
                 assignment_count,
                 self.assignment_capabilities.as_deref().unwrap_or(&[]),
             ),
@@ -96,7 +97,16 @@ fn escaped_like_pattern(search: &str) -> Option<String> {
     }
 }
 
-fn assignment_summary(assignment_count: i64, capability_slugs: &[String]) -> String {
+fn assignment_summary(
+    role: AccountRole,
+    assignment_count: i64,
+    capability_slugs: &[String],
+) -> String {
+    // A site admin holds every capability everywhere, so a count of stored
+    // assignments would understate their access.
+    if role.has_full_case_access() {
+        return "Every case".to_string();
+    }
     if assignment_count <= 0 {
         return "No case access".to_string();
     }

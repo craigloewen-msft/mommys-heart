@@ -7,6 +7,11 @@
 //! kept separate from [`crate::server::auth`], which handles *authentication*
 //! ("who are you?" — passwords, sessions, the [`AuthUser`] extractor).
 //!
+//! Account role and case capabilities meet in one place: a site admin holds
+//! every capability on every case without a stored assignment (see
+//! [`AccountRole::has_full_case_access`]), so there is no separate
+//! "admin inspection" path — everyone goes through [`require_cap`].
+//!
 //! Every `#[server]` function in [`crate::server_fns`] resolves the caller with
 //! [`require_user`] (from the session cookie) and then checks authorization with
 //! the helpers here: [`require_operations_admin`] for the account-level role gate,
@@ -110,9 +115,9 @@ pub fn require_visibility(user: &User, visibility: Visibility) -> Result<(), Ser
     }
 }
 
-/// The caller's capabilities on a case: exactly the set granted by their
-/// assignment (no implicit grants for owners or admins — access is governed
-/// solely by the stored capabilities). Errors if the case does not exist.
+/// The caller's capabilities on a case: every capability for a role with full
+/// case access (site admin), else exactly the set granted by their stored
+/// assignment. Errors if the case does not exist.
 pub async fn capabilities_on(
     user: &User,
     case_id: &str,
@@ -126,47 +131,14 @@ pub async fn capabilities_on(
     Ok(user.capabilities_for(case_id))
 }
 
-/// Read-only case access for surfaces an admin may inspect without taking an
-/// assignment. Mutations and chat must keep using [`require_cap`] or
-/// [`require_channel`].
-async fn require_case_read_cap_or_admin(
-    user: &User,
-    case_id: &str,
-    cap: CaseCapability,
-) -> Result<(), ServerFnError> {
-    let caps = capabilities_on(user, case_id).await?;
-    if caps.contains(&cap) || user.role.has_operations_admin_permissions() {
-        Ok(())
-    } else {
-        Err(ServerFnError::new(format!(
-            "You do not have permission to {} on this case.",
-            cap.label().to_lowercase()
-        )))
-    }
-}
-
-/// Read a case through the dedicated admin view, or through an ordinary
-/// assignment that grants `ViewCase`.
-pub async fn require_case_view_or_admin_read(
-    user: &User,
-    case_id: &str,
-) -> Result<(), ServerFnError> {
-    require_case_read_cap_or_admin(user, case_id, CaseCapability::ViewCase).await
-}
-
-/// Read/download case evidence through either a stored `ViewEvidence`
-/// assignment or the dedicated admin read path.
-pub async fn require_case_evidence_read_or_admin(
-    user: &User,
-    case_id: &str,
-) -> Result<(), ServerFnError> {
-    require_case_read_cap_or_admin(user, case_id, CaseCapability::ViewEvidence).await
-}
-
 /// Require a specific capability on a case, else a `Forbidden`-style error.
 ///
-/// Also enforces the case lifecycle: a declined case is held read-only for
-/// everyone, since signup grants the client owner every capability up front.
+/// A site admin holds every capability on every case, so only the lifecycle
+/// check below can stop them here.
+///
+/// Also enforces the case lifecycle: a declined or withdrawn case is held
+/// read-only for everyone, since signup grants the client owner every capability
+/// up front.
 pub async fn require_cap(
     user: &User,
     case_id: &str,

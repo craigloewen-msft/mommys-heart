@@ -97,12 +97,13 @@ fn relationship_error(error: sqlx::Error) -> ServerFnError {
 #[server(prefix = "/api")]
 pub async fn list_case_contacts(case_id: String) -> Result<Vec<CaseContact>, ServerFnError> {
     use crate::server::db::case_contacts;
-    use crate::server::permissions::{require_case_view_or_admin_read, require_user};
+    use crate::server::permissions::{require_cap, require_user};
+    use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
     crate::server::permissions::require_information_management_access(&user)?;
     crate::server_fns::crm::require_staff(&user)?;
-    require_case_view_or_admin_read(&user, &case_id).await?;
+    require_cap(&user, &case_id, CaseCapability::ViewCase).await?;
     case_contacts::list(&case_id)
         .await
         .map_err(ServerFnError::new)
@@ -131,7 +132,7 @@ pub async fn search_editable_cases(
 
     let user = require_user().await?;
     crate::server::permissions::require_information_management_access(&user)?;
-    cases::search_editable(&query, &user.id, 10)
+    cases::search_editable(&query, &user, 10)
         .await
         .map_err(ServerFnError::new)
 }

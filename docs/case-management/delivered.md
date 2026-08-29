@@ -41,6 +41,23 @@ it.
   (`cases_withdrawal_complete`), so the state can never become unexplainable or
   unrecoverable.
 
+### Case access
+
+- What a user may do on a case is the set of `CaseCapability`s stored for them
+  in `case_assignments`. Owning a case grants nothing by itself.
+- **Site admins are the one exception:** they hold every capability on every
+  case, with no assignment and nothing to grant. There is no separate read-only
+  inspection mode — they get the ordinary case view, fully editable.
+- **Operations admins hold only their stored capabilities.** They can grant
+  themselves access to any case from the user directory without approval, and
+  that grant is audited; the case directory shows "No access" for cases they hold
+  nothing on.
+- A declined or withdrawn case still refuses **every** write, from everyone
+  including a site admin. Capability and lifecycle are checked separately.
+- Case lists stay assignment-scoped: the Cases list and Case Chat show the cases
+  a user is actually assigned to, so full access does not mean every case in the
+  system appears in a site admin's own lists or unread counts.
+
 ---
 
 ## Account status
@@ -277,7 +294,8 @@ attorneys, court clerks, board members, and emergency contacts.
   record the role only — never the note text.
 - The same links are shown on person detail with stable admin case links.
   Add/edit/remove remains authorized by the target case's stored `EditCase`
-  capability, even when the workflow starts from a person or an admin read view.
+  capability (which a site admin always holds), even when the workflow starts
+  from a person rather than the case.
 - New verified client accounts receive a linked person record and defaults; a
   case signup also links that person to the new case as its primary Client.
 - Active person and editable-case pickers use bounded, debounced server-side
@@ -320,7 +338,7 @@ extended in place so existing rows survived.
 | --- | --- | --- | --- |
 | Contacts, organizations | none | full management when granted; sign-in account linking excluded | full management when granted |
 | Contact and organization properties | none | full management when granted | full management when granted |
-| Case contacts | none | information grant plus `ViewCase` to read and `EditCase` to edit | same, plus admin case inspection |
+| Case contacts | none | information grant plus `ViewCase` to read and `EditCase` to edit | same; a site admin holds both on every case |
 | Grants, funding | none | full management when granted | full management when granted |
 
 Every information server function rejects a client account.

@@ -940,6 +940,21 @@ pub fn UserCard(
     };
 
     let case_access_section = move || {
+        // A site admin holds every capability on every case, so per-case
+        // assignments are meaningless for this account. A deactivated account
+        // never reaches this branch: deactivating moves the role off
+        // `site_admin`, so its preserved assignments still show below.
+        if current_role.has_full_case_access() {
+            return view! {
+                <section class="mt-4 border-t border-slate-800 pt-4">
+                    <h3 class="text-sm font-semibold text-slate-200">"Case access"</h3>
+                    <p class="mt-3 text-sm text-slate-400">
+                        "Site admins have full access to every case. Per-case assignments do not apply to this account."
+                    </p>
+                </section>
+            }
+            .into_any();
+        }
         let helper = if is_deactivated {
             "Case access is preserved while the account is deactivated, and is restored with it."
         } else if is_site_admin {

@@ -8,10 +8,11 @@ use crate::server_fns::capabilities::{CaseAssignment, CaseCapability};
 use crate::server_fns::pagination::Page;
 
 /// The global account type a user has. This controls app-level access (e.g.
-/// operations and site admins can reach the Admin dashboard). It is
-/// intentionally separate from per-case capabilities: all account types view
-/// and work cases the same way; what differs per case is their set of
-/// [`CaseCapability`](crate::server_fns::capabilities::CaseCapability)s.
+/// operations and site admins can reach the Admin dashboard). It is largely
+/// separate from per-case capabilities: what differs per case is a user's set of
+/// [`CaseCapability`](crate::server_fns::capabilities::CaseCapability)s. The one
+/// exception is [`AccountRole::SiteAdmin`], which holds every capability on
+/// every case (see [`AccountRole::has_full_case_access`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountRole {
@@ -100,6 +101,13 @@ impl AccountRole {
     /// Site administrators inherit these permissions.
     pub fn has_operations_admin_permissions(self) -> bool {
         self.is_operations_admin() || self.is_site_admin()
+    }
+
+    /// Whether this role holds every [`CaseCapability`] on every case without a
+    /// stored assignment. Site admins do; everyone else, operations admins
+    /// included, holds only what `case_assignments` records for them.
+    pub fn has_full_case_access(self) -> bool {
+        self.is_site_admin()
     }
 
     pub fn has_volunteer_privileges(self) -> bool {
@@ -295,8 +303,12 @@ impl User {
         self.role.has_volunteer_privileges() && self.information_management_access
     }
 
-    /// This user's capabilities on a given case (empty if not assigned).
+    /// This user's capabilities on a given case: every capability for a role
+    /// with full case access, else the stored assignment (empty if unassigned).
     pub fn capabilities_for(&self, case_id: &str) -> Vec<CaseCapability> {
+        if self.role.has_full_case_access() {
+            return CaseCapability::ALL.to_vec();
+        }
         self.assigned_cases
             .iter()
             .find(|a| a.case_id == case_id)
