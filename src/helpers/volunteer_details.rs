@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::helpers::dates;
+
 /// The earliest date of birth accepted. Anything before this is a typo rather
 /// than a person.
 const EARLIEST_BIRTH_YEAR: i32 = 1900;
@@ -172,23 +174,7 @@ pub fn format_ssn(value: &str) -> String {
 /// An ISO `YYYY-MM-DD` date as `MM-DD-YYYY`, the format the Foundation's form
 /// uses. Anything unparseable is passed through.
 pub fn format_dob(value: &str) -> String {
-    match parse_iso_date(value.trim()) {
-        Some((year, month, day)) => format!("{month:02}-{day:02}-{year:04}"),
-        None => value.trim().to_string(),
-    }
-}
-
-/// Split an ISO `YYYY-MM-DD` date, checking the parts are in range. The day is
-/// not checked against the month's real length; the date input cannot produce one.
-fn parse_iso_date(value: &str) -> Option<(i32, u32, u32)> {
-    let mut parts = value.split('-');
-    let year: i32 = parts.next()?.parse().ok()?;
-    let month: u32 = parts.next()?.parse().ok()?;
-    let day: u32 = parts.next()?.parse().ok()?;
-    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    Some((year, month, day))
+    dates::to_us(value)
 }
 
 /// A date of birth must be a real date, in the past, and not absurdly early.
@@ -198,25 +184,12 @@ fn validate_date_of_birth(value: &str) -> Result<(), String> {
     if value.is_empty() {
         return Err("Please give your date of birth.".to_string());
     }
-    let (year, _, _) = parse_iso_date(value).ok_or(MALFORMED)?;
+    let (year, _, _) = dates::parse_iso(value).ok_or(MALFORMED)?;
     if year < EARLIEST_BIRTH_YEAR {
         return Err(MALFORMED.to_string());
     }
-    if value >= today().as_str() {
+    if value >= dates::today().as_str() {
         return Err("Your date of birth must be in the past.".to_string());
     }
     Ok(())
-}
-
-/// Today as ISO `YYYY-MM-DD`. [`crate::state::today`] is a browser clock that
-/// stubs to 1970 without `hydrate`, so the server reads its own.
-fn today() -> String {
-    #[cfg(feature = "ssr")]
-    {
-        chrono::Local::now().format("%Y-%m-%d").to_string()
-    }
-    #[cfg(not(feature = "ssr"))]
-    {
-        crate::state::today()
-    }
 }
