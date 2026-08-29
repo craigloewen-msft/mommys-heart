@@ -35,16 +35,19 @@ struct SeedUser {
     password: &'static str,
     role: AccountRole,
     assignments: &'static [(u32, CasePreset)],
+    /// Seeded as a retired account, with `role` recorded as the role to restore.
+    /// Demonstrates cleaning up a duplicate without destroying its history.
+    deactivated: bool,
 }
 
 use AccountRole::{Client, OperationsAdmin, SiteAdmin, Volunteer};
 use CasePreset::{Contributor, Manager, Viewer};
 
-/// The nine demo users: one site admin, three volunteers, four clients, and one
-/// operations admin. Their
+/// The ten demo users: one site admin, three volunteers, four clients, one
+/// operations admin, and one deactivated duplicate account. Their
 /// assignments cross-link them to the cases below so no case or user is an
 /// island.
-const USERS: [SeedUser; 9] = [
+const USERS: [SeedUser; 10] = [
     SeedUser {
         first: "Maria",
         last: "Nguyen",
@@ -52,6 +55,7 @@ const USERS: [SeedUser; 9] = [
         password: "admin123",
         role: SiteAdmin,
         assignments: &[(1, Manager), (3, Manager), (5, Viewer), (7, Viewer)],
+        deactivated: false,
     },
     SeedUser {
         first: "Dana",
@@ -65,6 +69,7 @@ const USERS: [SeedUser; 9] = [
             (4, Contributor),
             (6, Contributor),
         ],
+        deactivated: false,
     },
     SeedUser {
         first: "James",
@@ -78,6 +83,7 @@ const USERS: [SeedUser; 9] = [
             (7, Contributor),
             (2, Viewer),
         ],
+        deactivated: false,
     },
     SeedUser {
         first: "Aisha",
@@ -86,6 +92,7 @@ const USERS: [SeedUser; 9] = [
         password: "volunteer123",
         role: Volunteer,
         assignments: &[(6, Contributor), (8, Contributor), (1, Viewer), (4, Viewer)],
+        deactivated: false,
     },
     SeedUser {
         first: "Jamie",
@@ -94,6 +101,7 @@ const USERS: [SeedUser; 9] = [
         password: "client123",
         role: Client,
         assignments: &[(1, Contributor), (6, Contributor), (2, Viewer)],
+        deactivated: false,
     },
     SeedUser {
         first: "Sofia",
@@ -102,6 +110,7 @@ const USERS: [SeedUser; 9] = [
         password: "client123",
         role: Client,
         assignments: &[(3, Contributor), (7, Contributor), (8, Viewer)],
+        deactivated: false,
     },
     SeedUser {
         first: "Noah",
@@ -110,6 +119,7 @@ const USERS: [SeedUser; 9] = [
         password: "client123",
         role: Client,
         assignments: &[(4, Contributor), (8, Contributor), (5, Viewer)],
+        deactivated: false,
     },
     SeedUser {
         first: "Emma",
@@ -120,6 +130,7 @@ const USERS: [SeedUser; 9] = [
         // Case 9 is the withdrawn demo case she owns, with the full access the
         // signup flow grants an owner.
         assignments: &[(5, Contributor), (3, Viewer), (9, Manager)],
+        deactivated: false,
     },
     SeedUser {
         first: "Owen",
@@ -129,6 +140,18 @@ const USERS: [SeedUser; 9] = [
         role: OperationsAdmin,
         // Case 9 is the withdrawn demo case, so the restore path has a reviewer.
         assignments: &[(2, Manager), (4, Viewer), (9, Viewer)],
+        deactivated: false,
+    },
+    // A duplicate of Jamie Rivera above, deactivated: the exact situation this
+    // feature exists for. Kept, never deleted, so the restore path is demoable.
+    SeedUser {
+        first: "Jamie",
+        last: "Rivera",
+        email: "jamie.rivera@example.com",
+        password: "client123",
+        role: Client,
+        assignments: &[],
+        deactivated: true,
     },
 ];
 
@@ -153,6 +176,10 @@ fn case_id(n: u32) -> String {
     format!("c-{n}")
 }
 
+/// The reason recorded on the seeded deactivated account, so the admin card and
+/// the Deactivated accounts section have something real to show.
+pub const DEACTIVATED_SEED_REASON: &str = "Duplicate account — merged into jamie@example.com";
+
 /// The users, with their per-case assignments expanded from presets.
 ///
 /// Demo users are paired with their plaintext demo password. The password is
@@ -174,7 +201,11 @@ pub fn users() -> Vec<(User, String)> {
                     (i * 97 + 11) % 10000
                 ),
                 home_address: format!("{} {} Street, Springfield", 100 + i * 7, su.last),
-                role: su.role,
+                role: if su.deactivated {
+                    AccountRole::Deactivated
+                } else {
+                    su.role
+                },
                 information_management_access: su.role.has_volunteer_privileges(),
                 assigned_cases: su
                     .assignments
@@ -184,6 +215,16 @@ pub fn users() -> Vec<(User, String)> {
                         capabilities: preset.capabilities(),
                     })
                     .collect(),
+                // The seeder writes the `account_deactivations` row from this,
+                // recording `su.role` as the role to restore.
+                deactivation: su.deactivated.then(|| {
+                    crate::server_fns::users::AccountDeactivation {
+                        previous_role: su.role,
+                        reason: DEACTIVATED_SEED_REASON.to_string(),
+                        by: "Seed".to_string(),
+                        at: String::new(),
+                    }
+                }),
             };
             (user, su.password.to_string())
         })

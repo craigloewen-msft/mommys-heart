@@ -238,9 +238,9 @@ pub async fn create(
          WHERE a.case_id = $1
            AND a.capability = 'view_case'
            AND a.user_id <> $4
-           AND (NOT $5 OR u.role <> '{client}')
+           AND (NOT $5 OR u.role IN {staff})
          ON CONFLICT DO NOTHING",
-        client = crate::server_fns::users::AccountRole::Client.slug()
+        staff = crate::server_fns::users::AccountRole::STAFF_ROLES_SQL
     ))
     .bind(&channel.case_id)
     .bind(&channel.id)

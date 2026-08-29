@@ -695,6 +695,7 @@ pub async fn unlinked_accounts() -> Result<Vec<LinkableAccount>, sqlx::Error> {
         "SELECT u.id, btrim(u.first_name || ' ' || u.last_name), u.email
          FROM users u
          WHERE NOT EXISTS (SELECT 1 FROM contacts c WHERE c.user_id = u.id)
+           AND u.role <> 'deactivated'
          ORDER BY lower(u.last_name) ASC, lower(u.first_name) ASC",
     )
     .fetch_all(pool())

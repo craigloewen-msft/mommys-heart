@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::helpers::dates;
 use crate::helpers::sections;
 use crate::helpers::visibility::Visibility;
 use crate::server_fns::case_properties::CaseProperty;
@@ -15,7 +16,24 @@ pub enum IntakeInput {
     Text,
     /// A free-text line that hints a decimal amount (an hourly rate).
     Rate,
+    /// A date, or an explicit "never": the event may genuinely never have
+    /// happened, and that is a different answer from leaving the question blank.
+    DateOrNever,
 }
+
+/// The stored answer meaning the event has never happened. Written as the
+/// literal word rather than an empty value, which would be indistinguishable
+/// from an unanswered question in the case property list.
+pub const NEVER_ANSWER: &str = "Never";
+
+/// Whether a raw [`IntakeInput::DateOrNever`] answer is the "never" sentinel.
+pub fn is_never(raw: &str) -> bool {
+    raw.trim().eq_ignore_ascii_case(NEVER_ANSWER)
+}
+
+/// The earliest date accepted for a "most recent ..." answer. Anything before
+/// this is a typo rather than an event.
+const EARLIEST_YEAR: i32 = 1900;
 
 /// Whether an intake field must have an answer before a case can be created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +140,18 @@ pub const INTAKE_ITEMS: &[IntakeItem] = &[
         input: IntakeInput::Rate,
         requirement: IntakeRequirement::Optional,
     },
+    IntakeItem::Field {
+        key: "Date of the most recent domestic-abuse incident",
+        label: "Date of the most recent domestic-abuse incident:",
+        input: IntakeInput::DateOrNever,
+        requirement: IntakeRequirement::Required,
+    },
+    IntakeItem::Field {
+        key: "Date of the client's most recent therapy appointment",
+        label: "Date of the client's most recent therapy appointment:",
+        input: IntakeInput::DateOrNever,
+        requirement: IntakeRequirement::Required,
+    },
 ];
 
 /// The scalar-question storage keys, in order — one per [`IntakeItem::Field`].
@@ -171,17 +201,20 @@ impl CaseIntake {
     pub fn validate(&self) -> Result<(), String> {
         for item in INTAKE_ITEMS {
             let IntakeItem::Field {
-                key, requirement, ..
+                key,
+                input,
+                requirement,
+                ..
             } = item
             else {
                 continue;
             };
-            if requirement.is_required()
-                && self
-                    .fields
-                    .get(*key)
-                    .is_none_or(|value| value.trim().is_empty())
-            {
+            let raw = self.fields.get(*key).map(String::as_str).unwrap_or_default();
+            if matches!(input, IntakeInput::DateOrNever) {
+                validate_date_or_never(key, raw, *requirement)?;
+                continue;
+            }
+            if requirement.is_required() && raw.trim().is_empty() {
                 return Err(format!("Please complete the required field \"{key}\"."));
             }
         }
@@ -199,13 +232,13 @@ impl CaseIntake {
         let mut properties = Vec::new();
         for item in INTAKE_ITEMS {
             match item {
-                IntakeItem::Field { key, .. } => {
-                    let value = self
-                        .fields
-                        .get(*key)
-                        .map(String::as_str)
-                        .unwrap_or_default();
-                    properties.push(property(key, value));
+                IntakeItem::Field { key, input, .. } => {
+                    let raw = self.fields.get(*key).map(String::as_str).unwrap_or_default();
+                    let value = match input {
+                        IntakeInput::DateOrNever => stored_date_or_never(raw),
+                        _ => raw.trim().to_string(),
+                    };
+                    properties.push(property(key, &value));
                 }
                 IntakeItem::Judges { .. } => {
                     for (index, judge) in self.judges.iter().enumerate() {
@@ -223,5 +256,48 @@ impl CaseIntake {
         }
         properties.push(property(EXTRA_NOTES_KEY, &self.extra_notes));
         properties
+    }
+}
+
+/// A [`IntakeInput::DateOrNever`] answer must be either the "never" sentinel or
+/// a real, non-future date. Blank fails only when the question is required.
+fn validate_date_or_never(
+    key: &str,
+    raw: &str,
+    requirement: IntakeRequirement,
+) -> Result<(), String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        if requirement.is_required() {
+            return Err(format!(
+                "Please answer \"{key}\" with a date, or tick \"Never\"."
+            ));
+        }
+        return Ok(());
+    }
+    if is_never(raw) {
+        return Ok(());
+    }
+    let malformed = || format!("Enter \"{key}\" as a valid date.");
+    let (year, _, _) = dates::parse_iso(raw).ok_or_else(malformed)?;
+    if year < EARLIEST_YEAR {
+        return Err(malformed());
+    }
+    // These questions ask for a most recent past event, so a later date is
+    // always a mistake. Today itself is a legitimate answer.
+    if raw > dates::today().as_str() {
+        return Err(format!("\"{key}\" cannot be in the future."));
+    }
+    Ok(())
+}
+
+/// A [`IntakeInput::DateOrNever`] answer as it is stored: the canonical "never"
+/// spelling, or the date in the `MM-DD-YYYY` form the case view displays.
+fn stored_date_or_never(raw: &str) -> String {
+    let raw = raw.trim();
+    if is_never(raw) {
+        NEVER_ANSWER.to_string()
+    } else {
+        dates::to_us(raw)
     }
 }
