@@ -25,10 +25,33 @@ pub enum AccountRole {
     OperationsAdmin,
     /// A site administrator with unrestricted administrative access.
     SiteAdmin,
+    /// An account retired by a site admin. It grants nothing: it cannot sign in,
+    /// and every permission gate denies it. The role it held before, and who
+    /// retired it, live in `account_deactivations`.
+    ///
+    /// Deliberately a role rather than a flag: nearly every role-aware query
+    /// matches positively (`role = 'volunteer'`, `role IN (...)`), so a
+    /// deactivated account drops out of those lists by construction rather than
+    /// relying on each query to remember an extra filter.
+    Deactivated,
 }
 
 impl AccountRole {
-    pub const ALL: [AccountRole; 4] = [
+    pub const ALL: [AccountRole; 5] = [
+        AccountRole::Client,
+        AccountRole::Volunteer,
+        AccountRole::OperationsAdmin,
+        AccountRole::SiteAdmin,
+        AccountRole::Deactivated,
+    ];
+
+    /// The roles an admin may pick in the account-role dropdown.
+    ///
+    /// [`AccountRole::Deactivated`] is excluded on purpose, mirroring
+    /// `CaseStatus::Withdrawn`'s absence from the staff status dropdown: the
+    /// transition records who, when, and why, so it is reachable only through
+    /// the dedicated server function, never as a stray dropdown change.
+    pub const ASSIGNABLE: [AccountRole; 4] = [
         AccountRole::Client,
         AccountRole::Volunteer,
         AccountRole::OperationsAdmin,
@@ -41,6 +64,7 @@ impl AccountRole {
             AccountRole::Volunteer => "Volunteer",
             AccountRole::OperationsAdmin => "Operations admin",
             AccountRole::SiteAdmin => "Site admin",
+            AccountRole::Deactivated => "Deactivated",
         }
     }
 
@@ -50,6 +74,7 @@ impl AccountRole {
             AccountRole::Volunteer => "volunteer",
             AccountRole::OperationsAdmin => "operations_admin",
             AccountRole::SiteAdmin => "site_admin",
+            AccountRole::Deactivated => "deactivated",
         }
     }
 
@@ -65,6 +90,11 @@ impl AccountRole {
     /// Whether this is exactly the operations-administrator role.
     pub fn is_operations_admin(self) -> bool {
         matches!(self, AccountRole::OperationsAdmin)
+    }
+
+    /// Whether this account has been retired and grants nothing.
+    pub fn is_deactivated(self) -> bool {
+        matches!(self, AccountRole::Deactivated)
     }
 
     /// Whether this role may perform operations-admin actions.
@@ -87,6 +117,16 @@ impl AccountRole {
         )
     }
 
+    /// The SQL role list matching [`has_volunteer_privileges`], for the queries
+    /// that must decide "is this account staff?" in the database.
+    ///
+    /// Written positively and kept in one place on purpose. These predicates
+    /// used to read `role <> 'client'`, which quietly counted a deactivated
+    /// account as staff once that role existed.
+    ///
+    /// [`has_volunteer_privileges`]: AccountRole::has_volunteer_privileges
+    pub const STAFF_ROLES_SQL: &'static str = "('volunteer', 'operations_admin', 'site_admin')";
+
     pub fn badge_classes(self) -> &'static str {
         match self {
             AccountRole::SiteAdmin => {
@@ -97,6 +137,7 @@ impl AccountRole {
             }
             AccountRole::Volunteer => "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
             AccountRole::Client => "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30",
+            AccountRole::Deactivated => "bg-slate-700/40 text-slate-400 ring-1 ring-slate-600",
         }
     }
 }
@@ -175,6 +216,23 @@ impl VolunteerListItem {
     }
 }
 
+/// Why an account is deactivated, and what to restore it to.
+///
+/// Modelled on [`VolunteerApplication`](crate::server_fns::volunteers::VolunteerApplication):
+/// timestamps arrive already formatted for display, and the actor's name is a
+/// stored snapshot so a later change to their account cannot erase the record.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AccountDeactivation {
+    /// The role held before deactivation, restored on reactivation.
+    pub previous_role: AccountRole,
+    /// Optional context the admin typed. Never required.
+    pub reason: String,
+    /// Display name of the admin who deactivated the account.
+    pub by: String,
+    /// When it happened, formatted for display.
+    pub at: String,
+}
+
 /// Which exact account-role section of the grouped admin user directory to load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -182,6 +240,9 @@ pub enum UserDirectoryRoleGroup {
     Volunteer,
     Client,
     Other,
+    /// Retired accounts, kept out of the three working sections so a duplicate
+    /// stops cluttering them but stays findable and reversible.
+    Deactivated,
 }
 
 /// One narrow row of the grouped admin user directory.
@@ -224,6 +285,9 @@ pub struct User {
     /// Cases this user is assigned to, with the capabilities they hold on each.
     #[serde(default)]
     pub assigned_cases: Vec<CaseAssignment>,
+    /// Present exactly when this account holds [`AccountRole::Deactivated`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deactivation: Option<AccountDeactivation>,
 }
 
 impl User {
@@ -255,6 +319,11 @@ impl User {
     /// Whether this user is assigned to the given case at all.
     pub fn is_assigned_to(&self, case_id: &str) -> bool {
         self.assigned_cases.iter().any(|a| a.case_id == case_id)
+    }
+
+    /// Whether this account has been retired.
+    pub fn is_deactivated(&self) -> bool {
+        self.role.is_deactivated()
     }
 }
 
@@ -381,6 +450,13 @@ pub async fn set_user_role(user_id: String, role: AccountRole) -> Result<(), Ser
 
     let actor = require_user().await?;
     require_site_admin(&actor)?;
+    // Deactivation carries who, when, and why, so it goes through its own
+    // function rather than arriving as an ordinary role change.
+    if role.is_deactivated() {
+        return Err(ServerFnError::new(
+            "Use the account status controls to deactivate an account.",
+        ));
+    }
     let user_id = user_id.trim().to_string();
     let changed = users::set_role(&user_id, role, &actor.full_name())
         .await
@@ -397,6 +473,71 @@ pub async fn set_user_role(user_id: String, role: AccountRole) -> Result<(), Ser
             user_id,
             actor.full_name(),
             format!("changed your account role to {}", role.label()),
+        );
+    }
+    Ok(())
+}
+
+/// Retire an account, or restore a retired one. Site admin only.
+///
+/// The account keeps everything — role, case assignments, volunteer agreement,
+/// audit history — so a reactivation is lossless. What it loses is the ability
+/// to sign in and its place in every list and picker.
+#[server(prefix = "/api")]
+pub async fn set_account_deactivated(
+    user_id: String,
+    deactivated: bool,
+    reason: String,
+) -> Result<(), ServerFnError> {
+    use crate::server::db::users;
+    use crate::server::permissions::{require_site_admin, require_user};
+
+    let actor = require_user().await?;
+    require_site_admin(&actor)?;
+    let user_id = user_id.trim().to_string();
+    if user_id.is_empty() {
+        return Err(ServerFnError::new("No account was requested."));
+    }
+    // Locking yourself out is never the intent, and there would be no one left
+    // in this browser to undo it.
+    if user_id == actor.id {
+        return Err(ServerFnError::new(
+            "You cannot deactivate your own account.",
+        ));
+    }
+    let reason = reason.trim();
+    if reason.chars().count() > 1000 {
+        return Err(ServerFnError::new(
+            "Please keep the reason under 1000 characters.",
+        ));
+    }
+
+    let changed = users::set_deactivated(
+        &user_id,
+        deactivated,
+        reason,
+        &actor.id,
+        &actor.full_name(),
+    )
+    .await
+    .map_err(|error| {
+        // Surface the domain refusals verbatim; anything else is a real fault.
+        let message = error.to_string();
+        if message.contains("You cannot demote the final site admin.") {
+            ServerFnError::new("You cannot deactivate the final site admin.")
+        } else if message.contains("no deactivation record") {
+            ServerFnError::new("This account has no deactivation record to restore from.")
+        } else {
+            ServerFnError::new(error)
+        }
+    })?;
+
+    if changed && !deactivated {
+        // Only worth telling someone whose account just came back.
+        crate::server::notifications::notify_account_permissions_changed(
+            user_id,
+            actor.full_name(),
+            "reactivated your account".to_string(),
         );
     }
     Ok(())

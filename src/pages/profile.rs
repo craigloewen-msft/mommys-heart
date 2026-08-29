@@ -183,6 +183,20 @@ pub fn ProfilePage() -> impl IntoView {
                 "rounded-full px-2 py-0.5 text-xs font-medium {}",
                 p.role.badge_classes(),
             );
+            // The role badge already reads "Deactivated"; this says why, for the
+            // owner and for admins.
+            let deactivation_note = p.deactivation.as_ref().map(|d| {
+                let detail = if d.reason.is_empty() {
+                    format!("Deactivated by {} on {}.", d.by, d.at)
+                } else {
+                    format!("Deactivated by {} on {} — “{}”", d.by, d.at, d.reason)
+                };
+                view! {
+                    <p class="mt-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-400">
+                        {detail}
+                    </p>
+                }
+            });
             view! {
                 <div class=SECTION_CLASS>
                     <div class="flex items-start justify-between gap-3">
@@ -196,6 +210,7 @@ pub fn ProfilePage() -> impl IntoView {
                                     <span class=role_badge>{p.role.label()}</span>
                                     {self_badge}
                                 </div>
+                                {deactivation_note}
                             </div>
                         </div>
                         {edit_btn}

@@ -60,6 +60,48 @@ it.
 
 ---
 
+## Account status
+
+An account can be **deactivated** by a site admin — the way duplicate accounts get
+cleaned up without destroying anything.
+
+- **A role, not a deletion.** Deactivating sets the account role to
+  `deactivated`. A `users` row cannot be deleted at all: `cases.owner_id` is
+  `ON DELETE RESTRICT`, and audit, contact, and funding rows reference it. This
+  follows the same archive-not-delete reasoning as case withdrawal and ADR-0002.
+- **Site admins only.** Operations admins see the status read-only and cannot
+  request the change.
+- **It stops being a login.** Existing sessions and remembered devices are
+  dropped in the same transaction, so a browser already signed in as that account
+  is logged out on its next request. A sign-in attempt is refused *after* the
+  password is checked, so the message is not an oracle for which addresses exist.
+- **It disappears from the working lists**: the volunteer list, the Volunteers,
+  Clients, and Other directory sections, the volunteer-application queue, the
+  case-owner picker, the case-access picker, and the contact account-linking
+  picker. It receives no notification emails and no unread badges.
+- **It is still findable**, in its own "Deactivated accounts" section of Manage
+  users, which is how an admin finds one to restore.
+- **Nothing else changes.** The role held before, the case assignments, the
+  volunteer agreement and its version, the information-management grant, the
+  linked contact, and the audit history are all kept, so reactivating restores
+  exactly the previous state.
+- **The email address stays claimed**, so nobody re-registers over a retired
+  duplicate by accident.
+- **You cannot deactivate your own account**, which is also what makes it
+  impossible to retire the last site admin: the actor must be a site admin and
+  cannot be the target, so an active site admin always remains. Separately, a
+  deactivated ex-admin does not count toward the "final site admin" check that
+  guards ordinary demotions.
+- Deactivation does **not** withdraw the account's cases. A case with staff work
+  on it belongs to the organization, not to the account that filed it.
+- Both transitions are audited, so the user's Change Log names who did it and when.
+
+**Limits, stated on purpose:** there is no operations-admin request path for
+deactivation, and no merging of two accounts' records — deactivating the
+duplicate leaves the good account untouched rather than moving anything onto it.
+
+---
+
 ## Phase 1: secure case messaging
 
 *Requirements: `REQ-MSG-001` – `REQ-MSG-009`.*
@@ -370,3 +412,4 @@ that must not depend on application code at all live in the schema:
 | A contact has a surname or an organization | `contacts_named_check` |
 | Referenced contacts/organizations/grants cannot be deleted | `ON DELETE RESTRICT` foreign keys |
 | A withdrawn case can always be explained and restored | `cases_withdrawal_complete` check |
+| A stored deactivation names who did it and the role to restore | `account_deactivations_complete` check |

@@ -83,6 +83,10 @@ pub struct UserProfile {
     /// The CRM person record for this account. Operations admins only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub person: Option<ProfilePersonRecord>,
+    /// Why this account was retired. Follows the same privacy rule as the
+    /// contact block: the owner and operations admins only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deactivation: Option<crate::server_fns::users::AccountDeactivation>,
 }
 
 impl UserProfile {
@@ -111,6 +115,7 @@ impl UserProfile {
             phone,
             home_address,
             role,
+            deactivation,
             ..
         } = user;
         Self {
@@ -128,6 +133,9 @@ impl UserProfile {
             is_self,
             shares_case,
             person,
+            deactivation: (is_self || has_operations_admin_permissions)
+                .then_some(deactivation)
+                .flatten(),
         }
     }
 

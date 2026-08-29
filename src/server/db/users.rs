@@ -1,6 +1,6 @@
 //! Users, their per-case capability assignments, and admin mutations.
 
-use crate::server::db::{audit, clients, ids, pool};
+use crate::server::db::{audit, clients, contacts, deactivations, ids, pool};
 use crate::server_fns::capabilities::{CaseAssignment, CaseCapability};
 use crate::server_fns::pagination::Page;
 use crate::server_fns::profile::ProfileEdit;
@@ -23,6 +23,9 @@ struct UserRow {
 }
 
 impl UserRow {
+    /// Build the domain user. `deactivation` is left `None`: it is an extra
+    /// query, and only the admin detail view needs it, so [`get`] fills it in
+    /// rather than every list and session lookup paying for a join.
     fn into_user(self, assigned_cases: Vec<CaseAssignment>) -> User {
         User {
             id: self.id,
@@ -34,6 +37,7 @@ impl UserRow {
             role: AccountRole::from_slug(&self.role).unwrap_or(AccountRole::Client),
             information_management_access: self.information_management_access,
             assigned_cases,
+            deactivation: None,
         }
     }
 }
@@ -132,6 +136,7 @@ fn directory_role_filter(group: UserDirectoryRoleGroup) -> &'static str {
         UserDirectoryRoleGroup::Volunteer => "u.role = 'volunteer'",
         UserDirectoryRoleGroup::Client => "u.role = 'client'",
         UserDirectoryRoleGroup::Other => "u.role IN ('operations_admin', 'site_admin')",
+        UserDirectoryRoleGroup::Deactivated => "u.role = 'deactivated'",
     }
 }
 
@@ -281,12 +286,13 @@ pub async fn search_user_summaries(
     let rows: Vec<(String, Option<String>, Option<String>, String, bool)> = sqlx::query_as(
         "SELECT id, first_name, last_name, role, information_management_access
          FROM users
-         WHERE $1::text IS NULL
+         WHERE role <> 'deactivated'
+           AND ($1::text IS NULL
             OR id ILIKE $1
             OR first_name ILIKE $1
             OR last_name ILIKE $1
             OR (first_name || ' ' || last_name) ILIKE $1
-            OR email ILIKE $1
+            OR email ILIKE $1)
          ORDER BY first_name NULLS LAST, id
          LIMIT $2",
     )
@@ -383,6 +389,9 @@ pub async fn set_role_in(
         sqlx::Error::Decode(format!("invalid account role slug: {current:?}").into())
     })?;
     if current_role == AccountRole::SiteAdmin && role != AccountRole::SiteAdmin {
+        // Deactivated site admins are excluded for free: deactivating moves the
+        // account off `site_admin`, so it cannot prop this count up. Someone who
+        // cannot sign in must not be what keeps the site administrable.
         let site_admin_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE role = $1")
                 .bind(AccountRole::SiteAdmin.slug())
@@ -417,6 +426,9 @@ pub async fn set_role_in(
             .bind(actor)
             .execute(&mut **tx)
             .await?;
+            // A volunteer belongs in the contact directory, so the CRM record
+            // follows the role in the same transaction.
+            contacts::ensure_volunteer_in(tx, user_id, actor).await?;
         }
         _ if was_volunteer => {
             sqlx::query(
@@ -457,6 +469,91 @@ pub async fn set_role(user_id: &str, role: AccountRole, actor: &str) -> Result<b
     let changed = set_role_in(&mut tx, user_id, role, actor).await?;
     tx.commit().await?;
     Ok(changed)
+}
+
+/// Retire an account, or restore a retired one.
+///
+/// Deactivation routes through [`set_role_in`], so it inherits the advisory
+/// lock, the "you cannot demote the final site admin" guard, the volunteer and
+/// client subtype reconciliation, and the role audit entry, rather than
+/// reimplementing any of them. The restore target is stored first so the
+/// `account_deactivations` row and the role change commit together.
+///
+/// Sessions and trusted devices are dropped in the same transaction, so the
+/// account cannot keep acting on a browser it is already signed in on.
+pub async fn set_deactivated(
+    user_id: &str,
+    deactivated: bool,
+    reason: &str,
+    actor_user_id: &str,
+    actor: &str,
+) -> Result<bool, sqlx::Error> {
+    let mut tx = pool().begin().await?;
+
+    // Serialize against concurrent role changes before locking the user row,
+    // matching the lock order every other role-dependent path takes.
+    lock_role_changes_in(&mut tx).await?;
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(current) = current else {
+        return Err(sqlx::Error::RowNotFound);
+    };
+    let current_role = AccountRole::from_slug(&current).ok_or_else(|| {
+        sqlx::Error::Decode(format!("invalid account role slug: {current:?}").into())
+    })?;
+
+    if deactivated == current_role.is_deactivated() {
+        return Ok(false);
+    }
+
+    if deactivated {
+        // Written before the role changes, so `previous_role` records what the
+        // account actually held rather than the state we are moving it to.
+        deactivations::record_in(&mut tx, user_id, current_role, reason, actor_user_id, actor)
+            .await?;
+        set_role_in(&mut tx, user_id, AccountRole::Deactivated, actor).await?;
+
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM trusted_devices WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        let previous_role = deactivations::lock_previous_role_in(&mut tx, user_id)
+            .await?
+            // A deactivated account with no live record cannot be restored
+            // safely: there is no role to restore it to.
+            .ok_or_else(|| {
+                sqlx::Error::Protocol(
+                    "This account has no deactivation record to restore from.".to_string(),
+                )
+            })?;
+        set_role_in(&mut tx, user_id, previous_role, actor).await?;
+        deactivations::record_reactivation_in(&mut tx, user_id, actor).await?;
+    }
+
+    // A second entry beside the role change, so the Change Log states the
+    // account-status transition in the reader's own words.
+    audit::record_in_transaction_by(
+        &mut tx,
+        audit::Entity::User,
+        user_id,
+        actor_user_id,
+        actor,
+        "account status",
+        if deactivated { "active" } else { "deactivated" },
+        if deactivated { "deactivated" } else { "active" },
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// Change the shared information-area permission inside an existing transaction.
@@ -754,7 +851,13 @@ pub async fn get(id: &str) -> Result<Option<User>, sqlx::Error> {
         })
         .collect();
 
-    Ok(Some(row.into_user(assignments)))
+    let mut user = row.into_user(assignments);
+    // Only the retired accounts carry this, so the extra read is skipped for
+    // everyone else.
+    if user.role.is_deactivated() {
+        user.deactivation = deactivations::get(id).await?;
+    }
+    Ok(Some(user))
 }
 
 /// Resolve a signed-in user (with capabilities) from a session token hash.
@@ -770,7 +873,10 @@ pub async fn resolve_by_session_token(token_hash: &str) -> Result<Option<User>, 
                 u.information_management_access
          FROM sessions s
          JOIN users u ON u.id = s.user_id
-         WHERE s.token_hash = $1 AND s.expires_at > now()",
+         WHERE s.token_hash = $1 AND s.expires_at > now()
+           -- A retired account holds no session: an already-signed-in browser
+           -- is logged out on its very next request.
+           AND u.role <> 'deactivated'",
     )
     .bind(token_hash)
     .fetch_optional(pool());
@@ -890,13 +996,15 @@ pub async fn page(offset: i64, limit: i64, search: &str) -> Result<Page<User>, s
     let pattern = escaped_like_pattern(search);
 
     // The same predicate drives the count and the page fetch. A NULL pattern
-    // (no search term) matches every row.
-    const FILTER: &str = "WHERE $1::text IS NULL
+    // (no search term) matches every row. Retired accounts are excluded: this
+    // backs the admin case-access picker, which must not offer a dead account.
+    const FILTER: &str = "WHERE role <> 'deactivated'
+           AND ($1::text IS NULL
            OR id ILIKE $1
            OR first_name ILIKE $1
            OR last_name ILIKE $1
            OR (first_name || ' ' || last_name) ILIKE $1
-           OR email ILIKE $1";
+           OR email ILIKE $1)";
 
     let count_sql = format!("SELECT count(*) FROM users {FILTER}");
     let page_sql = format!(

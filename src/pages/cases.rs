@@ -418,7 +418,7 @@ pub fn NewCasePage() -> impl IntoView {
                         />
                     </div>
                     <Show when=move || {
-                        !matches!(state.role(), Some(AccountRole::Client))
+                        state.role().is_some_and(|role| role.has_volunteer_privileges())
                     }>
                         <div>
                             <label class=label_class>"Status"</label>

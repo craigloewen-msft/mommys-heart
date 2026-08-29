@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use leptos::prelude::*;
 
 use crate::helpers::case_intake::{
-    court_label, docket_number_label, field_keys, judge_label, CaseIntake, CourtDocket,
-    IntakeInput, IntakeItem, IntakeRequirement, EXTRA_NOTES_LABEL, INTAKE_ITEMS,
+    court_label, docket_number_label, field_keys, is_never, judge_label, CaseIntake, CourtDocket,
+    IntakeInput, IntakeItem, IntakeRequirement, EXTRA_NOTES_LABEL, INTAKE_ITEMS, NEVER_ANSWER,
 };
 
 #[derive(Clone, Copy)]
@@ -195,6 +195,45 @@ fn field_control(
             />
         }
         .into_any(),
+        // The signal holds "" (unanswered), the "never" sentinel, or the ISO date
+        // the date input produces, so the box and the checkbox cannot disagree.
+        IntakeInput::DateOrNever => {
+            let never = move || is_never(&signal.get());
+            view! {
+                <div class="mt-1 flex flex-wrap items-center gap-3">
+                    <input
+                        class=format!("{INPUT_CLASS} mt-0 flex-1 disabled:opacity-50")
+                        type="date"
+                        // Only required while "Never" is unticked: the signup page
+                        // submits through a real form, whose native validation would
+                        // otherwise reject a legitimate "Never".
+                        prop:required=move || required && !never()
+                        prop:disabled=never
+                        prop:value=move || if never() { String::new() } else { signal.get() }
+                        on:input=move |event| signal.set(event_target_value(&event))
+                    />
+                    <label class="flex shrink-0 items-center gap-2 text-sm text-slate-300">
+                        <input
+                            type="checkbox"
+                            class="h-4 w-4 rounded border-slate-700 bg-slate-950 text-primary-500 focus:ring-primary-500/30"
+                            prop:checked=never
+                            on:change=move |event| {
+                                signal
+                                    .set(
+                                        if event_target_checked(&event) {
+                                            NEVER_ANSWER.to_string()
+                                        } else {
+                                            String::new()
+                                        },
+                                    );
+                            }
+                        />
+                        "Never"
+                    </label>
+                </div>
+            }
+            .into_any()
+        }
     };
     view! {
         <div>

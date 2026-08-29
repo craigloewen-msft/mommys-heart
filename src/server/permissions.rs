@@ -31,7 +31,7 @@ use crate::server::auth::AuthUser;
 use crate::server::db::{cases, channels};
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::channels::Channel;
-use crate::server_fns::users::{AccountRole, User};
+use crate::server_fns::users::User;
 
 /// Resolve the signed-in user from the request's session cookie, or an error if
 /// there is no valid session. Uses the same [`AuthUser`] extractor the rest of
@@ -95,8 +95,11 @@ pub fn require_case_access_management(
 
 /// Whether this account may see the volunteer-only info of a case
 /// Including properties, evidence and channels
+///
+/// Stated positively rather than as "not a client": a deactivated account is
+/// neither, and must not fall through to staff access.
 pub fn has_volunteer_access(user: &User) -> bool {
-    !matches!(user.role, AccountRole::Client)
+    user.role.has_volunteer_privileges()
 }
 
 /// Reject unless the caller may act on the given visibility. Used by every write

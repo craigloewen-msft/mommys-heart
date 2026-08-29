@@ -44,16 +44,23 @@ fn encode_query_value(value: &str) -> String {
     encoded
 }
 
-fn directory_query_suffix(search: &str, volunteers: i64, clients: i64, other: i64) -> String {
+fn directory_query_suffix(
+    search: &str,
+    volunteers: i64,
+    clients: i64,
+    other: i64,
+    deactivated: i64,
+) -> String {
     if search.trim().is_empty()
         && volunteers == PAGE_SIZE
         && clients == PAGE_SIZE
         && other == PAGE_SIZE
+        && deactivated == PAGE_SIZE
     {
         return String::new();
     }
     format!(
-        "?q={}&vw={volunteers}&cw={clients}&ow={other}",
+        "?q={}&vw={volunteers}&cw={clients}&ow={other}&dw={deactivated}",
         encode_query_value(search.trim())
     )
 }
@@ -106,6 +113,7 @@ pub fn ManageUsers(
             parse_window(current_query.get("vw")),
             parse_window(current_query.get("cw")),
             parse_window(current_query.get("ow")),
+            parse_window(current_query.get("dw")),
         );
         let back_href = format!("/admin/users{back_suffix}");
         let profile_href = format!("/profile/{}", selected_user_id.get_value());
@@ -168,6 +176,7 @@ pub fn ManageUsers(
     let initial_volunteer_window = parse_window(initial_query.get("vw"));
     let initial_client_window = parse_window(initial_query.get("cw"));
     let initial_other_window = parse_window(initial_query.get("ow"));
+    let initial_deactivated_window = parse_window(initial_query.get("dw"));
     drop(initial_query);
 
     let query = RwSignal::new(initial_search.clone());
@@ -193,6 +202,13 @@ pub fn ManageUsers(
     let other_loading = RwSignal::new(false);
     let other_error = RwSignal::new(None::<String>);
     let other_generation = RwSignal::new(0u64);
+
+    let deactivated = RwSignal::new(Vec::<UserDirectoryItem>::new());
+    let deactivated_total = RwSignal::new(0i64);
+    let deactivated_window = RwSignal::new(initial_deactivated_window);
+    let deactivated_loading = RwSignal::new(false);
+    let deactivated_error = RwSignal::new(None::<String>);
+    let deactivated_generation = RwSignal::new(0u64);
 
     Effect::new(move |_| {
         let count = volunteer_window.get();
@@ -278,12 +294,42 @@ pub fn ManageUsers(
         });
     });
 
+    Effect::new(move |_| {
+        let count = deactivated_window.get();
+        let search = debounced_query.get();
+        reload.track();
+        if !state.has_operations_admin_permissions() {
+            return;
+        }
+        deactivated_loading.set(true);
+        deactivated_generation.update(|generation| *generation += 1);
+        let generation = deactivated_generation.get_untracked();
+        spawn_local(async move {
+            let response =
+                list_user_directory_page(0, count, search, UserDirectoryRoleGroup::Deactivated)
+                    .await;
+            if deactivated_generation.get_untracked() != generation {
+                return;
+            }
+            match response {
+                Ok(page) => {
+                    deactivated.set(page.items);
+                    deactivated_total.set(page.total);
+                    deactivated_error.set(None);
+                }
+                Err(error) => deactivated_error.set(Some(err_text(error))),
+            }
+            deactivated_loading.set(false);
+        });
+    });
+
     let query_suffix = Signal::derive(move || {
         directory_query_suffix(
             &query.get(),
             volunteer_window.get(),
             client_window.get(),
             other_window.get(),
+            deactivated_window.get(),
         )
     });
     let search_empty = Signal::derive(move || query.get().trim().is_empty());
@@ -294,6 +340,7 @@ pub fn ManageUsers(
             volunteer_window.set(PAGE_SIZE);
             client_window.set(PAGE_SIZE);
             other_window.set(PAGE_SIZE);
+            deactivated_window.set(PAGE_SIZE);
             debounced_query.set(value);
         },
     );
@@ -389,6 +436,23 @@ pub fn ManageUsers(
                     actor_user_id=actor_user_id.get_value()
                 />
             </div>
+
+            // Full width and below the three working sections: a retired
+            // duplicate leaves those lists but stays searchable and reversible.
+            <UserDirectorySection
+                title="Deactivated accounts"
+                subtitle="Retired accounts. They cannot sign in and are hidden from the sections above, the volunteer list, and every picker. Open one to reactivate it."
+                empty_text="No deactivated accounts."
+                empty_search_text="No deactivated accounts match your search."
+                items=deactivated
+                total=deactivated_total
+                window=deactivated_window
+                loading=deactivated_loading
+                load_error=deactivated_error
+                search_empty=search_empty
+                query_suffix=query_suffix
+                actor_user_id=actor_user_id.get_value()
+            />
         </div>
     }
     .into_any()

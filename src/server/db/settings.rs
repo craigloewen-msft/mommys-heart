@@ -159,8 +159,9 @@ pub async fn recipients_for_case(
            AND a.capability = 'view_case'
            AND a.user_id <> $2
            AND u.email <> ''
-           AND (NOT $3 OR u.role <> '{client}')",
-        client = AccountRole::Client.slug()
+           AND u.role <> 'deactivated'
+           AND (NOT $3 OR u.role IN {staff})",
+        staff = AccountRole::STAFF_ROLES_SQL
     ))
     .bind(case_id)
     .bind(exclude_user_id)
@@ -185,7 +186,7 @@ pub async fn recipient_for_user(user_id: &str) -> Result<Option<Recipient>, sqlx
                 COALESCE(s.notification_admin_requests,   true)
          FROM users u
          LEFT JOIN user_settings s ON s.user_id = u.id
-         WHERE u.id = $1 AND u.email <> ''",
+         WHERE u.id = $1 AND u.email <> '' AND u.role <> 'deactivated'",
     )
     .bind(user_id)
     .fetch_optional(pool())

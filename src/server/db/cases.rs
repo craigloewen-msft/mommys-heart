@@ -231,8 +231,8 @@ pub async fn get_summaries_for_user(
          WHERE {SEARCH} AND {}{withdrawn}
          ORDER BY c.id LIMIT $2 OFFSET $3",
         summary_select(&format!(
-            "(SELECT v.role FROM users v WHERE v.id = $4) <> '{}'",
-            AccountRole::Client.slug()
+            "(SELECT v.role FROM users v WHERE v.id = $4) IN {}",
+            AccountRole::STAFF_ROLES_SQL
         )),
         scope.replace("$VIEWER", "$4")
     );
