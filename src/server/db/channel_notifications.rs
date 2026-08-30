@@ -12,6 +12,7 @@
 //! window (see [`purge_expired`] / [`start_retention_task`]).
 
 use crate::server::db::pool;
+use crate::server_fns::cases::CaseStatus;
 use crate::server_fns::channel_notifications::ChannelUnread;
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::users::AccountRole;
@@ -110,13 +111,21 @@ pub async fn mark_channel_read(user_id: &str, channel_id: &str) -> Result<u64, s
 /// Every channel this user has unread messages in, with the unread count per
 /// channel. Drives both the "Case Chat" nav badge (any rows at all) and the
 /// per-channel dots in the case list.
+///
+/// Frozen cases are excluded, matching the filter `cases::get_summaries_for_user`
+/// applies to the case list this badge sits beside. Without it a case withdrawn
+/// while it still held unread messages would keep counting toward the badge
+/// forever: it appears in no list, so the reader can never open it to clear the
+/// rows.
 pub async fn unread_for_user(user_id: &str) -> Result<Vec<ChannelUnread>, sqlx::Error> {
     let rows = sqlx::query_as::<_, UnreadRow>(&format!(
         "SELECT n.case_id, n.channel_id, COUNT(*) AS count
          FROM channel_notifications n
          JOIN case_channels ch ON ch.id = n.channel_id AND ch.case_id = n.case_id
          JOIN users u ON u.id = n.user_id
+         JOIN cases c ON c.id = n.case_id
          WHERE n.user_id = $1
+           AND c.status NOT IN ('{withdrawn}', '{declined}')
            AND EXISTS (
                SELECT 1 FROM case_assignments a
                WHERE a.user_id = n.user_id
@@ -125,7 +134,9 @@ pub async fn unread_for_user(user_id: &str) -> Result<Vec<ChannelUnread>, sqlx::
            )
            AND (u.role IN {staff} OR ch.kind <> 'volunteer_only')
          GROUP BY n.case_id, n.channel_id",
-        staff = AccountRole::STAFF_ROLES_SQL
+        staff = AccountRole::STAFF_ROLES_SQL,
+        withdrawn = CaseStatus::Withdrawn.slug(),
+        declined = CaseStatus::Declined.slug(),
     ))
     .bind(user_id)
     .fetch_all(pool())

@@ -183,15 +183,15 @@ pub async fn name(case_id: &str) -> Result<Option<String>, sqlx::Error> {
 
 /// One page of sparse cases visible to a user.
 ///
-/// `include_withdrawn` is the operations-admin escape hatch: a withdrawn case is
-/// meant to be gone from an ordinary list, but admins are the only ones who can
-/// restore one, so they must still be able to find it.
+/// Withdrawn cases are never included. This backs the personal "my cases" list
+/// and the Inbox, and withdrawing is precisely how someone takes a case off
+/// them. Admins find withdrawn cases through [`page`], the unfiltered admin
+/// directory, which is also where they restore one.
 pub async fn get_summaries_for_user(
     offset: i64,
     limit: i64,
     search: &str,
     user: &User,
-    include_withdrawn: bool,
 ) -> Result<Page<CaseSummary>, sqlx::Error> {
     let limit = limit.clamp(1, 100);
     let offset = offset.max(0);
@@ -214,11 +214,7 @@ pub async fn get_summaries_for_user(
     );
     // Drops withdrawn cases out of both this list and the Inbox, which share this
     // query. The status slug is an internal constant, never user input.
-    let withdrawn = if include_withdrawn {
-        String::new()
-    } else {
-        format!(" AND c.status <> '{}'", CaseStatus::Withdrawn.slug())
-    };
+    let withdrawn = format!(" AND c.status <> '{}'", CaseStatus::Withdrawn.slug());
 
     let count_sql = format!(
         "SELECT count(*) FROM cases c WHERE {SEARCH} AND {}{withdrawn}",
