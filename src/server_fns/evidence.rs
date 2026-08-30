@@ -486,7 +486,7 @@ pub async fn delete_case_evidence(
         .filter(|e| e.case_id == case_id)
         .ok_or_else(|| ServerFnError::new("That file no longer exists."))?;
     require_visibility(&user, existing.visibility)?;
-    let blob_path = db::delete(&case_id, &evidence_id)
+    let blob_path = db::delete(&case_id, &evidence_id, &user.full_name())
         .await
         .map_err(ServerFnError::new)?;
 

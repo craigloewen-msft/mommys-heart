@@ -252,8 +252,11 @@ impl Case {
 /// browser never pulls every case at once; the full detail for one case is
 /// loaded on demand via [`load_case`].
 ///
-/// Withdrawn cases are omitted unless the caller is an operations admin, who is
-/// the only one who can restore one.
+/// A withdrawn case is omitted for everyone, including admins. This is a
+/// personal "my cases" list, and withdrawing is how someone clears a case from
+/// it — an admin who withdraws their own case expects the same result a client
+/// gets. Admins still reach and restore withdrawn cases through the admin case
+/// directory (`/admin/cases`), which deliberately filters nothing.
 #[server(prefix = "/api")]
 pub async fn load_case_summaries_for_user(
     offset: i64,
@@ -264,8 +267,7 @@ pub async fn load_case_summaries_for_user(
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    let include_withdrawn = user.role.has_operations_admin_permissions();
-    cases::get_summaries_for_user(offset, limit, &search, &user, include_withdrawn)
+    cases::get_summaries_for_user(offset, limit, &search, &user)
         .await
         .map_err(ServerFnError::new)
 }

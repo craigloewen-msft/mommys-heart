@@ -325,15 +325,42 @@ pub async fn download_meta(
     Ok(row)
 }
 
-/// Remove a piece of evidence from a case. Returns the blob path that backed it
-/// (empty when it had no file) so the caller can delete the blob too.
-pub async fn delete(case_id: &str, evidence_id: &str) -> Result<String, sqlx::Error> {
-    let blob_path: Option<String> = sqlx::query_scalar(
-        "DELETE FROM evidence WHERE case_id = $1 AND id = $2 RETURNING blob_path",
+/// Remove a piece of evidence from a case, auditing it. Returns the blob path
+/// that backed it (empty when it had no file) so the caller can delete the blob
+/// too.
+///
+/// The row deletion and its audit entry share one transaction, so a file can
+/// never leave a case without the log recording who removed it. Adding,
+/// replacing and moving a file are audited the same way.
+pub async fn delete(
+    case_id: &str,
+    evidence_id: &str,
+    actor: &str,
+) -> Result<String, sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    let row: Option<(String, String)> = sqlx::query_as(
+        "DELETE FROM evidence WHERE case_id = $1 AND id = $2
+         RETURNING blob_path, name",
     )
     .bind(case_id)
     .bind(evidence_id)
-    .fetch_optional(pool())
+    .fetch_optional(&mut *tx)
     .await?;
-    Ok(blob_path.unwrap_or_default())
+    // Nothing matched: the file was already gone, so there is nothing to record.
+    let Some((blob_path, name)) = row else {
+        return Ok(String::new());
+    };
+
+    audit::record_in_transaction(
+        &mut tx,
+        audit::Entity::Case,
+        case_id,
+        actor,
+        "evidence",
+        &name,
+        "",
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(blob_path)
 }

@@ -98,6 +98,11 @@ pub async fn list(case_id: &str) -> Result<Vec<CaseContact>, sqlx::Error> {
 /// Every case link for a person, including whether this viewer may mutate it.
 /// A site admin holds every capability on every case, so they see and may edit
 /// every link; everyone else needs the stored capability on that case.
+///
+/// `can_edit` excludes the frozen statuses, mirroring `CaseStatus::accepts_changes`
+/// — `require_cap` refuses every write to a declined *or* withdrawn case, so
+/// offering the control on one would only produce an error when used. The link
+/// itself stays listed: that the case existed is part of the person's history.
 pub async fn list_for_contact(
     contact_id: &str,
     user_id: &str,
@@ -105,7 +110,7 @@ pub async fn list_for_contact(
     let rows = sqlx::query_as::<_, ContactCaseRow>(
         "SELECT cc.id, cc.case_id, ca.name AS case_name, ca.status AS case_status,
                 cc.role, cc.note, cc.is_primary,
-                (ca.status <> 'declined' AND (
+                (ca.status NOT IN ('declined', 'withdrawn') AND (
                     EXISTS (
                         SELECT 1 FROM case_assignments assignment
                         WHERE assignment.case_id = ca.id
