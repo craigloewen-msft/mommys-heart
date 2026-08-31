@@ -11,6 +11,7 @@ pub mod bulk_properties;
 pub mod capabilities;
 pub mod case_contacts;
 pub mod case_documents;
+pub mod case_note_documents;
 pub mod case_notes;
 pub mod case_properties;
 pub mod cases;

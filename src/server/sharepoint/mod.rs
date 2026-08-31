@@ -144,6 +144,15 @@ pub trait DocumentStore: Send + Sync {
     fn describe(&self) -> String;
 }
 
+/// The top-level folder every case note's filed document is written to.
+///
+/// Named here rather than spelled out at each use because three things have to
+/// agree on it: the standing tree in
+/// [`NEW_CASE_FOLDERS`](crate::helpers::new_case_folders::NEW_CASE_FOLDERS),
+/// the filing code that writes into it, and the paths the browser addresses
+/// those documents by.
+pub const CASE_NOTES_FOLDER: &str = "Case Notes";
+
 /// Whether a document store is available at all.
 pub fn is_configured() -> bool {
     STORE.get().is_some()

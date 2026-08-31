@@ -6,6 +6,26 @@ pub fn badge_pill(colors: &str) -> String {
     format!("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {colors}")
 }
 
+/// Percent-encode a document path for a query string. Paths carry user-supplied
+/// folder and file names, so everything outside the unreserved set is escaped
+/// rather than trusted to be URL-safe — `/` included, since it is a separator
+/// within the path and not a path boundary in the URL.
+///
+/// Lives here because both the Documents panel and the note page's filed-record
+/// panel build the same download link.
+pub fn encode_query(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 /// Format a byte count as a short human-readable size (e.g. "2.4 MB").
 pub fn human_size(bytes: i64) -> String {
     let bytes = bytes.max(0) as f64;

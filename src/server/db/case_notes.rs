@@ -694,6 +694,64 @@ pub async fn audit_page(
     })
 }
 
+/// The full note, for filing it as a document.
+///
+/// Deliberately unfiltered by viewer: filing is not somebody reading the note,
+/// it is the record being written to the place the record lives. The audience
+/// gate is on the folder it lands in, and the caller checks the note's state
+/// before filing anything at all.
+pub async fn detail_for_filing(note_id: &str) -> Result<Option<CaseNoteDetail>, sqlx::Error> {
+    detail(note_id).await
+}
+
+/// Record that a note's document was written to the library.
+///
+/// Uses the `export_note` action, which the note audit schema already defines:
+/// a filed document is a copy of the record leaving the app. Content-free like
+/// every other entry in this log — the metadata names the file, never anything
+/// inside it.
+pub async fn record_filing_audit(
+    detail: &CaseNoteDetail,
+    file_name: &str,
+) -> Result<(), sqlx::Error> {
+    let id = ids::next(pool(), "cna").await?;
+    sqlx::query(
+        "INSERT INTO case_note_audit_log
+            (id, note_id, case_id, addendum_id, actor_user_id, actor,
+             actor_role_snapshot, action, at, metadata)
+         VALUES ($1, $2, $3, '', $4, $5, $6, $7, $8, $9::jsonb)",
+    )
+    .bind(&id)
+    .bind(&detail.id)
+    .bind(&detail.case_id)
+    // The note's author, not a request's user: filing runs after the request
+    // that caused it has returned, and may run from the startup backfill with
+    // no user at all. Attributing it to the note's author is the only honest
+    // answer, and the role snapshot column only admits staff roles.
+    .bind(&detail.author_user_id)
+    .bind(&detail.author)
+    .bind(
+        detail
+            .author_role_snapshot
+            .filter(|role| role.has_volunteer_privileges())
+            .unwrap_or(AccountRole::Volunteer)
+            .slug(),
+    )
+    .bind(CaseNoteAuditAction::ExportNote.slug())
+    .bind(now_stamp())
+    .bind(
+        json!({
+            "state": detail.state.slug(),
+            "file_name": file_name,
+            "addenda_included": detail.addenda.len(),
+        })
+        .to_string(),
+    )
+    .execute(pool())
+    .await?;
+    Ok(())
+}
+
 async fn detail(note_id: &str) -> Result<Option<CaseNoteDetail>, sqlx::Error> {
     let row = sqlx::query_as::<_, CaseNoteDetailRow>(&format!("{DETAIL_SELECT} WHERE id = $1"))
         .bind(note_id)

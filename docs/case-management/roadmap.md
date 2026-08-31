@@ -107,14 +107,21 @@ Structured time and service units allocated against funding sources.
 
 - **Depends on:** 3.1, and finance/operations ownership.
 
-### 4.5 Attachments, document links, and PDF output
+### 4.5 Attachments and document links
 
-Attach or link supporting material to notes and messages; render an immutable
-record as a portable document.
+Attach or link supporting material to notes and messages.
 
-- **Depends on:** the case document library and a stable PDF template.
-- **Open questions:** which file types are acceptable? Must a generated PDF
-  include every addendum and audit marker?
+**Partly delivered.** Rendering a note as a portable document is done: every
+finalized note is filed as a `.docx` in its case's `Case Notes` folder, and it
+includes every addendum (see
+[ADR-0006](adr/ADR-0006-case-note-records-are-sharepoint-files.md)). What remains
+is the other direction — attaching or linking an existing case file *to* a note
+or a message.
+
+- **Depends on:** deciding whether an attachment is a copy or a link to the
+  library, given that a finalized note is immutable and a linked file is not.
+- **Open questions:** which file types are acceptable? What should a note's
+  filed document say about a linked file that has since changed?
 
 ### 4.6 Global authorized search
 

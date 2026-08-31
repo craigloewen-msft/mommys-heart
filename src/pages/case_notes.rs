@@ -6,12 +6,14 @@ use leptos_router::hooks::{use_navigate, use_params_map};
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
+use crate::helpers::format::encode_query;
 use crate::server_fns::case_notes::{
     add_case_note_addendum, admin_inspect_case_note_draft, case_note_access,
-    create_and_finalize_case_note, discard_case_note_draft, finalize_case_note_draft,
-    list_case_notes, load_case_note, AddendumCategory, CaseNoteAddendumInput, CaseNoteDetail,
-    CaseNoteDraftInput, CaseNoteInteractionType, CaseNoteListFilters, CaseNoteListItem,
-    CaseNoteState, CaseNoteValidationError, CompletionOutcome, ContactCategory, ContactDirection,
+    create_and_finalize_case_note, discard_case_note_draft, file_case_note_document,
+    finalize_case_note_draft, list_case_notes, load_case_note, load_case_note_document,
+    AddendumCategory, CaseNoteAddendumInput, CaseNoteDetail, CaseNoteDocument, CaseNoteDraftInput,
+    CaseNoteInteractionType, CaseNoteListFilters, CaseNoteListItem, CaseNoteState,
+    CaseNoteValidationError, CompletionOutcome, ContactCategory, ContactDirection,
     InformationSource, ServiceArea, UrgencyLevel, MAX_LONG_TEXT_CHARS, MAX_MEDIUM_TEXT_CHARS,
     MAX_MULTISELECT_CHOICES, MAX_NARRATIVE_CHARS, MAX_SHORT_TEXT_CHARS, SAFETY_WARNING,
 };
@@ -1094,6 +1096,156 @@ fn AddendaList(note: CaseNoteDetail) -> impl IntoView {
         .into_any()
 }
 
+/// The note's filed document in the case's SharePoint `Case Notes` folder.
+///
+/// The document is the record as a person reads it, and the library is where it
+/// lives — so this panel only ever *links* to it. Download goes through the same
+/// case-documents route as every other case file, and "Open in SharePoint" goes
+/// straight to the library.
+#[component]
+fn FiledRecordPanel(note_id: String, case_id: String, can_file: bool) -> impl IntoView {
+    let note_sv = StoredValue::new(note_id);
+    let case_sv = StoredValue::new(case_id);
+    let document = RwSignal::new(None::<CaseNoteDocument>);
+    let loading = RwSignal::new(true);
+    let busy = RwSignal::new(false);
+    let error = RwSignal::new(String::new());
+
+    Effect::new(move |_| {
+        let id = note_sv.get_value();
+        if id.is_empty() {
+            return;
+        }
+        loading.set(true);
+        spawn_local(async move {
+            match load_case_note_document(id).await {
+                Ok(found) => {
+                    document.set(Some(found));
+                    error.set(String::new());
+                }
+                Err(e) => error.set(err_text(e)),
+            }
+            loading.set(false);
+        });
+    });
+
+    let file_now = move |_| {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        error.set(String::new());
+        let id = note_sv.get_value();
+        spawn_local(async move {
+            match file_case_note_document(id).await {
+                Ok(found) => document.set(Some(found)),
+                Err(e) => error.set(err_text(e)),
+            }
+            busy.set(false);
+        });
+    };
+
+    let body = move || {
+        if loading.get() {
+            return view! { <Loading label="Checking the filed record\u{2026}" /> }.into_any();
+        }
+        let Some(doc) = document.get() else {
+            return ().into_any();
+        };
+        if !doc.is_filed() {
+            return view! {
+                <div class="space-y-3">
+                    <p class="text-sm text-slate-400">
+                        "This note has not been written to the case's Case Notes folder yet. \
+                         Filing runs in the background just after a note is finalized, so this \
+                         usually clears on its own within a few seconds."
+                    </p>
+                    <Show when=move || can_file>
+                        <button
+                            type="button"
+                            prop:disabled=move || busy.get()
+                            on:click=file_now
+                            class="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                        >
+                            {move || if busy.get() { "Filing\u{2026}" } else { "File it now" }}
+                        </button>
+                    </Show>
+                </div>
+            }
+            .into_any();
+        }
+
+        let download_href = format!(
+            "/api/cases/{}/documents/download?path={}",
+            case_sv.get_value(),
+            encode_query(&doc.path)
+        );
+        let web_url = doc.web_url.clone();
+        let has_web_url = !web_url.is_empty();
+        let stale = !doc.is_current;
+        view! {
+            <div class="space-y-3">
+                <div>
+                    <p class="text-sm font-medium text-slate-200">{doc.file_name.clone()}</p>
+                    <p class="mt-1 text-xs text-slate-500">
+                        "In this case's Case Notes folder · filed " {doc.filed_at.clone()}
+                    </p>
+                </div>
+                <Show when=move || stale>
+                    <p class="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                        "An addendum was added after this document was written. The document is \
+                         being written again; reload in a moment to get the complete record."
+                    </p>
+                </Show>
+                <div class="flex flex-wrap gap-2">
+                    <a
+                        href=download_href
+                        class="rounded-lg border border-primary-500/40 px-3 py-1.5 text-sm font-medium text-primary-300 hover:bg-primary-500/10"
+                    >
+                        "Download"
+                    </a>
+                    <Show when=move || has_web_url>
+                        <a
+                            href=web_url.clone()
+                            target="_blank"
+                            rel="noreferrer"
+                            class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800"
+                        >
+                            "Open in SharePoint"
+                        </a>
+                    </Show>
+                    <Show when=move || can_file && stale>
+                        <button
+                            type="button"
+                            prop:disabled=move || busy.get()
+                            on:click=file_now
+                            class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                        >
+                            {move || if busy.get() { "Filing\u{2026}" } else { "Write it again now" }}
+                        </button>
+                    </Show>
+                </div>
+            </div>
+        }
+        .into_any()
+    };
+
+    view! {
+        <section class=PANEL_CLASS>
+            <h2 class="text-sm font-semibold text-slate-200">"Filed record"</h2>
+            <p class="mt-1 text-xs text-slate-500">
+                "Every finalized note is filed as a Word document in this case's Case Notes \
+                 folder, alongside the rest of the case's paperwork. That folder is where the \
+                 document lives."
+            </p>
+            <div class="mt-3">{body}</div>
+            <Show when=move || !error.get().is_empty()>
+                <p class="mt-3 text-sm text-rose-300">{move || error.get()}</p>
+            </Show>
+        </section>
+    }
+}
+
 #[component]
 pub fn NewCaseNotePage() -> impl IntoView {
     let state = expect_context::<AppState>();
@@ -1534,6 +1686,7 @@ pub fn CaseNoteDetailPage() -> impl IntoView {
                         <h2 class="text-sm font-semibold text-slate-200">"Legacy shared note"</h2>
                         <p class="mt-3 whitespace-pre-wrap text-sm text-slate-200">{value_or_placeholder(detail.legacy_body.clone())}</p>
                     </section>
+                    <FiledRecordPanel note_id=detail.id.clone() case_id=detail.case_id.clone() can_file=can_add_to_case.get() />
                     <section class=PANEL_CLASS>
                         <h2 class="text-sm font-semibold text-slate-200">"Addenda"</h2>
                         <div class="mt-3 space-y-3"><AddendaList note=detail.clone() /></div>
@@ -1548,6 +1701,7 @@ pub fn CaseNoteDetailPage() -> impl IntoView {
             view! {
                 <div class="space-y-4">
                     <StructuredNoteReadOnly draft=detail.draft.clone() total_minutes=detail.total_minutes />
+                    <FiledRecordPanel note_id=detail.id.clone() case_id=detail.case_id.clone() can_file=can_add_to_case.get() />
                     <section class=PANEL_CLASS>
                         <h2 class="text-sm font-semibold text-slate-200">"Addenda"</h2>
                         <div class="mt-3 space-y-3"><AddendaList note=detail.clone() /></div>

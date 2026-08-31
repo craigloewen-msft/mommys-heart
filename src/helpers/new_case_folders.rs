@@ -24,7 +24,12 @@ pub struct NewCaseFolder {
 pub const NEW_CASE_FOLDERS: &[NewCaseFolder] = &[
     NewCaseFolder {
         name: "Case Notes",
-        visibility: Visibility::Shared,
+        // Volunteer-only, because this is where a finalized Case Note's filed
+        // document lands. Structured Case Notes are staff-only records (the
+        // server refuses to show a client one at all), and audience is decided
+        // by the top-level folder — so a shared folder here would hand the
+        // client the team's working record.
+        visibility: Visibility::VolunteerOnly,
         children: &[],
     },
     NewCaseFolder {
