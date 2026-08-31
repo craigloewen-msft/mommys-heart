@@ -1,10 +1,9 @@
 //! Generic per-identifier throttling for auth endpoints (SSR only).
 //!
-//! Originally added to brute-force-protect the password step of
-//! [`crate::server_fns::auth::login`]; now shared by any auth action that can be
-//! hammered (e.g. password-reset email requests). Each counter is namespaced by
-//! an [`Action`] so, for example, spamming reset requests cannot lock out login
-//! and vice versa.
+//! Shared by any auth action that can be hammered — the password step of
+//! [`crate::server_fns::auth::login`], password-reset email requests. Each
+//! counter is namespaced by an [`Action`] so, for example, spamming reset
+//! requests cannot lock out login and vice versa.
 //!
 //! Failures accumulate per (action, normalized identifier); once
 //! [`MAX_ATTEMPTS`] pile up the identifier is locked for [`LOCKOUT_MINUTES`].

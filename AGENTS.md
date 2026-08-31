@@ -72,13 +72,6 @@ cargo-leptos. The two build different feature sets (SSR binary vs hydrate WASM
 lib), so they invalidate each other's fingerprints and alternating between them
 makes both noticeably slower.
 
-### The old per-checkout script
-
-`etc/dev.sh` is retired to `etc/archived/dev.sh`. It gave every checkout its own
-containers, ports and baked seed image; Kingdom's shared resources do that job
-now. Nothing calls it, and its `build` / `run` / `reset` / `clean` / `--`
-commands and the `MH_READY` signal no longer exist.
-
 ## Cargo tests
 
 This repo does not make use of any `cargo test` functionality so do not write any. If you need any to test your own code then feel free to write it, use it for temporary testing, but then remove it when it is time for the user to review and you are done your task.

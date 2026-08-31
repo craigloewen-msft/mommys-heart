@@ -120,9 +120,8 @@ impl AccountRole {
     /// The SQL role list matching [`has_volunteer_privileges`], for the queries
     /// that must decide "is this account staff?" in the database.
     ///
-    /// Written positively and kept in one place on purpose. These predicates
-    /// used to read `role <> 'client'`, which quietly counted a deactivated
-    /// account as staff once that role existed.
+    /// Written positively and kept in one place on purpose: a negative test
+    /// would quietly count a deactivated account as staff.
     ///
     /// [`has_volunteer_privileges`]: AccountRole::has_volunteer_privileges
     pub const STAFF_ROLES_SQL: &'static str = "('volunteer', 'operations_admin', 'site_admin')";

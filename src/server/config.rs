@@ -1,8 +1,7 @@
 //! Azure OpenAI + RAG configuration, read from the environment (SSR only).
 //!
-//! Mirrors the legacy Python `app/config.py` settings. Everything is optional so
-//! the server boots and degrades gracefully when Azure OpenAI is not configured
-//! (e.g. local development without credentials).
+//! Everything is optional so the server boots and degrades gracefully when
+//! Azure OpenAI is not configured (e.g. local development without credentials).
 
 /// Azure OpenAI connection + deployment settings.
 #[derive(Clone, Debug)]
@@ -16,8 +15,8 @@ pub struct AzureConfig {
 }
 
 impl AzureConfig {
-    /// Read configuration from the environment, applying the same defaults as
-    /// the legacy Python app.
+    /// Read configuration from the environment, falling back to the defaults
+    /// below.
     pub fn from_env() -> Self {
         Self {
             endpoint: env("AZURE_OPENAI_ENDPOINT", ""),

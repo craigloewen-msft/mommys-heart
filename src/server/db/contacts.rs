@@ -255,22 +255,6 @@ pub async fn for_user(user_id: &str) -> Result<Option<Contact>, sqlx::Error> {
     Ok(row.map(Into::into))
 }
 
-/// Active contacts as `(id, label)` for legacy pickers.
-pub async fn active_options() -> Result<Vec<(String, String)>, sqlx::Error> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT c.id,
-                btrim(coalesce(nullif(c.preferred_name, ''), c.first_name) || ' ' || c.last_name)
-                  || coalesce(' (' || nullif(o.name, '') || ')', '')
-         FROM contacts c
-         LEFT JOIN organizations o ON o.id = c.organization_id
-         WHERE NOT c.archived
-         ORDER BY lower(c.last_name) ASC, lower(c.first_name) ASC",
-    )
-    .fetch_all(pool())
-    .await?;
-    Ok(rows)
-}
-
 /// Active contacts for typeahead pickers, with only the fields the picker needs.
 pub async fn search_active(
     query: &str,

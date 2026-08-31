@@ -155,16 +155,6 @@ pub async fn get(id: &str) -> Result<Option<Organization>, sqlx::Error> {
     Ok(row.map(Into::into))
 }
 
-/// Every organization that may still be chosen, for legacy pickers.
-pub async fn active_options() -> Result<Vec<(String, String)>, sqlx::Error> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT id, name FROM organizations WHERE NOT archived ORDER BY lower(name) ASC",
-    )
-    .fetch_all(pool())
-    .await?;
-    Ok(rows)
-}
-
 /// Active organizations for typeahead pickers, with only the fields the picker needs.
 pub async fn search_active(
     query: &str,

@@ -37,9 +37,8 @@ coded_enum!(AdminActivitySubject {
 /// Audit `field` values on a case that are *not* case information edits: each
 /// belongs to a more specific category, or to no category at all.
 ///
-/// `evidence` is the historical name for `document`, written by the blob-backed
-/// implementation whose audit rows outlived it. Both are listed so the feed
-/// keeps showing activity recorded before case files moved to SharePoint.
+/// A case file is audited as either `document` or `evidence`, so both are
+/// listed here.
 const CASE_DOCUMENT_FIELDS: &[&str] = &["document", "folder", "evidence"];
 const CASE_CONTACT_FIELDS: &[&str] = &["case contact"];
 /// Chat and transcript activity has its own notification category

@@ -4,7 +4,7 @@ use axum::http::{header, Method};
 use tower_http::cors::{Any, CorsLayer};
 
 /// CORS policy for the API, driven by `ALLOWED_ORIGINS` (comma-separated, or
-/// `*` for any origin) — parity with the legacy FastAPI CORSMiddleware.
+/// `*` for any origin).
 pub fn cors_layer() -> CorsLayer {
     let origins = std::env::var("ALLOWED_ORIGINS").unwrap_or_else(|_| "*".into());
     let layer = CorsLayer::new()

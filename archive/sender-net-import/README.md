@@ -50,9 +50,7 @@ DATABASE_URL="postgres://user:pass@host:5432/db?sslmode=require" \
 
 > **Always pass `DATABASE_URL` explicitly**, as above. This tool writes to
 > whichever database it is given, so an ambiguous environment is the one thing
-> that could point a production import at a local container. (The old
-> `etc/dev.sh --` wrapper, which sourced `.env.local` and would have overwritten
-> `DATABASE_URL`, is archived and no longer exists.)
+> that could point a production import at a local container.
 
 **Idempotent by email.** A contact whose address already exists is skipped, so an
 interrupted run is resumed by re-running it. Verified twice: a second full run

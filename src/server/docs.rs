@@ -1,13 +1,9 @@
 //! `.docx` document viewer + download (SSR only).
 //!
-//! Faithful Rust port of the legacy Python `app/viewer.py`. Renders a `.docx`
-//! file as a styled HTML page (with heading anchors, bold/italic/underline runs,
-//! lists and tables) so the chat widget's "Read more" links resolve to a
-//! readable page, and serves the original `.docx` for the "Download" links.
-//!
-//! On `main` these were served at `/docs/{filename}` and
-//! `/docs/{filename}/download`; here they live under `/api/docs/*` alongside the
-//! rest of the JSON API, but produce byte-for-byte equivalent output.
+//! Renders a `.docx` file as a styled HTML page (with heading anchors,
+//! bold/italic/underline runs, lists and tables) so the chat widget's "Read
+//! more" links resolve to a readable page, and serves the original `.docx` for
+//! the "Download" links.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -21,7 +17,7 @@ use crate::server::rag::documents::slugify;
 pub const DOCX_MIME: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-/// Directory holding the `.docx` corpus (mirrors the Python `DOCS_DIR` setting).
+/// Directory holding the `.docx` corpus, from the `DOCS_DIR` setting.
 fn docs_dir() -> String {
     std::env::var("DOCS_DIR")
         .ok()
@@ -32,8 +28,7 @@ fn docs_dir() -> String {
 /// Resolve a request path to a safe `.docx` file inside [`docs_dir`].
 ///
 /// Guards against path traversal: only a bare filename (no separators) ending
-/// in `.docx` and pointing at an existing file is accepted, matching the
-/// Python download guard.
+/// in `.docx` and pointing at an existing file is accepted.
 fn safe_docx_path(filename: &str) -> Option<PathBuf> {
     let base = Path::new(filename)
         .file_name()?
@@ -61,7 +56,7 @@ pub fn read_docx_bytes(filename: &str) -> Option<(Vec<u8>, String)> {
 }
 
 /// Render a `.docx` file as a full styled HTML page, or `None` if it does not
-/// exist. Port of Python `render_docx_to_html`.
+/// exist.
 pub fn render_docx_to_html(filename: &str) -> Option<String> {
     let path = safe_docx_path(filename)?;
     let xml = read_document_xml(&path).ok()?;
@@ -103,8 +98,7 @@ fn read_document_xml(filepath: &Path) -> Result<String, String> {
 
 /// Walk the WordprocessingML body in order, emitting HTML blocks for top-level
 /// paragraphs (headings / list items / paragraphs, preserving run formatting)
-/// and top-level tables — the same elements `python-docx` exposes via
-/// `doc.element.body`.
+/// and top-level tables.
 fn render_body(xml: &str) -> Result<String, String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
@@ -225,8 +219,8 @@ fn render_body(xml: &str) -> Result<String, String> {
                 b"p" => {
                     in_para = false;
                     if let Some(cell) = cell_stack.last_mut() {
-                        // Paragraph inside a table cell: join with newlines like
-                        // python-docx `cell.text`, don't emit as a block.
+                        // Paragraph inside a table cell: joined with newlines
+                        // rather than emitted as a block.
                         if !cell.is_empty() {
                             cell.push('\n');
                         }
@@ -257,8 +251,8 @@ fn render_body(xml: &str) -> Result<String, String> {
                 }
                 b"tbl" => {
                     if let Some(table) = table_stack.pop() {
-                        // Only top-level tables are rendered (python-docx
-                        // `doc.tables` excludes nested tables).
+                        // Only top-level tables are rendered; a nested table
+                        // stays part of its parent cell's text.
                         if table_stack.is_empty() {
                             out.push(table_to_html(&table));
                         }
@@ -287,8 +281,7 @@ fn set_heading(e: &BytesStart, in_para: bool, is_heading: &mut bool, level: &mut
     }
 }
 
-/// Emit the HTML for one top-level paragraph. Port of the per-paragraph branch
-/// in Python `render_docx_to_html`.
+/// Emit the HTML for one top-level paragraph.
 fn emit_paragraph(
     out: &mut Vec<String>,
     para_plain: &str,
@@ -322,8 +315,7 @@ fn emit_paragraph(
     }
 }
 
-/// Render a paragraph's runs to HTML, preserving bold/italic/underline. Port of
-/// Python `_para_to_html`.
+/// Render a paragraph's runs to HTML, preserving bold/italic/underline.
 fn runs_to_html(runs: &[Run]) -> String {
     let mut s = String::new();
     for r in runs {
@@ -345,8 +337,8 @@ fn runs_to_html(runs: &[Run]) -> String {
     s
 }
 
-/// Render a table (rows of cell texts) to an HTML table. Port of Python
-/// `_table_to_html`: the first row is a header row.
+/// Render a table (rows of cell texts) to an HTML table; the first row is a
+/// header row.
 fn table_to_html(table: &[Vec<String>]) -> String {
     let mut rows = String::new();
     for (i, row) in table.iter().enumerate() {
@@ -361,7 +353,7 @@ fn table_to_html(table: &[Vec<String>]) -> String {
     format!("<table>{rows}</table>")
 }
 
-/// Escape the HTML entities Python's viewer escapes (`&`, `<`, `>`).
+/// Escape the HTML entities that matter in document text (`&`, `<`, `>`).
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -369,7 +361,7 @@ fn escape_html(s: &str) -> String {
 }
 
 /// Extract a heading level from a style name like "Heading2" (capped at 6,
-/// defaulting to 2). Port of the Python `re.search(r'(\d+)', style_name)` logic.
+/// defaulting to 2): the first digit in the style name.
 fn heading_level_from(style: &str) -> u8 {
     style
         .chars()
@@ -406,7 +398,7 @@ fn attr_val(e: &BytesStart, want: &[u8]) -> Option<String> {
     })
 }
 
-/// The page shell, mirroring the Python viewer's HTML/CSS exactly.
+/// The page shell wrapped around the rendered document.
 const PAGE_TEMPLATE: &str = r#"<!DOCTYPE html>
 <html lang="en">
 <head>

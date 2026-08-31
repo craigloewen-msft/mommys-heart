@@ -26,23 +26,9 @@ files are a bug.
   a material choice, its alternatives, and its consequences. ADRs are history:
   they are not updated when the system changes, they are superseded.
 
-## Why this shape
-
-This folder previously held per-feature `requirements.md`, `.allium` lifecycle
-specs, and `executive.md` status files. That was the right structure while the
-MVP was being specified and nothing existed yet.
-
-Once the work shipped, those files described the same shipped behavior three
-times over, which is how documentation starts to drift and then to lie. The
-reasoning behind consolidating them is recorded in
-[ADR-0006](adr/ADR-0006-documentation-lifecycle.md).
-
-Requirements for *future* work still get written — in the task file for that
-work, under `tasks/`, where they are actually used.
-
 ## Requirement identifiers
 
-Stable IDs are still referenced from code comments and task files:
+Stable IDs are referenced from code comments:
 
 - `REQ-MSG-001`–`009` — secure messaging
 - `REQ-CN-001`–`011` — structured Case Notes
@@ -51,7 +37,7 @@ Stable IDs are still referenced from code comments and task files:
 - `REQ-CRM-049`–`053` — specified future CRM workflow increments
 - `REQ-SEC-001`–`005` — authentication, browser-request, and case-document safeguards
 - `REQ-OPS-001`–`004` — operational approval and release evidence
-- `REQ-DOC-001`–`004` — documentation (see ADR-0006 for what changed)
+- `REQ-DOC-001`–`004` — documentation
 
 ## Documentation and RAG isolation
 
@@ -63,4 +49,4 @@ This folder is **not** part of the client-facing document corpus.
 - Editing anything here changes internal documentation only. It does not change
   any `.docx`, and it does not change the assistant's grounded sources.
 
-That boundary is deliberate (`REQ-DOC-004`) and still holds.
+That boundary is deliberate (`REQ-DOC-004`).

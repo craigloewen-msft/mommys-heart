@@ -126,9 +126,8 @@ async fn resolve_folder(
         None => {}
     }
 
-    // The case's folder, created now if this case never had one — a case from
-    // before this feature existed, or one whose provisioning could not reach the
-    // library at the time.
+    // The case's folder, created now if this case has none yet — provisioning
+    // may never have reached the library.
     let folder = sharepoint::sync::ensure_folder_ref(case_id)
         .await
         .map_err(ServerFnError::new)?;
