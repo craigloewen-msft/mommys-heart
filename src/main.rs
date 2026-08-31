@@ -58,15 +58,20 @@ async fn main() {
         panic!("failed to initialize database: {e}");
     }
 
-    // Configure Azure Blob Storage for evidence uploads. Outside production an
-    // unreachable or misconfigured emulator only disables uploads, matching the
-    // RAG pipeline; production still fails fast, where storage is required.
-    if let Err(e) = mommys_heart_app::server::storage::init().await {
+    // Configure the SharePoint document library that holds case files. Outside
+    // production a missing or unreachable library is not fatal: the store falls
+    // back to an on-disk directory so the feature still works locally.
+    // Production fails fast, where the real library is required.
+    if let Err(e) = mommys_heart_app::server::sharepoint::init().await {
         if mommys_heart_app::server::config::is_production() {
-            panic!("failed to initialize evidence storage: {e}");
+            panic!("failed to initialize case documents: {e}");
         }
-        tracing::warn!("evidence storage unavailable; uploads disabled: {e}");
+        tracing::warn!("case documents unavailable: {e}");
     }
+
+    // Give cases that have no document folder yet one, in the background. Covers
+    // cases created while the library was unreachable, and any that predate it.
+    mommys_heart_app::server::sharepoint::sync::start_provisioning_backfill();
 
     // Kick off document ingestion in the background so the server starts
     // serving immediately; the RAG store fills in once embeddings complete.
@@ -112,8 +117,8 @@ async fn main() {
         // The dedicated JSON API (+ CORS for the cross-origin Squarespace widget).
         .merge(api::router::<LeptosOptions>().layer(api::cors_layer()));
 
-    // Wire the evidence HTTP surface
-    let app = server_fns::evidence::install(app);
+    // Wire the case-documents HTTP surface
+    let app = server_fns::documents::install(app);
     let app = api::message_transcripts::install(app)
         .fallback(leptos_axum::file_and_error_handler(shell))
         // The security layer is outermost so it covers SSR, RPC, and REST responses.

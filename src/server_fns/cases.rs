@@ -1,7 +1,7 @@
 //! Case server functions: creation, edits, notes, and the per-case chat. Each
 //! operation resolves the caller and checks the required capability before
 //! touching the database. (A case's files live in
-//! [`crate::server_fns::evidence`] and its properties in
+//! [`crate::server_fns::documents`] and its properties in
 //! [`crate::server_fns::case_properties`].)
 
 use leptos::prelude::*;
@@ -9,9 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::helpers::case_intake::CaseIntake;
 use crate::server_fns::capabilities::CaseCapability;
-use crate::server_fns::case_folders::CaseFolder;
 use crate::server_fns::case_properties::CaseProperty;
-use crate::server_fns::evidence::Evidence;
 use crate::server_fns::message::{Message, MessageTranscriptExport};
 use crate::server_fns::pagination::Page;
 
@@ -172,13 +170,15 @@ pub struct Case {
     /// Case notes, newest last.
     #[serde(default)]
     pub notes: Vec<CaseNote>,
-    /// Evidence gathered for this case.
+    /// Link to this case's folder in SharePoint, for "open in SharePoint".
+    /// Empty until the folder has been created.
     #[serde(default)]
-    pub evidence: Vec<Evidence>,
-    /// The folders the evidence is organized into, creation order. Only the
-    /// folders the viewer may see are included.
+    pub documents_web_url: String,
+    /// Whether the case's documents folder exists yet. `false` means
+    /// provisioning has not run or could not reach the library, and the case
+    /// page offers to create it.
     #[serde(default)]
-    pub folders: Vec<CaseFolder>,
+    pub documents_ready: bool,
     /// Free-form case properties (e.g. "Opposing attorney" -> "J. Smith").
     #[serde(default)]
     pub properties: Vec<CaseProperty>,
@@ -204,7 +204,7 @@ pub struct Case {
 
 /// A sparse view of a case for list/directory screens: the header fields only
 /// (id, name, status, owner id + resolved owner name, and chat message count),
-/// with none of the heavy sub-resources (notes, evidence, properties, audit
+/// with none of the heavy sub-resources (notes, properties, audit
 /// log). Shared by the DB layer that produces it and the pages that render it,
 /// so it is defined exactly once.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

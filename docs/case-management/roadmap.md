@@ -20,8 +20,8 @@ scheduled, because scheduling them would imply the decision has been made.
 
 ### 3.0 Production approval gates
 
-Engineering safeguards for MFA, credential reset, browser requests, evidence
-scanning, stable actor attribution, funding audit, and collection scaling are
+Engineering safeguards for MFA, credential reset, browser requests, case-document
+validation, stable actor attribution, funding audit, and collection scaling are
 delivered. Production approval remains blocked until the organization supplies
 the owners and evidence in
 [`../operations/production-readiness.md`](../operations/production-readiness.md):
@@ -112,7 +112,7 @@ Structured time and service units allocated against funding sources.
 Attach or link supporting material to notes and messages; render an immutable
 record as a portable document.
 
-- **Depends on:** safe file storage, malware scanning, and a stable PDF template.
+- **Depends on:** the case document library and a stable PDF template.
 - **Open questions:** which file types are acceptable? Must a generated PDF
   include every addendum and audit marker?
 

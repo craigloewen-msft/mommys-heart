@@ -3,7 +3,7 @@
 //! logins keep working. Runs only when the database is empty.
 
 use crate::server::auth::hash_password;
-use crate::server::db::{case_folders, case_properties, channels, ids, messages, pool, users};
+use crate::server::db::{case_properties, channels, ids, messages, pool, users};
 use crate::server_fns::audit::ChangeLogEntry;
 use crate::server_fns::channels::{ChannelKind, DEFAULT_CHANNEL_NAME, VOLUNTEER_CHANNEL_NAME};
 use crate::server_fns::users::{AccountRole, User};
@@ -29,7 +29,7 @@ pub async fn reseed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // resets the audit_log sequence so ids are reproducible across reseeds.
     sqlx::query(
         "TRUNCATE users, sessions, grants, cases, case_properties, case_notes,
-                  case_note_addenda, case_note_audit_log, evidence, case_folders,
+                  case_note_addenda, case_note_audit_log, case_document_permissions,
                   case_channels, messages, case_assignments, audit_log,
                   organizations, contacts, contact_properties, organization_properties,
                   contact_category_assignments, contact_communications,
@@ -175,11 +175,15 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         channels::create_defaults(&mut conn, &c.id).await?;
         drop(conn);
 
-        // Seeded cases carry the same folders and intake/outtake fields a case
-        // created through the app gets, so the demo data shows what a real case
+        // Seeded cases carry the same intake/outtake fields a case created
+        // through the app gets, so the demo data shows what a real case
         // actually looks like rather than a simplified version of one.
+        //
+        // Their document folders are not created here: those live in the
+        // SharePoint library, and seeding must not depend on — or write to — an
+        // external service. The startup backfill provisions them once the
+        // server is running.
         let mut tx = pool.begin().await?;
-        case_folders::create_for_new_case(&mut tx, &c.id).await?;
         case_properties::add_for_new_case(&mut tx, &c.id, c.properties.iter().cloned()).await?;
         tx.commit().await?;
 
@@ -193,32 +197,6 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .bind(&n.author)
             .bind(&n.body)
             .bind(&n.created_at)
-            .execute(pool)
-            .await?;
-        }
-
-        // The hand-written demo files are the client-facing kind, so they go in
-        // a folder the client can see.
-        let mut tx = pool.begin().await?;
-        let folder = case_folders::find_by_path_in(&mut tx, &c.id, &["Supporting Documents"])
-            .await?
-            .ok_or(sqlx::Error::RowNotFound)?;
-        tx.commit().await?;
-        for e in &c.evidence {
-            sqlx::query(
-                "INSERT INTO evidence
-                    (id, case_id, name, uploaded_by, uploaded_at, description,
-                     folder_id, visibility)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-            )
-            .bind(&e.id)
-            .bind(&c.id)
-            .bind(&e.name)
-            .bind(&e.uploaded_by)
-            .bind(&e.uploaded_at)
-            .bind(&e.description)
-            .bind(&folder.id)
-            .bind(folder.visibility.slug())
             .execute(pool)
             .await?;
         }
@@ -302,7 +280,6 @@ async fn advance_id_sequence() -> Result<(), sqlx::Error> {
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0)
                 FROM case_note_audit_log
                 WHERE split_part(id, '-', 2) ~ '^[0-9]+$'),
-             (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM evidence),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM case_channels),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM messages),
              (SELECT COALESCE(max(split_part(id, '-', 2)::bigint), 0) FROM audit_log),

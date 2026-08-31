@@ -470,10 +470,14 @@ pub async fn set_user_role(user_id: String, role: AccountRole) -> Result<(), Ser
         })?;
     if changed {
         crate::server::notifications::notify_account_permissions_changed(
-            user_id,
+            user_id.clone(),
             actor.full_name(),
             format!("changed your account role to {}", role.label()),
         );
+        // A role change moves the volunteer-only line: a volunteer demoted to
+        // client must lose those folders, and a client promoted must gain them.
+        // The audience is an account-role gate, so nothing else would catch it.
+        sync_document_access_for_user(&user_id).await;
     }
     Ok(())
 }
@@ -535,12 +539,46 @@ pub async fn set_account_deactivated(
     if changed && !deactivated {
         // Only worth telling someone whose account just came back.
         crate::server::notifications::notify_account_permissions_changed(
-            user_id,
+            user_id.clone(),
             actor.full_name(),
             "reactivated your account".to_string(),
         );
     }
+    if changed {
+        // A retired account keeps its assignments, so the cases to re-sync have
+        // to come from what was actually granted rather than from capabilities.
+        // Deactivating withdraws every invitation; reactivating restores them.
+        sync_document_access_for_user(&user_id).await;
+    }
     Ok(())
+}
+
+/// Re-reconcile document sharing on every case a user is involved with.
+///
+/// Used when something about the *account* changes rather than a single
+/// assignment — deactivation and reactivation — where the set of affected cases
+/// is not named by the request.
+#[cfg(feature = "ssr")]
+async fn sync_document_access_for_user(user_id: &str) {
+    use crate::server::db::case_documents;
+
+    // Cases they still hold an invitation on, plus cases they are assigned to:
+    // the first covers revoking, the second covers restoring.
+    let mut case_ids = case_documents::case_ids_granted_to(user_id)
+        .await
+        .unwrap_or_default();
+    if let Ok(user) = crate::server::db::users::get(user_id).await {
+        if let Some(user) = user {
+            for assignment in &user.assigned_cases {
+                if !case_ids.contains(&assignment.case_id) {
+                    case_ids.push(assignment.case_id.clone());
+                }
+            }
+        }
+    }
+    for case_id in case_ids {
+        crate::server::sharepoint::sync_case_access(case_id);
+    }
 }
 
 /// Grant or revoke access to Contacts, Organizations, and Funding information.
@@ -599,6 +637,8 @@ pub async fn assign_case(
             case_id.clone(),
         );
     }
+    // Bring the document library's sharing in line with the new capability set.
+    crate::server::sharepoint::sync_case_access(case_id);
     Ok(())
 }
 
@@ -617,7 +657,9 @@ pub async fn toggle_capability(
     require_case_access_management(&actor, &user_id)?;
     users::toggle_capability(&user_id, &case_id, capability, enabled, &actor.full_name())
         .await
-        .map_err(ServerFnError::new)
+        .map_err(ServerFnError::new)?;
+    crate::server::sharepoint::sync_case_access(case_id);
+    Ok(())
 }
 
 /// Remove a user's assignment to a case entirely.
@@ -630,7 +672,10 @@ pub async fn unassign_case(user_id: String, case_id: String) -> Result<(), Serve
     require_case_access_management(&actor, &user_id)?;
     users::unassign(&user_id, &case_id, &actor.full_name())
         .await
-        .map_err(ServerFnError::new)
+        .map_err(ServerFnError::new)?;
+    // Withdraws every invitation this user held on the case.
+    crate::server::sharepoint::sync_case_access(case_id);
+    Ok(())
 }
 
 /// Apply a batch of per-case capability changes for one user in a single
@@ -673,6 +718,9 @@ pub async fn save_case_capabilities(
                 .await
                 .map_err(ServerFnError::new)?,
         }
+        // Every branch changes what this user may reach, so both grants and
+        // revocations are reconciled the same way.
+        crate::server::sharepoint::sync_case_access(case_id);
     }
     Ok(())
 }

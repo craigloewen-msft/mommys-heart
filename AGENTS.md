@@ -2,9 +2,9 @@
 
 ## Running the app
 
-The database and blob storage are **already running**. They are declared in
-`.kingdom/services.toml` and Kingdom IDE raises them while any agent is working
-on this project. There is nothing to start and nothing to configure:
+The database is **already running**. It is declared in `.kingdom/services.toml`
+and Kingdom IDE raises it while any agent is working on this project. There is
+nothing to start and nothing to configure:
 
 ```bash
 cargo leptos build     # compile (slow the first time)
@@ -23,9 +23,12 @@ rather than this one. That is harmless: the served HTML derives every asset URL
 from the build's own output name, so the page is styled and hydrates either way.
 Don't try to "fix" the filenames, and don't hardcode an asset path in the markup.
 
-Evidence storage logging `evidence storage unavailable; uploads disabled` on
-startup is also expected locally, and only disables file upload. Outside
-production the server warns and keeps going; production still fails fast.
+Case documents logging `SharePoint not configured; case documents use the
+on-disk store` on startup is also expected locally. Case files live in a
+SharePoint document library; with no tenant configured the app keeps them in
+`target/sharepoint/` instead, which supports the whole feature — browsing,
+upload, download, and grant/revoke — so there is nothing to set up to work on
+it. Production fails fast rather than falling back.
 
 **These are shared, not yours.** One database serves every agent on this
 project at once. Rows you insert, edit or delete are seen by everybody, and

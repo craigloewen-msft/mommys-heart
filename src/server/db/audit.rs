@@ -510,8 +510,15 @@ fn summarize(field: &str, old_value: &str, new_value: &str) -> String {
         ("case note", "finalize_note") => "finalized a case note".to_string(),
         ("case note", _) => "added an addendum to a case note".to_string(),
         ("properties", _) => "updated the case information".to_string(),
-        ("evidence", _) if old_value.is_empty() => format!("added the file \"{new_value}\""),
-        ("evidence", _) => format!("changed the file \"{new_value}\""),
+        // `evidence` is the historical field name for `document`; rows from the
+        // blob-backed implementation still carry it.
+        ("document" | "evidence", _) if new_value.is_empty() => {
+            format!("removed the file \"{old_value}\"")
+        }
+        ("document" | "evidence", _) if old_value.is_empty() => {
+            format!("added the file \"{new_value}\"")
+        }
+        ("document" | "evidence", _) => format!("changed the file \"{new_value}\""),
         ("folder", _) if old_value.is_empty() => format!("added the folder \"{new_value}\""),
         ("folder", _) => format!("removed the folder \"{old_value}\""),
         ("case contact", _) => format!("{new_value} on the case"),

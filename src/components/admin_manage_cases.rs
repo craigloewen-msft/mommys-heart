@@ -135,7 +135,7 @@ pub fn ManageCases(
     let detail_summary = RwSignal::new(None::<CaseSummary>);
     let detail_loading = RwSignal::new(selected_case_id.get_value().is_some());
     let detail_error = RwSignal::new(None::<String>);
-    let open_folder = RwSignal::new(None::<String>);
+    let open_folder = RwSignal::new(String::new());
     let detail_generation = RwSignal::new(0u64);
 
     Effect::new(move |_| {

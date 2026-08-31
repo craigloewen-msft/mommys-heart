@@ -15,14 +15,3 @@ name   = "db"
 image  = "postgres:16"
 port   = 5432
 volume = "mommys-heart-db"
-
-# Blob storage for case evidence (the Azure Storage emulator).
-# --skipApiVersionCheck: the azure_storage_blob SDK sends a newer x-ms-version
-# than Azurite 3.36 knows, which it rejects outright without this.
-[[service]]
-type   = "docker"
-name   = "storage"
-image  = "mcr.microsoft.com/azure-storage/azurite"
-port   = 10000
-volume = "mommys-heart-blob"
-args   = ["azurite-blob", "--blobHost", "0.0.0.0", "--skipApiVersionCheck"]
