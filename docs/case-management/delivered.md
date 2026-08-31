@@ -165,10 +165,25 @@ Formal internal service records, distinct from chat and from the Change Log.
   bodies and client-reported facts never enter the generic Change Log.
 - The form states plainly that recording an urgent concern does not contact
   emergency services or replace the organization's escalation procedure.
+- **Every finalized note is also filed as a Word document** in its case's
+  `Case Notes` folder in the document library, so a note sits with the rest of
+  that case's paperwork and can be opened, printed, or handed over without the
+  app. The library holds that document; the database keeps only a pointer to it
+  (`case_note_documents`) and no copy of its bytes. It is browsed, downloaded
+  and opened through the ordinary case-documents surface, and the note page
+  links to it under "Filed record".
+- Filing happens **after** the note commits, so an unreachable library can never
+  fail a finalization; a startup pass re-files whatever is missing or out of
+  date. An addendum re-writes the same file, so the filed document is always the
+  whole record including its corrections — and that file cannot be deleted
+  through the app, matching the note's own absence of a delete path.
+- The `Case Notes` folder is **volunteer-only**, because that is where those
+  documents land and structured notes are staff-only records.
 
 **Limits, stated on purpose:** no full 19-section dynamic form, no supervisor
-approval or returned revisions, no automated safety escalation, no attachments or
-PDF output, no field-level sensitivity controls, no cross-case note search.
+approval or returned revisions, no automated safety escalation, no attachments,
+no PDF output (the filed record is `.docx`), no field-level sensitivity controls,
+no cross-case note search.
 
 ---
 
@@ -420,7 +435,9 @@ migrated into contact records.
   and one reconcile pass keeps those invitations matching `case_assignments`.
   Uploads are content-sniffed against a type allowlist and capped at 25 MB, and
   every folder request is addressed by a validated case-relative path rather than
-  a library id. Malware scanning is the tenant's (Microsoft 365 handles it), not
+  a library id. Finalized case notes are filed into each case's volunteer-only
+  `Case Notes` folder and are the one thing in the library the app refuses to
+  delete. Malware scanning is the tenant's (Microsoft 365 handles it), not
   this application's.
 
 **Operational limit:** these engineering safeguards do not approve retention,

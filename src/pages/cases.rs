@@ -10,7 +10,7 @@ use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::components::profile_link::ProfileLink;
-use crate::helpers::format::human_size;
+use crate::helpers::format::{encode_query, human_size};
 use crate::helpers::sections;
 use crate::helpers::visibility::Visibility;
 use crate::pages::case_notes::CaseNotesPanel;
@@ -124,23 +124,6 @@ async fn upload_document_file(
         .await
         .map(|_name| true)
         .map_err(crate::server_fns::err_text)
-}
-
-/// Percent-encode a document path for a query string. Paths carry user-supplied
-/// folder and file names, so everything outside the unreserved set is escaped
-/// rather than trusted to be URL-safe — `/` included, since it is a separator
-/// here and not a path boundary in the URL.
-fn encode_query(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char)
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
 }
 
 fn badge(classes: &str) -> String {

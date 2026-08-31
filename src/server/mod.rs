@@ -5,6 +5,7 @@
 pub mod api;
 pub mod auth;
 pub mod captcha;
+pub mod case_note_records;
 pub mod config;
 pub mod contact_mail;
 pub mod crm_import;

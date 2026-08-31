@@ -414,6 +414,22 @@ pub async fn delete_case_document(case_id: String, path: String) -> Result<(), S
         ));
     }
 
+    // A filed case note record is refused for the same reason a case note has no
+    // delete path at all: the library is where that record lives now, so
+    // deleting the file here would be deleting the note's official document.
+    // Corrections are made by appending an addendum, which re-files it.
+    if segments.len() == 2
+        && segments[0].eq_ignore_ascii_case(sharepoint::CASE_NOTES_FOLDER)
+        && crate::server::db::case_note_documents::is_filed_record(&case_id, &name)
+            .await
+            .unwrap_or(false)
+    {
+        return Err(ServerFnError::new(
+            "This is a case note's filed record and cannot be deleted. \
+             Correct a note by adding an addendum to it.",
+        ));
+    }
+
     let store = sharepoint::store().map_err(ServerFnError::new)?;
 
     // Whether this is a folder is read from the parent's listing rather than

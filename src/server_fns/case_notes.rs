@@ -766,6 +766,34 @@ pub struct CaseNoteAuditEntry {
     pub metadata: String,
 }
 
+/// A case note's filed document, as the browser sees it.
+///
+/// The document itself lives in the case's `Case Notes` folder in the SharePoint
+/// library, so this carries only what is needed to link to it: the app never
+/// serves note documents through a path of its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaseNoteDocument {
+    /// File name in the case's `Case Notes` folder. Empty when nothing is filed.
+    pub file_name: String,
+    /// Path relative to the case folder — what the documents download route and
+    /// the Documents panel address it by.
+    pub path: String,
+    /// Link to the document in SharePoint. Empty for the on-disk store.
+    pub web_url: String,
+    /// When it was filed, pre-formatted.
+    pub filed_at: String,
+    /// Whether the filed document reflects the note as it stands now. False
+    /// while an addendum is waiting to be written into it.
+    pub is_current: bool,
+}
+
+impl CaseNoteDocument {
+    /// Whether anything has been filed at all.
+    pub fn is_filed(&self) -> bool {
+        !self.file_name.is_empty()
+    }
+}
+
 #[server(prefix = "/api")]
 pub async fn case_note_access(case_id: String) -> Result<CaseNoteAccessSummary, ServerFnError> {
     use crate::server::permissions::{capabilities_on, require_user};
@@ -847,6 +875,7 @@ pub async fn create_and_finalize_case_note(
         .map_err(validation_text)?;
     case_notes::create_finalized(&case_id, &user, &finalization)
         .await
+        .map(file_after_finalizing)
         .map_err(ServerFnError::new)
 }
 
@@ -894,6 +923,7 @@ pub async fn finalize_case_note_draft(
         .map_err(validation_text)?;
     case_notes::finalize_draft(&note_id, &user, &finalization)
         .await
+        .map(file_after_finalizing)
         .map_err(ServerFnError::new)
 }
 
@@ -941,9 +971,73 @@ pub async fn add_case_note_addendum(
     require_staff(&user)?;
     let _case_id = authorized_note_case(&user, &note_id, CaseCapability::AddNotes).await?;
     let input = input.validate(&user.full_name()).map_err(validation_text)?;
-    case_notes::add_addendum(&note_id, &user, &input)
+    let addendum = case_notes::add_addendum(&note_id, &user, &input)
         .await
-        .map_err(ServerFnError::new)
+        .map_err(ServerFnError::new)?;
+    // The filed document always carries the whole record, so an addendum means
+    // the document is written again with it included.
+    crate::server::case_note_records::file_note_in_background(note_id);
+    Ok(addendum)
+}
+
+/// Where a note's filed document is, for the note page's "Filed record" panel.
+///
+/// Returns an unfiled document rather than an error when filing has not
+/// happened yet: a note whose library write is still in flight is an ordinary
+/// state a few seconds after finalizing, not a failure.
+#[server(prefix = "/api")]
+pub async fn load_case_note_document(note_id: String) -> Result<CaseNoteDocument, ServerFnError> {
+    use crate::server::case_note_records;
+    use crate::server::db::case_notes;
+    use crate::server::permissions::require_user;
+    use crate::server_fns::capabilities::CaseCapability;
+
+    let user = require_user().await?;
+    require_staff(&user)?;
+    let _case_id = authorized_note_case(&user, &note_id, CaseCapability::ViewCase).await?;
+
+    // Only a note this account may actually read has a document to point at.
+    let Some(detail) = case_notes::get_visible(&note_id, &user, false)
+        .await
+        .map_err(ServerFnError::new)?
+    else {
+        return Ok(CaseNoteDocument::default());
+    };
+
+    let filed = case_note_records::filed_document(&note_id)
+        .await
+        .map_err(ServerFnError::new)?;
+    Ok(match filed {
+        Some(doc) => CaseNoteDocument {
+            path: doc.relative_path(),
+            file_name: doc.file_name.clone(),
+            web_url: doc.web_url.clone(),
+            filed_at: doc.filed_at.clone(),
+            is_current: case_note_records::is_current(&detail, Some(&doc)),
+        },
+        None => CaseNoteDocument::default(),
+    })
+}
+
+/// Write a note's document now, and wait for the outcome.
+///
+/// The retry behind "File it now" when the library was unreachable at
+/// finalization. Awaited rather than spawned precisely because somebody is
+/// watching: the point of pressing it is to be told whether it worked.
+#[server(prefix = "/api")]
+pub async fn file_case_note_document(note_id: String) -> Result<CaseNoteDocument, ServerFnError> {
+    use crate::server::case_note_records;
+    use crate::server::permissions::require_user;
+    use crate::server_fns::capabilities::CaseCapability;
+
+    let user = require_user().await?;
+    require_staff(&user)?;
+    let _case_id = authorized_note_case(&user, &note_id, CaseCapability::AddNotes).await?;
+
+    case_note_records::file_note(&note_id)
+        .await
+        .map_err(|e| ServerFnError::new(format!("Could not file this note: {e}")))?;
+    load_case_note_document(note_id).await
 }
 
 #[server(prefix = "/api")]
@@ -988,6 +1082,18 @@ async fn authorized_note_case(
 #[cfg(feature = "ssr")]
 fn today_local() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// File a just-finalized note's document, without making the author wait for
+/// the library.
+///
+/// The note is already committed and immutable at this point, so a slow or
+/// unreachable SharePoint must not turn a finalized record into an error the
+/// author sees. Whatever this misses, the startup backfill repairs.
+#[cfg(feature = "ssr")]
+fn file_after_finalizing(detail: CaseNoteDetail) -> CaseNoteDetail {
+    crate::server::case_note_records::file_note_in_background(detail.id.clone());
+    detail
 }
 
 #[cfg(feature = "ssr")]
