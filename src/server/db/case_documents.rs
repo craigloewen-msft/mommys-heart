@@ -83,9 +83,8 @@ pub async fn set_folder_ref(
 /// Every case that still has no documents folder.
 ///
 /// Used by the startup reconciler to finish provisioning that a Graph outage
-/// (or a case created before this feature existed) left undone. Ordered by the
-/// numeric part of the id, so the oldest cases are caught up first; `cases` has
-/// no sequence column to order by.
+/// left undone. Ordered by the numeric part of the id, so the oldest cases are
+/// caught up first; `cases` has no sequence column to order by.
 pub async fn unprovisioned_case_ids(limit: i64) -> Result<Vec<String>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT id FROM cases WHERE drive_item_id = ''

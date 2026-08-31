@@ -1,7 +1,7 @@
 //! Cloudflare Turnstile CAPTCHA verification (SSR only).
 //!
-//! Ported from the legacy Python `_verify_captcha`. Returns true when the token
-//! is valid; the caller only invokes this when a secret is configured.
+//! Returns true when the token is valid; the caller only invokes this when a
+//! secret is configured.
 
 const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 

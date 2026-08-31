@@ -255,8 +255,8 @@ pub async fn record_many_in_transaction(
     Ok(())
 }
 
-/// Record a mutation with both stable actor identity and its historical display
-/// snapshot. Legacy callers may continue using [`record_in_transaction`].
+/// As [`record_in_transaction`], but also storing the actor's stable account id
+/// alongside the display-name snapshot.
 pub async fn record_in_transaction_by(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     entity: Entity,
@@ -510,8 +510,8 @@ fn summarize(field: &str, old_value: &str, new_value: &str) -> String {
         ("case note", "finalize_note") => "finalized a case note".to_string(),
         ("case note", _) => "added an addendum to a case note".to_string(),
         ("properties", _) => "updated the case information".to_string(),
-        // `evidence` is the historical field name for `document`; rows from the
-        // blob-backed implementation still carry it.
+        // Audit rows carry either `evidence` or `document` for a case file, so
+        // both are matched here.
         ("document" | "evidence", _) if new_value.is_empty() => {
             format!("removed the file \"{old_value}\"")
         }

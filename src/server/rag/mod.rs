@@ -1,10 +1,9 @@
 //! Retrieval-Augmented Generation pipeline (SSR only).
 //!
-//! Rust port of the legacy Python RAG chatbot (`app/ingest.py` + `app/query.py`).
 //! Documents are parsed, chunked, embedded (Azure OpenAI) and held in an
 //! in-memory [`store::VectorStore`]. `/api/chat` embeds the question, retrieves
 //! the top matches, and asks the chat model to answer — preferring the
-//! documents but falling back to general knowledge, exactly like before.
+//! documents but falling back to general knowledge.
 //!
 //! Everything degrades gracefully: if Azure OpenAI is not configured (no
 //! credentials) the endpoint still responds, just without document grounding.
@@ -33,7 +32,7 @@ pub struct SourceInfo {
     pub anchor: String,
 }
 
-/// Where a chat answer came from — mirrors the legacy Python contract.
+/// Where a chat answer came from.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceType {
@@ -92,8 +91,8 @@ pub struct IngestStats {
 }
 
 /// Spawn a background ingestion task so the server starts serving immediately
-/// while documents are parsed/embedded. Mirrors the Python startup behavior of
-/// degrading gracefully when Azure is unavailable.
+/// while documents are parsed/embedded. An unavailable Azure leaves the
+/// endpoint answering without document grounding.
 pub fn start_background_ingest() {
     tokio::spawn(async {
         match ingest().await {

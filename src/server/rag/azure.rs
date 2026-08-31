@@ -1,7 +1,7 @@
 //! Azure OpenAI REST client (SSR only).
 //!
-//! Direct `reqwest` calls to the Azure OpenAI data-plane API — no SDK. Mirrors
-//! the embedding + chat-completion usage of the legacy Python app.
+//! Direct `reqwest` calls to the Azure OpenAI data-plane API — no SDK. Only the
+//! embedding and chat-completion endpoints are used.
 
 use serde::Deserialize;
 use serde_json::json;
@@ -39,7 +39,7 @@ fn base(cfg: &AzureConfig) -> String {
     cfg.endpoint.trim_end_matches('/').to_string()
 }
 
-/// Embed a batch of texts (batched in groups of 16, like the Python pipeline).
+/// Embed a batch of texts, in groups of [`EMBED_BATCH`].
 pub async fn embed_texts(cfg: &AzureConfig, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
     let client = reqwest::Client::new();
     let url = format!(

@@ -1,9 +1,7 @@
 //! `.docx` extraction and chunking (SSR only).
 //!
-//! Faithful Rust port of the legacy Python `app/ingest.py` text-extraction and
-//! chunking logic. `.docx` is a zip archive; we stream `word/document.xml` with
-//! `quick-xml`, tracking heading styles and table structure the same way
-//! `python-docx` exposed them.
+//! `.docx` is a zip archive; we stream `word/document.xml` with `quick-xml`,
+//! tracking heading styles and table structure.
 
 use std::io::Read;
 use std::path::Path;
@@ -11,7 +9,7 @@ use std::path::Path;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
-/// Approximate chunk size in tokens (chars / 4), matching the Python pipeline.
+/// Approximate chunk size in tokens (chars / 4).
 const CHUNK_SIZE: usize = 500;
 const CHUNK_OVERLAP: usize = 100;
 
@@ -31,9 +29,9 @@ pub struct DocChunk {
     pub filename: String,
 }
 
-/// Extract heading-aware sections from a `.docx` file, mirroring
-/// `python-docx`: top-level body paragraphs first (tracking the current
-/// `Heading*` style), then top-level tables.
+/// Extract heading-aware sections from a `.docx` file: top-level body
+/// paragraphs first (tracking the current `Heading*` style), then top-level
+/// tables.
 pub fn extract_sections(filepath: &Path) -> Result<Vec<Section>, String> {
     let filename = filepath
         .file_name()
@@ -62,8 +60,8 @@ pub fn extract_sections(filepath: &Path) -> Result<Vec<Section>, String> {
         });
     }
 
-    // Tables are appended after all paragraphs (as python-docx iterates them),
-    // so they all carry the heading in effect after the final paragraph.
+    // Tables are appended after all paragraphs, so they all carry the heading in
+    // effect after the final paragraph.
     for table in &tables {
         let mut rows_text = Vec::new();
         for row in table {
@@ -89,7 +87,6 @@ pub fn extract_sections(filepath: &Path) -> Result<Vec<Section>, String> {
 }
 
 /// Group sections into ~`CHUNK_SIZE`-token chunks with `CHUNK_OVERLAP` overlap.
-/// Direct port of Python `_chunk_sections`.
 pub fn chunk_sections(sections: &[Section]) -> Vec<DocChunk> {
     let mut chunks: Vec<DocChunk> = Vec::new();
     // Each entry: (text, heading).
@@ -154,8 +151,8 @@ fn build_chunk(current_chunk: &[(String, String)], filename: &str) -> DocChunk {
     }
 }
 
-/// Convert heading text to a URL-safe anchor slug. Port of Python
-/// `app/viewer.py::slugify`.
+/// Convert heading text to a URL-safe anchor slug, matching the anchors the
+/// document viewer emits.
 pub fn slugify(text: &str) -> String {
     let lower = text.to_lowercase();
     let lower = lower.trim();
@@ -294,8 +291,7 @@ fn parse_document_xml(xml: &str) -> Result<(Vec<ParaAcc>, Vec<Table>), String> {
                 b"p" => {
                     in_para = false;
                     if let Some(cell) = cell_stack.last_mut() {
-                        // Paragraph inside a table cell: join with newlines like
-                        // python-docx `cell.text`.
+                        // Paragraph inside a table cell: joined with newlines.
                         if !cell.is_empty() {
                             cell.push('\n');
                         }
@@ -322,8 +318,8 @@ fn parse_document_xml(xml: &str) -> Result<(Vec<ParaAcc>, Vec<Table>), String> {
                 }
                 b"tbl" => {
                     if let Some(table) = table_stack.pop() {
-                        // Only top-level tables become sections (python-docx
-                        // `doc.tables` excludes nested tables).
+                        // Only top-level tables become sections; a nested table
+                        // stays part of its parent cell's text.
                         if table_stack.is_empty() {
                             tables.push(table);
                         }

@@ -295,8 +295,8 @@ async fn top_folder_id(
 /// Finish provisioning for cases that have no documents folder yet.
 ///
 /// Runs once in the background at startup. A case created while the library was
-/// unreachable, or created before this feature existed, gets its folder here
-/// rather than waiting for somebody to notice and press a button.
+/// unreachable gets its folder here rather than waiting for somebody to notice
+/// and press a button.
 pub fn start_provisioning_backfill() {
     tokio::spawn(async move {
         // Wait a moment so startup logging is not interleaved with this.

@@ -15,7 +15,7 @@ use crate::server_fns::pagination::Page;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChangeLogEntry {
     pub id: String,
-    /// Stable authenticated account id; empty on legacy entries.
+    /// Stable authenticated account id; empty on entries recorded without one.
     #[serde(default)]
     pub actor_user_id: String,
     /// Display name of the actor who made the change.

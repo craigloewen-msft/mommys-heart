@@ -1,9 +1,8 @@
 //! In-memory vector store (SSR only).
 //!
-//! Replaces ChromaDB from the legacy Python app with a simple in-process store:
-//! a `Vec` of embedded chunks searched by cosine similarity. Populated once at
+//! A `Vec` of embedded chunks searched by cosine similarity, populated once at
 //! startup (see `super::ingest`). For the current corpus size this is more than
-//! fast enough and removes the persistent-DB dependency.
+//! fast enough, and it needs no persistent database.
 
 /// An embedded document chunk held in the store.
 #[derive(Clone, Debug)]

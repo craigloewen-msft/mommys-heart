@@ -33,17 +33,6 @@ it has done so, so the feature works locally with nothing to set up. See
 Without Kingdom, any PostgreSQL 16 will do: point `DATABASE_URL` at it and the
 app migrates and seeds on startup.
 
-### Upgrading from the old per-checkout containers
-
-`etc/dev.sh` is archived at `etc/archived/dev.sh` and no longer used. It left
-per-checkout containers and volumes behind, which you can clear once you no
-longer want their data:
-
-```bash
-docker rm -f $(docker ps -aq --filter name='^mh-(db|storage)-') 2>/dev/null
-docker volume rm $(docker volume ls -q --filter name='^mh-(pgdata|blobdata)-') 2>/dev/null
-```
-
 ## View email templates
 
 ```

@@ -81,9 +81,9 @@ is the organization's decision rather than the client's.
 
 ## Case management MVP
 
-The bounded product increment defined by the approved task. It adds secure
-in-app case messaging and structured internal Case Notes without attempting to
-ship the client's entire 19-section request at once.
+The bounded product increment covering secure in-app case messaging and
+structured internal Case Notes, rather than the client's entire 19-section
+request at once.
 
 ## Secure messaging
 
@@ -114,9 +114,8 @@ from chat, the generic Change Log, and historical free-text notes.
 
 ## Legacy note
 
-A migrated historical free-text note preserved in an immutable legacy state. It
-keeps its historical audience instead of silently changing access during MVP
-migration.
+A migrated free-text note preserved in an immutable legacy state. It keeps the
+audience it was written under rather than silently gaining a new one.
 
 ## Draft note
 
@@ -143,12 +142,6 @@ content into the generic Change Log.
 
 The write-once timestamp showing when a specific authorized user first received
 message content from the server.
-
-## Executive status file
-
-A point-in-time summary of scope, delivery state, dependencies, open policy
-questions, and acceptance outcomes. It is intentionally separate from timeless
-requirements.
 
 ## ADR
 

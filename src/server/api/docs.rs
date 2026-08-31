@@ -1,9 +1,7 @@
 //! `GET /api/docs/{filename}` (styled HTML viewer) and
 //! `GET /api/docs/{filename}/download` (original `.docx`).
 //!
-//! These back the chat widget's per-source "Read more" / "Download" links. On
-//! the legacy `main` branch they lived at `/docs/*`; they now sit under
-//! `/api/docs/*` but render identically.
+//! These back the chat widget's per-source "Read more" / "Download" links.
 
 use axum::{
     body::Body,

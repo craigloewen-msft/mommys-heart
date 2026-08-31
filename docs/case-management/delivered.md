@@ -217,9 +217,8 @@ happening on the site?" for administrators.
 - Retention is the audit log's own **10-year** window; the feed adds no separate
   retention because it stores no events.
 
-This work also closed a real gap in the Change Log: creating a case now writes a
-`case / created` audit entry. Previously a case's history began with a change to
-a case that never appeared to have been created.
+Creating a case writes a `case / created` audit entry, so a case's Change Log
+begins with its creation.
 
 **Limits, stated on purpose:** no per-admin unread badge or read state, no
 per-category subscription (the toggle is all-or-nothing), no digest for
@@ -258,9 +257,8 @@ attorneys, court clerks, board members, and emergency contacts.
   reference keeps rendering.
 - A database check requires a last name or an organization, so no nameless row
   can exist.
-- Migration 0019 backfilled one contact per existing account, typed by role, so
-  the directory was populated on first run. The seed does the same, because on a
-  fresh database the migration runs before any user exists.
+- Every account has a person record, typed by role: registration creates one,
+  and the seed does the same for the fixture accounts.
 - The link is visible and navigable from both ends: a person's page shows their
   sign-in account with a link to the profile, and an admin viewing a profile sees
   a "Person record" panel linking back. Linking offers only accounts that have no
@@ -344,8 +342,7 @@ attorneys, court clerks, board members, and emergency contacts.
 
 ### Grants
 
-The two-column `grants` stub from `0001_init.sql` is now a real award record,
-extended in place so existing rows survived.
+A grant is an award record:
 
 - Funder organization, program-officer contact, status, amounts requested and
   awarded, application and decision dates, period, purpose, reporting cadence,

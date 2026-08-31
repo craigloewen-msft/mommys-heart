@@ -1,8 +1,7 @@
 //! A record that a client accepted the Terms and Conditions: who, which version
 //! of the wording, and when.
 //!
-//! This replaces the signed `.docx` that used to be filed as case evidence. The
-//! version string is stored rather than referenced so that revising
+//! The version string is stored rather than referenced so that revising
 //! [`crate::helpers::terms`] never changes what a past acceptance says.
 
 use crate::server::db::{ids, pool};
