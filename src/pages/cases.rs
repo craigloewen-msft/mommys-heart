@@ -10,6 +10,7 @@ use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::components::profile_link::ProfileLink;
+use crate::helpers::format::human_size;
 use crate::helpers::sections;
 use crate::helpers::visibility::Visibility;
 use crate::pages::case_notes::CaseNotesPanel;
@@ -17,8 +18,8 @@ use crate::server_fns::audit::AuditScope;
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::{self, CaseProperty};
 use crate::server_fns::cases::{self, Case, CaseStatus, CaseSummary};
+use crate::server_fns::documents::{self, CaseDocument, CaseDocumentListing};
 use crate::server_fns::err_text;
-use crate::server_fns::evidence::EVIDENCE_UNAVAILABLE_MESSAGE;
 use crate::server_fns::users::{search_users, AccountRole, UserSummary};
 use crate::state::AppState;
 
@@ -79,6 +80,69 @@ fn group_case_properties(case: &Case) -> Vec<(Visibility, Vec<(String, Vec<CaseP
         .collect()
 }
 
+/// Client-side (WASM) document upload: reads the chosen file from an
+/// `<input type="file">`, performs a friendly size pre-check, and hands the
+/// multipart form to the
+/// [`upload_case_document`](crate::server_fns::documents::upload_case_document)
+/// server function. The server re-validates every byte — the pre-check is purely
+/// for fast UX feedback.
+///
+/// Returns `Ok(false)` when no file was chosen, so the caller can say so rather
+/// than reporting a failure.
+#[cfg(feature = "hydrate")]
+async fn upload_document_file(
+    file_ref: NodeRef<leptos::html::Input>,
+    case_id: &str,
+    path: &str,
+) -> Result<bool, String> {
+    use crate::server_fns::documents::upload_case_document;
+    use leptos::server_fn::codec::MultipartData;
+
+    const MAX_BYTES: f64 = 25.0 * 1024.0 * 1024.0;
+
+    let Some(input) = file_ref.get_untracked() else {
+        return Ok(false);
+    };
+    let Some(file) = input.files().and_then(|f| f.get(0)) else {
+        return Ok(false);
+    };
+
+    if file.size() > MAX_BYTES {
+        return Err("File is too large; the limit is 25 MB.".to_string());
+    }
+
+    let filename = file.name();
+    let form = web_sys::FormData::new().map_err(|_| "Could not prepare the upload.".to_string())?;
+    form.append_with_blob_and_filename("file", file.as_ref(), &filename)
+        .map_err(|_| "Could not attach the file.".to_string())?;
+    for (key, value) in [("case_id", case_id), ("path", path)] {
+        form.append_with_str(key, value)
+            .map_err(|_| "Could not prepare the upload.".to_string())?;
+    }
+
+    upload_case_document(MultipartData::from(form))
+        .await
+        .map(|_name| true)
+        .map_err(crate::server_fns::err_text)
+}
+
+/// Percent-encode a document path for a query string. Paths carry user-supplied
+/// folder and file names, so everything outside the unreserved set is escaped
+/// rather than trusted to be URL-safe — `/` included, since it is a separator
+/// here and not a path boundary in the URL.
+fn encode_query(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 fn badge(classes: &str) -> String {
     format!("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {classes}")
 }
@@ -118,9 +182,10 @@ fn access_label(caps: &[CaseCapability]) -> Option<(&'static str, &'static str)>
 pub fn CaseHomePage() -> impl IntoView {
     let state = expect_context::<AppState>();
     let selected = RwSignal::new(None::<String>);
-    // The folder open in the selected case's file browser. Kept here so it
-    // survives the reload every case mutation triggers.
-    let open_folder = RwSignal::new(None::<String>);
+    // The folder open in the selected case's document browser, as a path
+    // relative to the case folder. Kept here so it survives the reload every
+    // case mutation triggers.
+    let open_folder = RwSignal::new(String::new());
 
     // The fetched window of case summaries plus the total match count. `query`
     // is bound to the input for instant feedback; `debounced_query` drives the
@@ -210,7 +275,7 @@ pub fn CaseHomePage() -> impl IntoView {
                         let case_id = case_id.clone();
                         move |_| {
                             selected.set(Some(case_id.clone()));
-                            open_folder.set(None);
+                            open_folder.set(String::new());
                         }
                     };
                     view! {
@@ -485,7 +550,7 @@ pub fn NewCasePage() -> impl IntoView {
 pub fn CaseDetail(
     summary: CaseSummary,
     reload: RwSignal<u32>,
-    open_folder: RwSignal<Option<String>>,
+    open_folder: RwSignal<String>,
     /// Called after the owner withdraws the case, so a list view can drop the
     /// selection instead of showing "Case not found" when the case leaves the
     /// list. Admin surfaces keep showing the case, so they pass nothing.
@@ -654,9 +719,6 @@ pub fn CaseDetail(
             }
         });
     };
-
-    // Keep the shared case-detail signature stable while evidence is unavailable.
-    let _ = open_folder;
 
     let make_row =
         move |key: String, value: String, section: String, visibility: Visibility| -> PropRow {
@@ -1011,30 +1073,499 @@ pub fn CaseDetail(
         .into_any()
     };
 
-    // Evidence is intentionally unavailable while its replacement is designed.
-    let evidence_panel = move || {
+    // ---------------------------------------------------------------
+    // Documents: the case's folder in the SharePoint library.
+    //
+    // The listing is fetched separately from the case itself, so opening a case
+    // never waits on the library, and a slow or unreachable one degrades to this
+    // panel alone rather than the whole page.
+    // ---------------------------------------------------------------
+    let listing = RwSignal::new(None::<CaseDocumentListing>);
+    let docs_loading = RwSignal::new(true);
+    let docs_error = RwSignal::new(String::new());
+    let docs_reload = RwSignal::new(0u32);
+    // Which entry has its delete confirmation showing, by path.
+    let pending_delete = RwSignal::new(None::<String>);
+    let delete_busy = RwSignal::new(false);
+    let new_folder_name = RwSignal::new(String::new());
+    let upload_busy = RwSignal::new(false);
+    let docs_file_ref: NodeRef<leptos::html::Input> = owner.with_value(|o| o.with(NodeRef::new));
+
+    {
+        let case_id = case_id.clone();
+        Effect::new(move |_| {
+            // Re-runs whenever the open folder changes, or something in it does.
+            let path = open_folder.get();
+            docs_reload.track();
+            reload.track();
+            if !can_view_evidence {
+                return;
+            }
+            let case_id = case_id.clone();
+            docs_loading.set(true);
+            spawn_local(async move {
+                match documents::list_case_documents(case_id, path).await {
+                    Ok(found) => {
+                        listing.set(Some(found));
+                        docs_error.set(String::new());
+                    }
+                    Err(e) => docs_error.set(err_text(e)),
+                }
+                docs_loading.set(false);
+            });
+        });
+    }
+
+    let refresh_documents = move || {
+        pending_delete.set(None);
+        docs_reload.update(|n| *n += 1);
+    };
+
+    let add_folder = move |_| {
+        let name = new_folder_name.get_untracked().trim().to_string();
+        if name.is_empty() {
+            docs_error.set("Give the folder a name.".to_string());
+            return;
+        }
+        let case_id = case_sv.get_value();
+        let path = open_folder.get_untracked();
+        spawn_local(async move {
+            match documents::create_case_document_folder(case_id, path, name).await {
+                Ok(()) => {
+                    new_folder_name.set(String::new());
+                    docs_error.set(String::new());
+                    refresh_documents();
+                }
+                Err(e) => docs_error.set(err_text(e)),
+            }
+        });
+    };
+
+    let upload_here = move |_| {
+        if upload_busy.get_untracked() {
+            return;
+        }
+        let case_id = case_sv.get_value();
+        let path = open_folder.get_untracked();
+        upload_busy.set(true);
+        docs_error.set(String::new());
+        spawn_local(async move {
+            #[cfg(feature = "hydrate")]
+            {
+                match upload_document_file(docs_file_ref, &case_id, &path).await {
+                    Ok(true) => refresh_documents(),
+                    Ok(false) => docs_error.set("Choose a file first.".to_string()),
+                    Err(e) => docs_error.set(e),
+                }
+            }
+            #[cfg(not(feature = "hydrate"))]
+            {
+                let _ = (&case_id, &path);
+            }
+            upload_busy.set(false);
+        });
+    };
+
+    let delete_entry = move |path: String| {
+        let case_id = case_sv.get_value();
+        delete_busy.set(true);
+        spawn_local(async move {
+            match documents::delete_case_document(case_id, path).await {
+                Ok(()) => {
+                    docs_error.set(String::new());
+                    refresh_documents();
+                }
+                Err(e) => docs_error.set(err_text(e)),
+            }
+            delete_busy.set(false);
+        });
+    };
+
+    let provision_documents = move |_| {
+        let case_id = case_sv.get_value();
+        docs_error.set(String::new());
+        spawn_local(async move {
+            match documents::provision_case_documents(case_id).await {
+                Ok(()) => refresh_documents(),
+                Err(e) => docs_error.set(err_text(e)),
+            }
+        });
+    };
+
+    // One row: a folder you can open, or a file you can download.
+    let document_row = move |entry: CaseDocument, can_delete: bool, restricted: bool| {
+        let path = entry.path.clone();
+        let confirm_path = StoredValue::new(path.clone());
+        let confirming = move || {
+            confirm_path.with_value(|p| pending_delete.get().as_deref() == Some(p.as_str()))
+        };
+
+        // The standing folders are part of every case's filing scheme, so they
+        // have no delete control; the server refuses it too.
+        let is_standing_folder = entry.is_folder && !path.contains('/');
+        let delete_btn = if can_delete && !is_standing_folder {
+            let path = path.clone();
+            view! {
+                {move || {
+                    if confirming() {
+                        return ().into_any();
+                    }
+                    let path = path.clone();
+                    view! {
+                        <button
+                            type="button"
+                            title="Delete"
+                            aria-label="Delete"
+                            on:click=move |_| {
+                                docs_error.set(String::new());
+                                pending_delete.set(Some(path.clone()));
+                            }
+                            class="shrink-0 rounded-md px-1.5 py-1 text-sm text-slate-600 hover:bg-rose-500/10 hover:text-rose-300"
+                        >
+                            "\u{1f5d1}"
+                        </button>
+                    }
+                        .into_any()
+                }}
+            }
+            .into_any()
+        } else {
+            ().into_any()
+        };
+
+        // The confirm gets a full-width bar of its own so it never crowds the
+        // name.
+        let confirm_bar = {
+            let path = path.clone();
+            let name = entry.name.clone();
+            let is_folder = entry.is_folder;
+            view! {
+                {move || {
+                    if !confirming() {
+                        return ().into_any();
+                    }
+                    let path = path.clone();
+                    // A folder has to be emptied before it goes, so deleting one
+                    // never takes anything with it. The server enforces it too.
+                    let warning = if is_folder {
+                        format!("Delete the folder \"{name}\"? It must be empty first.")
+                    } else {
+                        format!("Delete \"{name}\"? This cannot be undone.")
+                    };
+                    view! {
+                        <div class="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2">
+                            <span class="min-w-0 text-xs text-rose-200">{warning}</span>
+                            <div class="flex shrink-0 items-center gap-2">
+                                <button
+                                    type="button"
+                                    on:click=move |_| pending_delete.set(None)
+                                    class="rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                                >
+                                    "Cancel"
+                                </button>
+                                <button
+                                    type="button"
+                                    prop:disabled=move || delete_busy.get()
+                                    on:click=move |_| {
+                                        if !delete_busy.get_untracked() {
+                                            delete_entry(path.clone());
+                                        }
+                                    }
+                                    class="rounded-md bg-rose-500/15 px-2 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 disabled:opacity-60"
+                                >
+                                    "Delete"
+                                </button>
+                            </div>
+                        </div>
+                    }
+                        .into_any()
+                }}
+            }
+            .into_any()
+        };
+
+        if entry.is_folder {
+            let open = {
+                let path = path.clone();
+                move |_| open_folder.set(path.clone())
+            };
+            view! {
+                <div class="group rounded-lg border border-slate-800 bg-slate-950 p-3 transition-colors hover:border-primary-500/40 hover:bg-slate-900">
+                    <div class="flex items-center justify-between gap-2">
+                        <button
+                            on:click=open
+                            class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                        >
+                            <span class="text-base transition-transform group-hover:scale-110">
+                                {if restricted { "\u{1f512}" } else { "\u{1f4c1}" }}
+                            </span>
+                            <span class="block min-w-0 truncate text-sm font-medium text-slate-200 transition-colors group-hover:text-primary-300">
+                                {entry.name.clone()}
+                            </span>
+                        </button>
+                        {delete_btn}
+                    </div>
+                    {confirm_bar}
+                </div>
+            }
+            .into_any()
+        } else {
+            let download_url = format!(
+                "/api/cases/{}/documents/download?path={}",
+                case_sv.get_value(),
+                encode_query(&path),
+            );
+            let mut details = human_size(entry.size_bytes);
+            if !entry.modified.is_empty() {
+                details.push_str(&format!(" \u{b7} {}", entry.modified));
+            }
+            if !entry.modified_by.is_empty() {
+                details.push_str(&format!(" \u{b7} {}", entry.modified_by));
+            }
+            view! {
+                <div class="group rounded-lg border border-slate-800 bg-slate-950 p-3 transition-colors hover:border-slate-700 hover:bg-slate-900/60">
+                    <div class="flex items-start justify-between gap-2">
+                        <p class="min-w-0 truncate text-sm font-medium text-slate-200 transition-colors group-hover:text-slate-100">
+                            "\u{1f4c4} " {entry.name.clone()}
+                        </p>
+                        <div class="flex shrink-0 items-center gap-2">{delete_btn}</div>
+                    </div>
+                    <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                        <a
+                            href=download_url
+                            download=entry.name.clone()
+                            class="rounded-lg border border-primary-500/40 px-2 py-1 font-medium text-primary-300 hover:bg-primary-500/10"
+                        >
+                            "Download"
+                        </a>
+                        <span>{details}</span>
+                    </div>
+                    {confirm_bar}
+                </div>
+            }
+            .into_any()
+        }
+    };
+
+    let documents_panel = move || {
         if !can_read_case_material {
             return ().into_any();
         }
-        view! {
-            <section aria-labelledby="evidence-heading">
-                <div class="mb-3">
-                    <h2 id="evidence-heading" class="text-lg font-semibold text-slate-100">
-                        "Evidence"
-                    </h2>
-                </div>
-                <div class="rounded-xl border border-amber-400 bg-amber-50 p-4">
-                    <div class="flex items-start gap-3">
-                        <span aria-hidden="true" class="text-xl">"🚧"</span>
-                        <div>
-                            <h3 class="font-semibold text-amber-900">"Under construction"</h3>
-                            <p class="mt-1 text-sm text-amber-800">
-                                {EVIDENCE_UNAVAILABLE_MESSAGE}
-                            </p>
-                        </div>
+
+        let blurb = if is_client {
+            "The documents your case team has shared with you."
+        } else {
+            "Everything filed on this case, in its SharePoint folder. A file's folder decides who can see it."
+        };
+
+        let body = move || {
+            if docs_loading.get() && listing.get().is_none() {
+                return view! { <Loading label="Loading documents\u{2026}" /> }.into_any();
+            }
+            let Some(found) = listing.get() else {
+                return view! {
+                    <p class="text-sm text-slate-500">"Documents are unavailable right now."</p>
+                }
+                .into_any();
+            };
+
+            // The folder has not been created yet: say so plainly, and offer the
+            // retry to anyone who could file something in it.
+            if !found.ready {
+                let retry = if found.can_upload {
+                    view! {
+                        <button
+                            on:click=provision_documents
+                            class="mt-3 rounded-lg border border-primary-500/40 px-3 py-1.5 text-sm font-medium text-primary-300 hover:bg-primary-500/10"
+                        >
+                            "Set up documents folder"
+                        </button>
+                    }
+                    .into_any()
+                } else {
+                    ().into_any()
+                };
+                return view! {
+                    <div>
+                        <p class="text-sm text-slate-400">
+                            "This case does not have a documents folder yet."
+                        </p>
+                        {retry}
                     </div>
+                }
+                .into_any();
+            }
+
+            // Breadcrumbs back up the tree; the first steps out to the top.
+            let mut trail = vec![("Documents".to_string(), String::new())];
+            let mut so_far = String::new();
+            for segment in found.path.split('/').filter(|s| !s.is_empty()) {
+                if so_far.is_empty() {
+                    so_far = segment.to_string();
+                } else {
+                    so_far = format!("{so_far}/{segment}");
+                }
+                trail.push((segment.to_string(), so_far.clone()));
+            }
+            let last = trail.len() - 1;
+            let crumbs = trail
+                .into_iter()
+                .enumerate()
+                .map(|(i, (label, target))| {
+                    let is_current = i == last;
+                    let separator = (i > 0)
+                        .then(|| view! { <span class="text-slate-600">"/"</span> }.into_any())
+                        .unwrap_or_else(|| ().into_any());
+                    let crumb = if is_current {
+                        view! { <span class="font-medium text-slate-200">{label}</span> }.into_any()
+                    } else {
+                        view! {
+                            <button
+                                on:click=move |_| open_folder.set(target.clone())
+                                class="text-slate-400 hover:text-slate-200"
+                            >
+                                {label}
+                            </button>
+                        }
+                        .into_any()
+                    };
+                    view! { <span class="flex items-center gap-2">{separator} {crumb}</span> }
+                        .into_any()
+                })
+                .collect_view();
+
+            let is_empty = found.entries.is_empty();
+            let can_delete = found.can_delete;
+            // At the top level each standing folder names its own audience; below
+            // it the whole subtree shares the one the breadcrumb came from.
+            let at_top = found.path.is_empty();
+            let here_restricted = found
+                .visibility
+                .is_some_and(|v| v.is_restricted());
+            let rows = found
+                .entries
+                .clone()
+                .into_iter()
+                .map(move |entry| {
+                    let restricted = if at_top {
+                        crate::helpers::new_case_folders::NEW_CASE_FOLDERS
+                            .iter()
+                            .find(|spec| spec.name.eq_ignore_ascii_case(&entry.name))
+                            .map(|spec| spec.visibility.is_restricted())
+                            // A folder made directly in SharePoint names no
+                            // audience, and the server treats it as staff-only.
+                            .unwrap_or(true)
+                    } else {
+                        here_restricted
+                    };
+                    document_row(entry, can_delete, restricted)
+                })
+                .collect_view();
+
+            let empty_note = if is_empty {
+                view! { <p class="text-sm text-slate-500">"This folder is empty."</p> }.into_any()
+            } else {
+                ().into_any()
+            };
+
+            // Adding to the open folder. At the very top there is nowhere to put
+            // a file: the standing folders are the case's filing scheme, and a
+            // file belongs inside one of them.
+            let tools = if !found.can_upload {
+                ().into_any()
+            } else if found.path.is_empty() {
+                view! {
+                    <p class="mt-4 border-t border-slate-800 pt-4 text-xs text-slate-500">
+                        "Open a folder to add files to it."
+                    </p>
+                }
+                .into_any()
+            } else {
+                view! {
+                    <div class="mt-4 space-y-4 border-t border-slate-800 pt-4">
+                        <div class="flex flex-col gap-2 sm:flex-row">
+                            <input
+                                class=input_class
+                                placeholder="New folder name"
+                                prop:value=move || new_folder_name.get()
+                                on:input=move |ev| new_folder_name.set(event_target_value(&ev))
+                            />
+                            <button
+                                on:click=add_folder
+                                class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                            >
+                                "+ New folder"
+                            </button>
+                        </div>
+                        <div class="flex flex-col gap-2 sm:flex-row">
+                            <input
+                                node_ref=docs_file_ref
+                                type="file"
+                                accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+                                class="block w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-200 hover:file:bg-slate-700"
+                            />
+                            <button
+                                on:click=upload_here
+                                prop:disabled=move || upload_busy.get()
+                                class="shrink-0 rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-60"
+                            >
+                                {move || {
+                                    if upload_busy.get() { "Uploading\u{2026}" } else { "Upload" }
+                                }}
+                            </button>
+                        </div>
+                        <p class="text-xs text-slate-500">
+                            "PDF, images, and Office documents up to 25 MB."
+                        </p>
+                    </div>
+                }
+                .into_any()
+            };
+
+            // Only offered when the library gives a real link; the on-disk
+            // development store has none worth showing.
+            let open_in_sharepoint = if found.web_url.starts_with("https://") {
+                view! {
+                    <a
+                        href=found.web_url.clone()
+                        target="_blank"
+                        rel="noopener"
+                        class="text-xs font-medium text-primary-400 hover:text-primary-300"
+                    >
+                        "Open in SharePoint \u{2197}"
+                    </a>
+                }
+                .into_any()
+            } else {
+                ().into_any()
+            };
+
+            view! {
+                <div>
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div class="flex flex-wrap items-center gap-2 text-sm">{crumbs}</div>
+                        {open_in_sharepoint}
+                    </div>
+                    <div class="mt-3 space-y-2">{rows} {empty_note}</div>
+                    {tools}
                 </div>
-            </section>
+            }
+            .into_any()
+        };
+
+        view! {
+            <div>
+                <div class="mb-3">
+                    <h2 class="text-lg font-semibold text-slate-100">"Documents"</h2>
+                    <p class="mt-1 text-sm text-slate-500">{blurb}</p>
+                </div>
+                <div class=panel>
+                    {body}
+                    <Show when=move || !docs_error.get().is_empty()>
+                        <p class="mt-3 text-sm text-rose-400">{move || docs_error.get()}</p>
+                    </Show>
+                </div>
+            </div>
         }
         .into_any()
     };
@@ -1516,7 +2047,7 @@ pub fn CaseDetail(
             }>
             {details_section}
 
-            {evidence_panel}
+            {documents_panel}
 
             {case_information}
 

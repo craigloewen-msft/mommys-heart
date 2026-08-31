@@ -75,6 +75,58 @@ impl EmailConfig {
     }
 }
 
+/// SharePoint document-library settings, read from the environment (SSR only).
+///
+/// Case documents live in a SharePoint document library reached through
+/// Microsoft Graph with an app-only (client credentials) token. Everything is
+/// optional so the server boots without it: an unconfigured deployment falls
+/// back to the on-disk store below, which is what makes the whole feature
+/// exercisable locally with no tenant at all.
+#[derive(Clone, Debug)]
+pub struct SharePointConfig {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub client_secret: String,
+    /// The site holding the library, e.g. `https://contoso.sharepoint.com/sites/CaseFiles`.
+    pub site_url: String,
+    /// Display name of the document library within that site.
+    pub library: String,
+    /// Folder inside the library under which every case folder is created.
+    pub root_folder: String,
+    /// Which store backs case documents: `graph` (the real library) or `local`
+    /// (a directory tree, for development).
+    pub backend: String,
+}
+
+impl SharePointConfig {
+    pub fn from_env() -> Self {
+        Self {
+            tenant_id: env("GRAPH_TENANT_ID", ""),
+            client_id: env("GRAPH_CLIENT_ID", ""),
+            client_secret: env("GRAPH_CLIENT_SECRET", ""),
+            site_url: env("SHAREPOINT_SITE_URL", "")
+                .trim_end_matches('/')
+                .to_string(),
+            library: env("SHAREPOINT_LIBRARY", "Documents"),
+            root_folder: env("SHAREPOINT_ROOT_FOLDER", "Cases"),
+            backend: env("SHAREPOINT_BACKEND", "graph").to_ascii_lowercase(),
+        }
+    }
+
+    /// Whether the on-disk development store was asked for explicitly.
+    pub fn wants_local(&self) -> bool {
+        self.backend == "local"
+    }
+
+    /// Whether every credential Graph needs is present.
+    pub fn is_configured(&self) -> bool {
+        !self.tenant_id.is_empty()
+            && !self.client_id.is_empty()
+            && !self.client_secret.is_empty()
+            && !self.site_url.is_empty()
+    }
+}
+
 /// Branding + linking values shared by every email template, so the product
 /// name and the links in a message are defined once and stay consistent across
 /// all notifications. Read from the environment, with sensible defaults so
@@ -146,6 +198,15 @@ pub fn validate_production() -> Result<(), String> {
         .is_empty()
     {
         return Err("production requires APP_URL for same-origin request validation".into());
+    }
+    // The on-disk document store is a development aid: in production it would
+    // put case files on the web server's local disk instead of SharePoint.
+    let documents = SharePointConfig::from_env();
+    if documents.wants_local() {
+        return Err("production cannot use SHAREPOINT_BACKEND=local for case documents".into());
+    }
+    if !documents.is_configured() {
+        return Err("production requires SharePoint settings for case documents".into());
     }
     Ok(())
 }

@@ -543,6 +543,9 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
             signup.case_name.clone(),
         )
     });
+    // Carried past the commit so the case's document folder can be created
+    // once the account and case are actually persisted.
+    let signup_case_id = pending.case_signup.as_ref().map(|s| s.case_id.clone());
 
     // Guard against the email having been claimed while the code was in flight.
     let email_exists: bool =
@@ -631,6 +634,14 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
         .map_err(ServerFnError::new)?;
     }
     tx.commit().await.map_err(ServerFnError::new)?;
+
+    // The signup's case needs its document folder too. After the commit, and
+    // best-effort, for the same reasons as [`cases::create`]: a network call
+    // does not belong inside a transaction, and an unreachable library must not
+    // fail a registration that has otherwise succeeded.
+    if let Some(case_id) = signup_case_id {
+        cases::provision_documents_for(&case_id);
+    }
 
     if let Some((client_name, client_email, case_name)) = signup_notification_details {
         crate::server::notifications::notify_case_signup(client_name, client_email, case_name);

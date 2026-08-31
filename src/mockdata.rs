@@ -5,18 +5,16 @@
 //! handful of users and exactly 8 targeted cases that are all interconnected —
 //! every case has an owner plus several assigned users, and every user works a
 //! few cases. That keeps the demo realistic and easy to reason about while still
-//! exercising assignments, case visibility, chat threads, notes, and evidence.
+//! exercising assignments, case visibility, chat threads, and notes.
 //!
 //! Fixtures use their own small, fixed ids (`u-1`, `c-1`, `m-1`, …). Records the
 //! running app creates get their ids from the database sequence, which starts
 //! well above these, so the two never collide.
 
-use crate::helpers::visibility::Visibility;
 use crate::server_fns::capabilities::{CaseAssignment, CasePreset};
 use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::cases::{Case, CaseNote, CaseStatus, CaseWithdrawal};
 use crate::server_fns::channels::ChannelKind;
-use crate::server_fns::evidence::Evidence;
 use crate::server_fns::message::Message;
 use crate::server_fns::users::{AccountRole, User};
 
@@ -233,9 +231,6 @@ pub fn users() -> Vec<(User, String)> {
 
 /// A note recorded against a case: `(author, body, created_at)`.
 type SeedNote = (&'static str, &'static str, &'static str);
-/// A metadata-only piece of evidence: `(name, uploaded_by, uploaded_at, description)`.
-type SeedEvidence = (&'static str, &'static str, &'static str, &'static str);
-
 /// A seeded withdrawal: `(who withdrew it, when, why)`. The status it held
 /// before is [`WITHDRAWN_CASE_PREVIOUS_STATUS`], which the seeder needs in order
 /// to satisfy the schema's withdrawal CHECK.
@@ -245,7 +240,7 @@ type SeedWithdrawal = (&'static str, &'static str, &'static str);
 /// somewhere sensible.
 pub const WITHDRAWN_CASE_PREVIOUS_STATUS: CaseStatus = CaseStatus::Open;
 
-/// One hand-crafted case with its owner, court metadata, notes, and evidence.
+/// One hand-crafted case with its owner, court metadata, and notes.
 struct SeedCase {
     name: &'static str,
     status: CaseStatus,
@@ -255,7 +250,6 @@ struct SeedCase {
     owner: u32,
     docket: &'static str,
     notes: &'static [SeedNote],
-    evidence: &'static [SeedEvidence],
     /// Set only when `status` is `Withdrawn`.
     withdrawal: Option<SeedWithdrawal>,
 }
@@ -278,12 +272,6 @@ const CASES: [SeedCase; 9] = [
             "2026-02-04 09:00",
         )],
         withdrawal: None,
-        evidence: &[(
-            "Court summons",
-            "Jamie Rivera",
-            "2026-02-03 14:30",
-            "Original summons served to the client.",
-        )],
     },
     SeedCase {
         name: "Rivera housing assistance",
@@ -293,7 +281,6 @@ const CASES: [SeedCase; 9] = [
         docket: "FC-2026-0002-A",
         notes: &[],
         withdrawal: None,
-        evidence: &[],
     },
     SeedCase {
         name: "Silva benefits appeal",
@@ -307,12 +294,6 @@ const CASES: [SeedCase; 9] = [
             "2026-02-20 10:00",
         )],
         withdrawal: None,
-        evidence: &[(
-            "Benefits appeal packet",
-            "James Garcia",
-            "2026-01-12 08:40",
-            "Complete filed appeal packet.",
-        )],
     },
     SeedCase {
         name: "Kim guardianship petition",
@@ -322,12 +303,6 @@ const CASES: [SeedCase; 9] = [
         docket: "FC-2026-0004",
         notes: &[],
         withdrawal: None,
-        evidence: &[(
-            "Signed guardianship petition",
-            "Noah Kim",
-            "2026-04-03 12:05",
-            "Executed petition, all pages.",
-        )],
     },
     SeedCase {
         name: "Johnson support modification",
@@ -337,7 +312,6 @@ const CASES: [SeedCase; 9] = [
         docket: "FC-2026-0005",
         notes: &[],
         withdrawal: None,
-        evidence: &[],
     },
     SeedCase {
         name: "Rivera protective order",
@@ -351,7 +325,6 @@ const CASES: [SeedCase; 9] = [
             "2026-05-04 09:30",
         )],
         withdrawal: None,
-        evidence: &[],
     },
     SeedCase {
         name: "Silva housing assistance",
@@ -361,7 +334,6 @@ const CASES: [SeedCase; 9] = [
         docket: "FC-2026-0007",
         notes: &[],
         withdrawal: None,
-        evidence: &[],
     },
     SeedCase {
         name: "Kim custody matter",
@@ -370,7 +342,6 @@ const CASES: [SeedCase; 9] = [
         owner: 7,
         docket: "FC-2026-0008",
         notes: &[],
-        evidence: &[],
         withdrawal: None,
     },
     SeedCase {
@@ -380,7 +351,6 @@ const CASES: [SeedCase; 9] = [
         owner: 8,
         docket: "FC-2026-0009",
         notes: &[],
-        evidence: &[],
         withdrawal: Some((
             "Emma Johnson",
             "2026-05-12 11:20",
@@ -576,11 +546,10 @@ fn prop(key: &str, value: &str) -> CaseProperty {
     CaseProperty::new(key, value)
 }
 
-/// The cases, each owned by one of the users and carrying its notes, evidence,
+/// The cases, each owned by one of the users and carrying its notes,
 /// properties, and a resolved message count.
 pub fn cases() -> Vec<Case> {
     let mut note_n = 0usize;
-    let mut evidence_n = 0usize;
     CASES
         .iter()
         .enumerate()
@@ -600,30 +569,6 @@ pub fn cases() -> Vec<Case> {
                     }
                 })
                 .collect();
-            let evidence = sc
-                .evidence
-                .iter()
-                .map(|(name, uploaded_by, uploaded_at, description)| {
-                    evidence_n += 1;
-                    Evidence {
-                        id: format!("e-{evidence_n}"),
-                        name: (*name).into(),
-                        case_id: case_id(n),
-                        uploaded_by: (*uploaded_by).into(),
-                        uploaded_at: (*uploaded_at).into(),
-                        description: (*description).into(),
-                        original_filename: String::new(),
-                        content_type: String::new(),
-                        size_bytes: 0,
-                        sha256: String::new(),
-                        has_file: false,
-                        // The seeder resolves the real folder id when it writes
-                        // these rows; the fixtures themselves carry no ids.
-                        folder_id: String::new(),
-                        visibility: Visibility::Shared,
-                    }
-                })
-                .collect();
             Case {
                 id: case_id(n),
                 name: sc.name.into(),
@@ -631,8 +576,10 @@ pub fn cases() -> Vec<Case> {
                 review_reason: sc.review_reason.into(),
                 owner_id: user_id((sc.owner - 1) as usize),
                 notes,
-                evidence,
-                folders: Vec::new(),
+                // Case files live in the SharePoint library, so the fixtures
+                // carry none: the folder is provisioned when the server runs.
+                documents_web_url: String::new(),
+                documents_ready: false,
                 properties: vec![
                     prop("Court", "Springfield Family Court"),
                     prop("Docket", sc.docket),

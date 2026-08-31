@@ -1,8 +1,8 @@
-//! Cases, sub properties of evidence and case_properties are their own files
+//! Cases, sub properties of case_properties are their own files
 
 use crate::server::db::{
-    audit, capabilities, case_folders, case_notes, case_properties, channels, ids, now_stamp, pool,
-    terms_acceptances, users,
+    audit, capabilities, case_documents, case_notes, case_properties, channels, ids, now_stamp,
+    pool, terms_acceptances, users,
 };
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
@@ -403,8 +403,9 @@ pub async fn get_summaries_by_ids(ids: &[String]) -> Result<Vec<CaseSummary>, sq
         .collect())
 }
 
-/// A single case by id, hydrated without the temporarily unavailable evidence
-/// data, including the capabilities `user` holds on it.
+/// A single case by id, fully hydrated (properties, its newest notes, and where
+/// its documents live) including the capabilities `user` holds on it, or `None`
+/// if no such case exists.
 pub async fn get(
     id: &str,
     user: &User,
@@ -426,8 +427,9 @@ pub async fn get(
     // notes. Structured staff-only notes are loaded through `case_notes` APIs.
     let notes = case_notes::legacy_notes_for_case(id).await?;
 
-    let evidence = Vec::new();
-    let folders = Vec::new();
+    // Where this case's files live. The listing itself is fetched separately by
+    // the documents panel, so opening a case never waits on the library.
+    let documents = case_documents::folder_ref(id).await?;
     let properties = case_properties::get_case_properties(id, has_volunteer_access).await?;
     let terms_accepted = terms_acceptances::for_case(id).await?.map(|acceptance| {
         format!(
@@ -455,8 +457,8 @@ pub async fn get(
         review_reason: row.review_reason,
         owner_id: row.owner_id,
         notes,
-        evidence,
-        folders,
+        documents_ready: documents.is_ready(),
+        documents_web_url: documents.web_url,
         properties,
         message_count: 0,
         capabilities: capabilities::get_single_case(user, id).await?,
@@ -490,10 +492,6 @@ pub async fn create(
     // exist without somewhere to chat.
     channels::create_defaults(&mut *tx, &id).await?;
 
-    // Likewise its standing folder tree, which everything filed on the case
-    // hangs from.
-    case_folders::create_for_new_case(&mut tx, &id).await?;
-
     // The fields every case starts with come first, so the standing paperwork
     // sits above whatever the creator typed in.
     case_properties::add_for_new_case(&mut tx, &id, case_properties::clean(initial_properties))
@@ -514,7 +512,30 @@ pub async fn create(
     )
     .await?;
     tx.commit().await?;
+
+    // The case's folder in the document library. Deliberately *after* the
+    // commit: it is a network call, which has no business inside a transaction,
+    // and an unreachable library must not stop a case from being created. A
+    // case left without a folder is picked up by the startup backfill or the
+    // "Set up documents folder" button.
+    provision_documents_for(&id);
+
     Ok(id)
+}
+
+/// Create a case's document folder and sharing invitations in the background.
+///
+/// Best-effort by design, like the notification helpers: failures are logged and
+/// the case is still perfectly usable without its folder. Public so the signup
+/// path, which commits its own transaction, can call it at the same point.
+pub fn provision_documents_for(case_id: &str) {
+    let case_id = case_id.to_string();
+    tokio::spawn(async move {
+        match crate::server::sharepoint::sync::ensure_case_folder(&case_id).await {
+            Ok(_) => crate::server::sharepoint::sync_case_access(case_id),
+            Err(e) => tracing::warn!("could not create the document folder for {case_id}: {e}"),
+        }
+    });
 }
 
 /// Create the case a verified public signup asked for, inside the same
@@ -537,7 +558,6 @@ pub async fn create_from_signup_in(
         .execute(&mut **tx)
         .await?;
     channels::create_defaults(&mut **tx, case_id).await?;
-    case_folders::create_for_new_case(tx, case_id).await?;
     case_properties::add_for_new_case(tx, case_id, case_properties::clean(initial_properties))
         .await?;
     terms_acceptances::insert_in(tx, owner_id, Some(case_id), terms_version).await?;

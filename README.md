@@ -7,9 +7,9 @@ cookies).
 
 ## Run
 
-The database and blob storage are declared in `.kingdom/services.toml` and
-raised by Kingdom IDE while anyone is working on this project — one shared set,
-not one per checkout. With them up there is nothing to configure:
+The database is declared in `.kingdom/services.toml` and raised by Kingdom IDE
+while anyone is working on this project — one shared instance, not one per
+checkout. With it up there is nothing to configure:
 
 ```bash
 cargo leptos build     # compile (slow the first time)
@@ -25,8 +25,10 @@ anyone else is using.
 
 Under Kingdom IDE the build may name its assets after Kingdom's own Leptos app;
 this is harmless, as asset URLs are derived from the build's output name at
-runtime. Evidence uploads are disabled unless blob storage is configured, and
-the server logs a warning and carries on.
+runtime. Case documents live in a SharePoint document library; with no tenant
+configured the app stores them under `target/sharepoint/` instead and logs that
+it has done so, so the feature works locally with nothing to set up. See
+`.env.example` for the tenant settings.
 
 Without Kingdom, any PostgreSQL 16 will do: point `DATABASE_URL` at it and the
 app migrates and seeds on startup.

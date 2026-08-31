@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 /// is modeled as a **set** of these capabilities per assignment (rather than a
 /// single tier), so control is fine-grained: e.g. a client may hold
 /// `UploadEvidence` while a volunteer holds only `ViewEvidence`.
+///
+/// The three document capabilities are named `*Evidence` because that is the
+/// value stored in `case_assignments`; see [`CaseCapability::slug`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaseCapability {
@@ -51,14 +54,20 @@ impl CaseCapability {
             CaseCapability::ViewCase => "View case",
             CaseCapability::EditCase => "Edit case",
             CaseCapability::AddNotes => "Add notes",
-            CaseCapability::ViewEvidence => "View evidence",
-            CaseCapability::UploadEvidence => "Upload evidence",
-            CaseCapability::DeleteEvidence => "Delete evidence",
+            CaseCapability::ViewEvidence => "View documents",
+            CaseCapability::UploadEvidence => "Upload documents",
+            CaseCapability::DeleteEvidence => "Delete documents",
             CaseCapability::SendMessages => "Send messages",
             CaseCapability::ManageChannels => "Manage message channels",
         }
     }
 
+    /// The stored representation.
+    ///
+    /// The document ones still say "evidence" because these are the values
+    /// written in `case_assignments` rows: renaming them means rewriting live
+    /// permission data for a cosmetic gain. The labels above are what people
+    /// read.
     pub fn slug(self) -> &'static str {
         match self {
             CaseCapability::ViewCase => "view_case",
@@ -133,9 +142,9 @@ pub fn validate_capabilities(capabilities: &[CaseCapability]) -> Result<(), Stri
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CasePreset {
-    /// Read-only: view the case and its evidence.
+    /// Read-only: view the case and its documents.
     Viewer,
-    /// Day-to-day worker: view, notes, evidence upload, and chat (no delete/edit).
+    /// Day-to-day worker: view, notes, document upload, and chat (no delete/edit).
     Contributor,
     /// Full control of the case — the "Full access" set, and the only preset
     /// that carries [`CaseCapability::ManageChannels`].

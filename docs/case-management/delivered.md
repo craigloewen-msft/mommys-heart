@@ -417,10 +417,14 @@ migrated into contact records.
 - Production startup fails closed when MFA email or the public origin is
   unconfigured. Secure cookies, browser security headers, and same-origin
   mutation checks follow the same production-mode decision.
-- Evidence is temporarily unavailable at every UI and server boundary. Its
-  preserved upload path requires content validation and fail-closed malware
-  scanning before storage; rejected/error outcomes are audited without storing
-  those bytes.
+- Case documents live in a SharePoint document library, reached app-only through
+  Microsoft Graph. Each case gets a folder there; sharing invitations are issued
+  per top-level folder so a client is never invited to volunteer-only paperwork,
+  and one reconcile pass keeps those invitations matching `case_assignments`.
+  Uploads are content-sniffed against a type allowlist and capped at 25 MB, and
+  every folder request is addressed by a validated case-relative path rather than
+  a library id. Malware scanning is the tenant's (Microsoft 365 handles it), not
+  this application's.
 
 **Operational limit:** these engineering safeguards do not approve retention,
 legal-hold, backup ownership, incident policy, accessibility targets, or an

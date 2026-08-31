@@ -386,6 +386,13 @@ pub async fn decide_admin_request(
             );
         }
     }
+    // An approved capability change rewrites `case_assignments` directly, so the
+    // library's sharing is reconciled here as well as at the other write sites.
+    if approve && outcome.request.kind == AdminRequestKind::CaseCapabilities {
+        if let Some(case_id) = &outcome.request.case_id {
+            crate::server::sharepoint::sync_case_access(case_id.clone());
+        }
+    }
     if approve {
         let permission_change = match outcome.request.kind {
             AdminRequestKind::Role => outcome

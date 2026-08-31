@@ -49,7 +49,7 @@ Stable IDs are still referenced from code comments and task files:
 - `REQ-AUD-001`–`004` — audit visibility and retention
 - `REQ-CRM-001`–`048` — connected records plus CRM production-readiness corrections
 - `REQ-CRM-049`–`053` — specified future CRM workflow increments
-- `REQ-SEC-001`–`005` — authentication, browser-request, and evidence safeguards
+- `REQ-SEC-001`–`005` — authentication, browser-request, and case-document safeguards
 - `REQ-OPS-001`–`004` — operational approval and release evidence
 - `REQ-DOC-001`–`004` — documentation (see ADR-0006 for what changed)
 
