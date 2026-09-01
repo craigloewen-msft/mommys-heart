@@ -14,7 +14,7 @@ cargo leptos watch     # run it, rebuilding as you edit
 Use `cargo leptos serve` instead of `watch` if you want a build that does not
 rebuild on change. Either prints the address it is serving on.
 
-### Two things that look broken but are not
+### Three things that look broken but are not
 
 Kingdom IDE is itself a Leptos app and exports its own `LEPTOS_*` settings into
 your shell. `cargo-leptos` reads those in preference to `[package.metadata.leptos]`,
@@ -29,6 +29,21 @@ SharePoint document library; with no tenant configured the app keeps them in
 `target/sharepoint/` instead, which supports the whole feature — browsing,
 upload, download, and grant/revoke — so there is nothing to set up to work on
 it. Production fails fast rather than falling back.
+
+A local build passing does **not** prove CI will pass. Kingdom IDE exports
+`RUSTFLAGS=--cfg erase_components` into your shell, and your builds inherit it.
+That Leptos flag erases view types instead of monomorphising them, so deep
+`view!` trees never form the enormous concrete types they otherwise would. CI
+sets no `RUSTFLAGS`, and has failed with `queries overflow the depth limit!`
+on code that built cleanly here. To compile the way CI does:
+
+```bash
+env -u RUSTFLAGS cargo build --lib --release \
+  --no-default-features --features hydrate \
+  --target wasm32-unknown-unknown --target-dir target/oneshot-hydrate
+```
+
+This is why both crate roots carry `#![recursion_limit = "512"]`.
 
 **These are shared, not yours.** One database serves every agent on this
 project at once. Rows you insert, edit or delete are seen by everybody, and
