@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 
+use crate::components::category_picker::CategoryPicker;
 use crate::components::guard::{require_information_management_access, require_operations_admin};
 use crate::components::layout::Layout;
 use crate::components::property_filters::PropertyFilterBar;
@@ -330,37 +331,6 @@ fn ContactMailWorkspace() -> impl IntoView {
         });
     });
 
-    let category_options = move || {
-        categories
-            .get()
-            .into_iter()
-            .map(|category| {
-                let id = category.id.clone();
-                let checked_id = id.clone();
-                view! {
-                    <label class="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
-                        <input
-                            type="checkbox"
-                            class="mt-0.5 accent-primary-500"
-                            prop:checked=move || category_ids.get().contains(&checked_id)
-                            on:change=move |event| {
-                                let checked = event_target_checked(&event);
-                                category_ids.update(|ids| {
-                                    if checked && !ids.contains(&id) {
-                                        ids.push(id.clone());
-                                    } else if !checked {
-                                        ids.retain(|selected| selected != &id);
-                                    }
-                                });
-                            }
-                        />
-                        <span>{category.label()}</span>
-                    </label>
-                }
-            })
-            .collect_view()
-    };
-
     let candidate_rows = move || {
         if loading.get() {
             return view! { <p class="p-4 text-sm text-slate-500">"Loading eligible contacts…"</p> }
@@ -519,8 +489,11 @@ fn ContactMailWorkspace() -> impl IntoView {
                     </div>
                     <details class="mt-3 rounded-lg border border-slate-800 bg-slate-950">
                         <summary class="cursor-pointer px-3 py-2 text-sm text-slate-300">"Categories and tags"</summary>
-                        <div class="grid max-h-64 gap-1 overflow-y-auto border-t border-slate-800 p-2 sm:grid-cols-2 lg:grid-cols-3">
-                            {category_options}
+                        <div class="border-t border-slate-800 p-2">
+                            <CategoryPicker
+                                categories=Signal::derive(move || categories.get())
+                                selected=category_ids
+                            />
                         </div>
                     </details>
                     <button type="button" on:click=apply_filters

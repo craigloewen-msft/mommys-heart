@@ -8,8 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::helpers::contact_categories::CONTACT_CATEGORIES;
-use crate::server::db::{audit, contacts, ids, organizations, pool, property_filters};
+use crate::server::db::{audit, contact_rules, contacts, ids, organizations, pool, property_filters};
 use crate::server_fns::contact_directory::{
     CommunicationKind, Contact, ContactCategory, ContactCommunication, ContactDetails, ContactInput,
 };
@@ -165,63 +164,133 @@ fn fold_contacts(rows: Vec<ContactRow>) -> Vec<Contact> {
     contacts
 }
 
-/// Insert any organization-supplied category presets that are not already
-/// present. User-created categories and existing rows are left untouched.
-pub async fn ensure_default_categories(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    for category in CONTACT_CATEGORIES {
-        sqlx::query(
-            "INSERT INTO contact_categories (id, name)
-             VALUES ($1, $2)
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(category.id)
-        .bind(category.name)
-        .execute(&mut *tx)
-        .await?;
-
-        for child in category.children {
-            sqlx::query(
-                "INSERT INTO contact_categories (id, name, parent_id)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT DO NOTHING",
-            )
-            .bind(child.id)
-            .bind(child.name)
-            .bind(category.id)
-            .execute(&mut *tx)
-            .await?;
-        }
-    }
-    tx.commit().await?;
-    Ok(())
-}
-
+/// The organization owns its taxonomy: categories are seeded once by migration
+/// 0035 and edited from there on. Nothing re-inserts them at boot, so a
+/// category the organization deletes stays deleted.
 pub async fn list_categories() -> Result<Vec<ContactCategory>, sqlx::Error> {
     sqlx::query_as::<_, CategoryRow>(
         "SELECT category.id, category.name, category.parent_id,
                 COALESCE(parent.name, '') AS parent_name
          FROM contact_categories category
          LEFT JOIN contact_categories parent ON parent.id = category.parent_id
-         ORDER BY COALESCE(parent.name, category.name), category.parent_id NULLS FIRST,
-                  category.name",
+         ORDER BY COALESCE(parent.ord, category.ord), COALESCE(parent.name, category.name),
+                  category.parent_id NULLS FIRST, category.ord, category.name",
     )
     .fetch_all(pool())
     .await
     .map(|rows| rows.into_iter().map(Into::into).collect())
 }
 
-pub async fn create_category(name: &str, parent_id: Option<&str>) -> Result<(), sqlx::Error> {
+/// Append a category at the end of its level, so a new row does not displace
+/// the order the organization arranged.
+pub async fn create_category(name: &str, parent_id: Option<&str>) -> Result<String, sqlx::Error> {
     let id = ids::opaque("cc");
     sqlx::query(
-        "INSERT INTO contact_categories (id, name, parent_id)
-         VALUES ($1, $2, $3)",
+        "INSERT INTO contact_categories (id, name, parent_id, ord)
+         VALUES ($1, $2, $3, COALESCE(
+             (SELECT max(ord) + 1 FROM contact_categories
+              WHERE parent_id IS NOT DISTINCT FROM $3),
+             0
+         ))",
     )
-    .bind(id)
+    .bind(&id)
     .bind(name)
     .bind(parent_id)
     .execute(pool())
     .await?;
+    Ok(id)
+}
+
+/// Create many subcategories under one parent in a single transaction, for the
+/// paste-a-list box. Names already present are skipped rather than failing the
+/// whole paste, so pasting a corrected list twice is safe.
+pub async fn create_subcategories(
+    parent_id: &str,
+    names: &[String],
+) -> Result<usize, sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    let mut next_ord: i32 = sqlx::query_scalar(
+        "SELECT COALESCE(max(ord) + 1, 0) FROM contact_categories WHERE parent_id = $1",
+    )
+    .bind(parent_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let mut added = 0usize;
+    for name in names {
+        let inserted = sqlx::query(
+            "INSERT INTO contact_categories (id, name, parent_id, ord)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(ids::opaque("cc"))
+        .bind(name)
+        .bind(parent_id)
+        .bind(next_ord)
+        .execute(&mut *tx)
+        .await?;
+        if inserted.rows_affected() > 0 {
+            next_ord += 1;
+            added += 1;
+        }
+    }
+    tx.commit().await?;
+    Ok(added)
+}
+
+pub async fn rename_category(category_id: &str, name: &str) -> Result<(), sqlx::Error> {
+    let result = sqlx::query("UPDATE contact_categories SET name = $2 WHERE id = $1")
+        .bind(category_id)
+        .bind(name)
+        .execute(pool())
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(sqlx::Error::RowNotFound);
+    }
+    Ok(())
+}
+
+/// Store the given ids as the display order of their level.
+pub async fn reorder_categories(category_ids: &[String]) -> Result<(), sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    for (index, id) in category_ids.iter().enumerate() {
+        sqlx::query("UPDATE contact_categories SET ord = $2 WHERE id = $1")
+            .bind(id)
+            .bind(index as i32)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await
+}
+
+/// How many contacts and subcategories a category still holds, so the caller
+/// can explain why a delete is refused rather than surfacing a foreign-key error.
+pub async fn category_usage(category_id: &str) -> Result<(i64, i64), sqlx::Error> {
+    let assignments: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM contact_category_assignments WHERE category_id = $1",
+    )
+    .bind(category_id)
+    .fetch_one(pool())
+    .await?;
+    let children: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM contact_categories WHERE parent_id = $1")
+            .bind(category_id)
+            .fetch_one(pool())
+            .await?;
+    Ok((assignments, children))
+}
+
+/// Delete a category that nothing depends on. Rule options referencing it are
+/// removed with it (`ON DELETE CASCADE`), so a rule never offers a category
+/// that no longer exists.
+pub async fn delete_category(category_id: &str) -> Result<(), sqlx::Error> {
+    let result = sqlx::query("DELETE FROM contact_categories WHERE id = $1")
+        .bind(category_id)
+        .execute(pool())
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(sqlx::Error::RowNotFound);
+    }
     Ok(())
 }
 
@@ -454,6 +523,23 @@ async fn resolve_organization(
     .await
 }
 
+/// Reject a selection that breaks a rule's maximum, and return the rules it
+/// fires so the caller can apply their fields.
+///
+/// Only the maximum is enforced. A shortfall against `min_choices` is advisory:
+/// blocking it would strand imported or part-filled records as un-editable.
+async fn check_rules(
+    type_slugs: &[String],
+    category_ids: &[String],
+) -> Result<Vec<crate::server_fns::contact_rules::ContactRule>, sqlx::Error> {
+    let rules = contact_rules::matching(type_slugs, category_ids).await?;
+    let problems = contact_rules::over_limit(&rules, category_ids);
+    if !problems.is_empty() {
+        return Err(sqlx::Error::Protocol(problems.join(" ")));
+    }
+    Ok(rules)
+}
+
 /// Create or update a person from the directory form, then rewrite their
 /// classifications. Identity fields are written through
 /// [`crate::server::db::contacts`]; the fields the directory does not collect
@@ -474,6 +560,13 @@ pub async fn save(
             "One or more selected contact categories no longer exist.".to_string(),
         ));
     }
+
+    let type_slugs: Vec<String> = input
+        .types
+        .iter()
+        .map(|value| value.slug().to_string())
+        .collect();
+    let rules = check_rules(&type_slugs, &input.category_ids).await?;
 
     let (first_name, last_name) = split_name(&input.full_name);
     // Validate canonical contact fields before organization resolution can write.
@@ -573,6 +666,11 @@ pub async fn save(
     .bind(&input.category_ids)
     .execute(&mut *tx)
     .await?;
+
+    // Blank out the property fields the matching rules suggest, so a vendor
+    // arrives with the vendor questions already waiting to be answered.
+    contact_rules::apply_fields_in_transaction(&mut tx, &id, &rules).await?;
+
     tx.commit().await?;
     Ok(id)
 }
@@ -587,6 +685,14 @@ pub async fn set_categories(
     let mut selected = category_ids.to_vec();
     selected.sort();
     selected.dedup();
+
+    // Rules are keyed on the contact's own types plus the incoming selection.
+    let type_slugs: Vec<String> =
+        sqlx::query_scalar("SELECT unnest(types) FROM contacts WHERE id = $1")
+            .bind(contact_id)
+            .fetch_all(pool())
+            .await?;
+    let rules = check_rules(&type_slugs, &selected).await?;
 
     let mut tx = pool().begin().await?;
     let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM contacts WHERE id = $1 FOR UPDATE")
@@ -634,6 +740,11 @@ pub async fn set_categories(
     .fetch_all(&mut *tx)
     .await?;
     current.sort();
+
+    // Applied before the no-op check: a rule added since the last save should
+    // still bring its fields, even when the categories themselves did not move.
+    contact_rules::apply_fields_in_transaction(&mut tx, contact_id, &rules).await?;
+
     if current == expanded {
         tx.commit().await?;
         return Ok(());

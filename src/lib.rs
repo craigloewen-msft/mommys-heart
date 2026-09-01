@@ -19,6 +19,7 @@ pub mod components {
     pub mod admin_volunteers;
     pub mod case_contacts;
     pub mod case_intake;
+    pub mod category_picker;
     pub mod change_log;
     pub mod contact_cases;
     pub mod contact_form;
@@ -30,6 +31,7 @@ pub mod components {
     pub mod organization_properties;
     pub mod profile_link;
     pub mod property_filters;
+    pub mod property_rows;
     pub mod volunteer_details;
     pub mod volunteer_hours;
 }
@@ -40,6 +42,7 @@ pub mod pages {
     pub mod case_notes;
     pub mod case_signup;
     pub mod cases;
+    pub mod contact_categories;
     pub mod contact_mail;
     pub mod contacts;
     pub mod crm_import;
