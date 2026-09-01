@@ -1,4 +1,6 @@
-#![recursion_limit = "256"]
+// Deep `view!` trees monomorphise into very large types; CI builds without
+// `--cfg erase_components`, so the default limit overflows during layout.
+#![recursion_limit = "512"]
 
 #[cfg(feature = "ssr")]
 #[tokio::main]
