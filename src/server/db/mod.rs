@@ -21,6 +21,7 @@ pub mod clients;
 pub mod contact_directory;
 pub mod contact_mail;
 pub mod contact_properties;
+pub mod contact_rules;
 pub mod contacts;
 pub mod crm_import;
 pub mod deactivations;
@@ -91,7 +92,6 @@ pub async fn init() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
 
     sqlx::migrate!("./migrations").run(&pool).await?;
-    contact_directory::ensure_default_categories(&pool).await?;
 
     POOL.set(pool)
         .map_err(|_| "database pool already initialized")?;

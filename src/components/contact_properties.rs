@@ -11,6 +11,8 @@ use crate::server_fns::contact_properties::{
     add_missing_contact_property_defaults, list_contact_properties, set_contact_properties,
     ContactProperty,
 };
+use crate::server_fns::contact_rules::{apply_contact_rule_fields, contact_rule_guidance, RuleField};
+use crate::server_fns::contact_directory::get_contact;
 use crate::server_fns::err_text;
 use crate::state::AppState;
 
@@ -125,6 +127,24 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
         });
     };
 
+    // The fields the contact's rules suggest, added on demand so a record
+    // classified before a rule existed can still pick it up.
+    let applying_suggested = RwSignal::new(false);
+    let apply_suggested = move |_| {
+        if busy.get_untracked() || applying_suggested.get_untracked() {
+            return;
+        }
+        applying_suggested.set(true);
+        error.set(String::new());
+        spawn_local(async move {
+            match apply_contact_rule_fields(id.get_value()).await {
+                Ok(_) => reload.update(|r| *r += 1),
+                Err(e) => error.set(err_text(e)),
+            }
+            applying_suggested.set(false);
+        });
+    };
+
     // Grouped for display in the order each section first appears, so the list
     // keeps the order it was entered in.
     let grouped = move || {
@@ -148,6 +168,47 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
             .collect::<Vec<_>>()
     };
 
+    // Which of this contact's properties a rule demands an answer for. Shown,
+    // not enforced: a field added to a rule after this contact was filed must
+    // not make the record unsaveable.
+    let required_fields = RwSignal::new(Vec::<RuleField>::new());
+    Effect::new(move |_| {
+        reload.track();
+        spawn_local(async move {
+            let Ok(details) = get_contact(id.get_value()).await else {
+                return;
+            };
+            let type_slugs: Vec<String> = details
+                .contact
+                .types
+                .iter()
+                .map(|value| value.slug().to_string())
+                .collect();
+            let category_ids: Vec<String> = details
+                .contact
+                .categories
+                .iter()
+                .map(|category| category.id.clone())
+                .collect();
+            if let Ok(guidance) = contact_rule_guidance(type_slugs, category_ids).await {
+                required_fields.try_set(
+                    guidance
+                        .fields
+                        .into_iter()
+                        .filter(|field| field.required)
+                        .collect(),
+                );
+            }
+        });
+    });
+
+    let is_required = move |section: &str, key: &str| {
+        required_fields
+            .get()
+            .iter()
+            .any(|field| field.matches(section, key))
+    };
+
     let read_view = move || {
         let groups = grouped();
         if groups.is_empty() {
@@ -169,15 +230,29 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
                                 .into_iter()
                                 .map(|p| {
                                     let blank = p.value.trim().is_empty();
+                                    let required = is_required(&p.section, &p.key);
                                     view! {
                                         <div class="border-b border-slate-800/60 py-2">
-                                            <dt class="wrap-anywhere text-xs font-medium text-slate-500">{p.key}</dt>
-                                            <dd class=if blank {
+                                            <dt class="wrap-anywhere text-xs font-medium text-slate-500">
+                                                {p.key}
+                                                {(required && blank).then(|| view! {
+                                                    <span class="ml-1 text-rose-300" title="Required by a rule">"*"</span>
+                                                })}
+                                            </dt>
+                                            <dd class=if blank && required {
+                                                "mt-0.5 wrap-anywhere text-sm italic text-rose-300"
+                                            } else if blank {
                                                 "mt-0.5 wrap-anywhere text-sm italic text-slate-600"
                                             } else {
                                                 "mt-0.5 wrap-anywhere whitespace-pre-wrap text-sm text-slate-200"
                                             }>
-                                                {if blank { "Not filled in".to_string() } else { p.value }}
+                                                {if blank && required {
+                                                    "Required \u{2014} not filled in".to_string()
+                                                } else if blank {
+                                                    "Not filled in".to_string()
+                                                } else {
+                                                    p.value
+                                                }}
                                             </dd>
                                         </div>
                                     }
@@ -285,6 +360,14 @@ pub fn ContactPropertiesPanel(contact_id: String) -> impl IntoView {
                                         class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
                                     >
                                         {move || if adding_defaults.get() { "Adding defaults\u{2026}" } else { "Add missing defaults" }}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        on:click=apply_suggested
+                                        prop:disabled=move || applying_suggested.get() || loading.get()
+                                        class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                                    >
+                                        {move || if applying_suggested.get() { "Adding\u{2026}" } else { "Apply suggested fields" }}
                                     </button>
                                     <button
                                         type="button"

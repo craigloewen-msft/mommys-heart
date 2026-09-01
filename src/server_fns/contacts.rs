@@ -35,6 +35,7 @@ coded_enum!(ContactType {
     GovernmentAgency => ("government_agency", "Government agency"),
     EmergencyContact => ("emergency_contact", "Emergency contact"),
     BoardMember => ("board_member", "Board member"),
+    Vendor => ("vendor", "Vendor"),
     Other => ("other", "Other"),
 });
 

@@ -6,16 +6,19 @@ use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
 use leptos_router::NavigateOptions;
 
+use crate::components::category_picker::{CategoryPicker, RuleGroupSelector};
 use crate::components::contact_form::ContactTypeSelector;
 use crate::components::guard::require_information_management_access;
 use crate::components::layout::Layout;
 use crate::components::property_filters::{MatchedProperties, PropertyFilterBar};
+use crate::components::property_rows::{PropertyRow, PropertyRowsEditor};
 use crate::pages::people::ContactDetail;
 use crate::server_fns::contact_directory::{
-    add_contact_category, add_contact_communication, get_contact, list_contact_categories,
+    add_contact_communication, get_contact, list_contact_categories,
     save_contact, search_contacts, set_contact_categories, CommunicationKind, Contact,
     ContactCategory, ContactDetails, ContactInput,
 };
+use crate::server_fns::contact_rules::{contact_rule_guidance, RuleGuidance};
 use crate::server_fns::contacts::{ContactType, MAX_TYPES};
 use crate::server_fns::err_text;
 use crate::server_fns::organizations::{list_organizations, OrganizationFilters};
@@ -91,43 +94,75 @@ fn DirectoryContactEditor(
     on_save: Callback<()>,
     on_cancel: Callback<()>,
     show_categories: bool,
+    /// The property rows collected alongside a new contact. `None` is an edit
+    /// of an existing person, whose properties are owned by their own panel.
+    #[prop(optional)]
+    property_rows: Option<RwSignal<Vec<PropertyRow>>>,
+    #[prop(optional)] property_next_id: Option<RwSignal<usize>>,
+    /// Heading, so the same editor reads correctly on its own page.
+    #[prop(optional, into)]
+    heading: Option<String>,
+    #[prop(optional, into)] save_label: Option<String>,
 ) -> impl IntoView {
-    let category_checks = move || {
-        categories
-            .get()
-            .into_iter()
-            .map(|category| {
-                let id = category.id.clone();
-                let checked_id = id.clone();
-                let label = category.label();
-                view! {
-                    <label class="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
-                        <input
-                            type="checkbox"
-                            class="mt-0.5 accent-primary-500"
-                            prop:checked=move || draft.get().input.category_ids.contains(&checked_id)
-                            on:change=move |event| {
-                                draft.update(|draft| {
-                                    toggle_id(
-                                        &mut draft.input.category_ids,
-                                        &id,
-                                        event_target_checked(&event),
-                                    )
-                                });
-                            }
-                        />
-                        <span>{label}</span>
-                    </label>
-                }
-            })
-            .collect_view()
-    };
+    // The category selection is edited through a plain id list so the shared
+    // picker and the rule groups can both write to it.
+    let selected = RwSignal::new(draft.get_untracked().input.category_ids);
+    let guidance = RwSignal::new(RuleGuidance::default());
+    let save_label = save_label.unwrap_or_else(|| "Save contact".to_string());
+
+    // Keep the draft in step with whatever the pickers changed.
+    Effect::new(move |_| {
+        let ids = selected.get();
+        draft.update(|draft| draft.input.category_ids = ids);
+    });
+
+    // Re-ask the server which groups apply, but only when the trigger inputs
+    // actually move: a memo keeps typing a name from refetching on every key.
+    let triggers = Memo::new(move |_| {
+        let current = draft.get();
+        let type_slugs: Vec<String> = current
+            .input
+            .types
+            .iter()
+            .map(|value| value.slug().to_string())
+            .collect();
+        (type_slugs, current.input.category_ids)
+    });
+    Effect::new(move |_| {
+        let (type_slugs, category_ids) = triggers.get();
+        spawn_local(async move {
+            if let Ok(found) = contact_rule_guidance(type_slugs, category_ids).await {
+                guidance.try_set(found);
+            }
+        });
+    });
+
+    // Keep the collected property rows in step with the rules now in force, so
+    // ticking "Vendor" adds its fields to the form immediately.
+    Effect::new(move |_| {
+        let fields = guidance.get().fields;
+        let (Some(rows), Some(next_id)) = (property_rows, property_next_id) else {
+            return;
+        };
+        rows.update(|list| {
+            let mut counter = next_id.get_untracked();
+            crate::components::property_rows::merge_rule_fields(list, &fields, &mut counter);
+            next_id.set(counter);
+        });
+    });
 
     view! {
         <section class="rounded-xl border border-slate-800 bg-slate-900 p-5">
             <div class="mb-5 flex items-center justify-between gap-3">
                 <h2 class="text-lg font-semibold">
-                    {move || if draft.get().id.is_some() { "Edit contact" } else { "New contact" }}
+                    {
+                        let heading = heading.clone();
+                        move || match heading.clone() {
+                            Some(text) => text,
+                            None if draft.get().id.is_some() => "Edit contact".to_string(),
+                            None => "New contact".to_string(),
+                        }
+                    }
                 </h2>
                 <button
                     type="button"
@@ -227,16 +262,39 @@ fn DirectoryContactEditor(
                 />
             </div>
             <Show when=move || show_categories>
-                <div class="mt-5">
-                    <p class=LABEL>"Categories, subcategories, and tags (optional)"</p>
-                    <p class="mb-2 text-xs text-slate-500">
-                        "Use these organization-defined groupings for more specific classification."
-                    </p>
-                    <div class="max-h-64 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-2">
-                        {category_checks}
+                <div class="mt-5 space-y-3">
+                    <RuleGroupSelector
+                        groups=Signal::derive(move || guidance.get().groups)
+                        selected=selected
+                    />
+                    <div>
+                        <p class=LABEL>"Categories, subcategories, and tags (optional)"</p>
+                        <p class="mb-2 text-xs text-slate-500">
+                            "Use these organization-defined groupings for more specific classification."
+                        </p>
+                        <CategoryPicker
+                            categories=Signal::derive(move || categories.get())
+                            selected=selected
+                            hidden=Signal::derive(move || guidance.get().grouped_category_ids)
+                        />
                     </div>
                 </div>
             </Show>
+
+            // Shown only while creating: the fields this contact will carry,
+            // editable before it exists rather than discovered afterwards.
+            {property_rows.zip(property_next_id).map(|(rows, next_id)| view! {
+                <div class="mt-5 border-t border-slate-800 pt-5">
+                    <p class=LABEL>"Properties"</p>
+                    <p class="mb-3 text-xs text-slate-500">
+                        "The fields this contact will start with. Those marked "
+                        <span class="text-rose-300">"*"</span>
+                        " come from a rule and must be filled in."
+                    </p>
+                    <PropertyRowsEditor rows=rows next_id=next_id />
+                </div>
+            })}
+
             <div class="mt-5 flex flex-wrap gap-2">
                 <button
                     type="button"
@@ -244,7 +302,7 @@ fn DirectoryContactEditor(
                     prop:disabled=move || saving.get()
                     class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
                 >
-                    {move || if saving.get() { "Saving…" } else { "Save contact" }}
+                    {move || if saving.get() { "Saving\u{2026}".to_string() } else { save_label.clone() }}
                 </button>
                 <button
                     type="button"
@@ -273,6 +331,7 @@ pub(crate) fn ContactOutreachPanel(
     let editing_contact = RwSignal::new(false);
     let contact_draft = RwSignal::new(ContactDraft::default());
     let editing_categories = RwSignal::new(false);
+    let panel_guidance = RwSignal::new(RuleGuidance::default());
     let kind = RwSignal::new(CommunicationKind::Outreach.slug().to_string());
     let body = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
@@ -333,12 +392,37 @@ pub(crate) fn ContactOutreachPanel(
         });
     });
 
+    // Which rule groups this contact falls under, tracking the live selection
+    // so ticking a location updates the advisory note without a save.
+    let panel_triggers = Memo::new(move |_| {
+        let type_slugs: Vec<String> = details
+            .get()
+            .map(|found| {
+                found
+                    .contact
+                    .types
+                    .iter()
+                    .map(|value| value.slug().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        (type_slugs, selected_categories.get())
+    });
+    Effect::new(move |_| {
+        let (type_slugs, category_ids) = panel_triggers.get();
+        spawn_local(async move {
+            if let Ok(found) = contact_rule_guidance(type_slugs, category_ids).await {
+                panel_guidance.try_set(found);
+            }
+        });
+    });
+
     let save_contact_fields = move |()| {
         let current = contact_draft.get_untracked();
         busy.set(true);
         error.set(String::new());
         spawn_local(async move {
-            match save_contact(current.id, current.input).await {
+            match save_contact(current.id, current.input, None).await {
                 Ok(found) => {
                     details.set(Some(found));
                     editing_contact.set(false);
@@ -444,6 +528,17 @@ pub(crate) fn ContactOutreachPanel(
                 <p class="mt-3 text-sm text-rose-300" role="alert">{move || error.get()}</p>
             </Show>
 
+            // Advisory only: a rule can say a location is expected without
+            // making the contact un-saveable until someone supplies one.
+            <Show when=move || !panel_guidance.get().unmet.is_empty()>
+                <p class="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                    {move || {
+                        let unmet = panel_guidance.get().unmet;
+                        format!("Not set yet: {}.", unmet.join(", "))
+                    }}
+                </p>
+            </Show>
+
             <Show when=move || editing_contact.get()>
                 <div class="mt-4 border-t border-slate-800 pt-4">
                     <DirectoryContactEditor
@@ -477,26 +572,16 @@ pub(crate) fn ContactOutreachPanel(
                     view! { <div class="mt-4 flex flex-wrap gap-2">{badges}</div> }
                 }
             >
-                <div class="mt-4">
-                    <div class="max-h-64 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-2">
-                        {move || categories.get().into_iter().map(|category| {
-                            let category_id = category.id.clone();
-                            let checked_id = category_id.clone();
-                            view! {
-                                <label class="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
-                                    <input
-                                        type="checkbox"
-                                        class="mt-0.5 accent-primary-500"
-                                        prop:checked=move || selected_categories.get().contains(&checked_id)
-                                        on:change=move |event| selected_categories.update(|ids| {
-                                            toggle_id(ids, &category_id, event_target_checked(&event))
-                                        })
-                                    />
-                                    <span>{category.label()}</span>
-                                </label>
-                            }
-                        }).collect_view()}
-                    </div>
+                <div class="mt-4 space-y-3">
+                    <RuleGroupSelector
+                        groups=Signal::derive(move || panel_guidance.get().groups)
+                        selected=selected_categories
+                    />
+                    <CategoryPicker
+                        categories=Signal::derive(move || categories.get())
+                        selected=selected_categories
+                        hidden=Signal::derive(move || panel_guidance.get().grouped_category_ids)
+                    />
                     <button
                         type="button"
                         on:click=save_categories
@@ -583,12 +668,125 @@ pub fn ContactsPage() -> impl IntoView {
     })
 }
 
+/// Creating a contact: its own page, so the form is not a panel competing
+/// with the directory behind it, and there is room to show the properties the
+/// contact will carry before it is saved.
+#[component]
+pub fn NewContactPage() -> impl IntoView {
+    let state = expect_context::<AppState>();
+    let navigate = use_navigate();
+
+    require_information_management_access(state, move || {
+        let navigate = navigate.clone();
+        let categories = RwSignal::new(Vec::<ContactCategory>::new());
+        let draft = RwSignal::new(ContactDraft::default());
+        let saving = RwSignal::new(false);
+            let error = RwSignal::new(String::new());
+        let next_id = RwSignal::new(0usize);
+        // Seeded with the code-owned defaults; the editor adds a rule's fields
+        // as soon as a trigger is ticked.
+        let rows = RwSignal::new({
+            let mut counter = 0usize;
+            let seeded = crate::components::property_rows::seed_rows(&[], &mut counter);
+            next_id.set(counter);
+            seeded
+        });
+
+        Effect::new(move |_| {
+            spawn_local(async move {
+                if let Ok(items) = list_contact_categories().await {
+                    categories.try_set(items);
+                }
+            });
+        });
+
+        let cancel_navigate = navigate.clone();
+        let save = move |()| {
+            if saving.get_untracked() {
+                return;
+            }
+            // Checked here as well as on the server, so the answer is immediate
+            // and names the fields rather than bouncing off a round trip.
+            let missing =
+                crate::components::property_rows::unfilled_required(&rows.get_untracked());
+            if !missing.is_empty() {
+                error.set(format!(
+                    "Fill in the required field(s): {}.",
+                    missing.join(", ")
+                ));
+                return;
+            }
+            let current = draft.get_untracked();
+            let properties: Vec<_> = rows
+                .get_untracked()
+                .iter()
+                .map(|row| row.to_property())
+                .collect();
+            saving.set(true);
+            error.set(String::new());
+            let navigate = navigate.clone();
+            spawn_local(async move {
+                match save_contact(None, current.input, Some(properties)).await {
+                    Ok(details) => {
+                        navigate(
+                            &format!("/contacts/{}", details.contact.id),
+                            Default::default(),
+                        );
+                    }
+                    Err(e) => {
+                        error.try_set(err_text(e));
+                        saving.try_set(false);
+                    }
+                }
+            });
+        };
+
+        view! {
+            <Layout title="Add contact".to_string()>
+                <div class="space-y-5">
+                    <A href="/contacts" attr:class="text-sm text-primary-400 hover:text-primary-300">
+                        "\u{2190} Back to contacts"
+                    </A>
+
+                    <Show when=move || !error.get().is_empty()>
+                        <p
+                            class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-300"
+                            role="alert"
+                        >
+                            {move || error.get()}
+                        </p>
+                    </Show>
+
+                    <DirectoryContactEditor
+                        draft=draft
+                        categories=categories
+                        saving=saving
+                        on_save=Callback::new(save)
+                        on_cancel=Callback::new(move |()| {
+                            cancel_navigate("/contacts", Default::default());
+                        })
+                        show_categories=true
+                        property_rows=rows
+                        property_next_id=next_id
+                        heading="Contact details"
+                        save_label="Create contact"
+                    />
+                </div>
+            </Layout>
+        }
+        .into_any()
+    })
+}
+
 #[component]
 fn ContactsDirectory() -> impl IntoView {
     let state = expect_context::<AppState>();
     let can_send_mail =
         state.has_operations_admin_permissions() && state.has_information_management_access();
     let can_bulk_edit = state.has_information_management_access();
+    // Editing the shared taxonomy affects every classified contact, so it takes
+    // the same admin gate the mail tool has.
+    let can_manage_taxonomy = can_send_mail;
     // Importing writes records wholesale, so it needs the admin gate the mail
     // tool has rather than the bulk-edit one.
     let can_import = can_send_mail;
@@ -625,12 +823,6 @@ fn ContactsDirectory() -> impl IntoView {
     let reload = RwSignal::new(0u32);
     let loading = RwSignal::new(true);
     let error = RwSignal::new(None::<String>);
-    let creating = RwSignal::new(false);
-    let draft = RwSignal::new(ContactDraft::default());
-    let saving = RwSignal::new(false);
-    let category_name = RwSignal::new(String::new());
-    let category_parent = RwSignal::new(String::new());
-    let category_saving = RwSignal::new(false);
     let offset = RwSignal::new(0i64);
 
     // What the facet counts are measured against, so the values on offer match
@@ -758,48 +950,6 @@ fn ContactsDirectory() -> impl IntoView {
         }
         current
     });
-
-    let save = move |()| {
-        if saving.get_untracked() {
-            return;
-        }
-        let current = draft.get_untracked();
-        saving.set(true);
-        error.set(None);
-        spawn_local(async move {
-            match save_contact(current.id, current.input).await {
-                Ok(_) => {
-                    creating.set(false);
-                    draft.set(ContactDraft::default());
-                    reload.update(|value| *value += 1);
-                }
-                Err(e) => error.set(Some(err_text(e))),
-            }
-            saving.set(false);
-        });
-    };
-
-    let add_category = move |_| {
-        if category_saving.get_untracked() {
-            return;
-        }
-        category_saving.set(true);
-        error.set(None);
-        let name = category_name.get_untracked();
-        let parent = category_parent.get_untracked();
-        spawn_local(async move {
-            let parent_id = (!parent.is_empty()).then_some(parent);
-            match add_contact_category(name, parent_id).await {
-                Ok(items) => {
-                    categories.set(items);
-                    category_name.set(String::new());
-                    category_parent.set(String::new());
-                }
-                Err(e) => error.set(Some(err_text(e))),
-            }
-            category_saving.set(false);
-        });
-    };
 
     let mut on_search = debounce(
         std::time::Duration::from_millis(300),
@@ -938,6 +1088,14 @@ fn ContactsDirectory() -> impl IntoView {
                             "Import from file"
                         </A>
                     </Show>
+                    <Show when=move || can_manage_taxonomy>
+                        <A
+                            href="/contacts/categories"
+                            attr:class="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                        >
+                            "Categories and rules"
+                        </A>
+                    </Show>
                     <Show when=move || can_send_mail>
                         <A
                             href="/contacts/mail"
@@ -946,17 +1104,12 @@ fn ContactsDirectory() -> impl IntoView {
                             "Send mail"
                         </A>
                     </Show>
-                    <button
-                        type="button"
-                        on:click=move |_| {
-                            draft.set(ContactDraft::default());
-                            creating.set(true);
-                            error.set(None);
-                        }
-                        class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600"
+                    <A
+                        href="/contacts/new"
+                        attr:class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600"
                     >
                         "Add contact"
-                    </button>
+                    </A>
                 </div>
             </div>
 
@@ -965,58 +1118,6 @@ fn ContactsDirectory() -> impl IntoView {
                     {move || error.get().unwrap_or_default()}
                 </p>
             </Show>
-
-            <Show when=move || creating.get()>
-                <DirectoryContactEditor
-                    draft
-                    categories
-                    saving
-                    on_save=Callback::new(save)
-                    on_cancel=Callback::new(move |()| {
-                        creating.set(false);
-                        draft.set(ContactDraft::default());
-                    })
-                    show_categories=true
-                />
-            </Show>
-
-            <details class="rounded-xl border border-slate-800 bg-slate-900">
-                <summary class="cursor-pointer px-4 py-3 text-sm font-medium text-slate-300">
-                    "Manage categories and tags"
-                </summary>
-                <p class="border-t border-slate-800 px-4 pt-4 text-xs text-slate-500">
-                    "Categories and tags are optional, organization-defined groupings. Required contact types are edited on each contact."
-                </p>
-                <div class="grid gap-3 border-slate-800 p-4 sm:grid-cols-[1fr_1fr_auto]">
-                    <input
-                        class=INPUT
-                        placeholder="New category or tag name"
-                        prop:value=move || category_name.get()
-                        on:input=move |event| category_name.set(event_target_value(&event))
-                    />
-                    <select
-                        class=INPUT
-                        prop:value=move || category_parent.get()
-                        on:change=move |event| category_parent.set(event_target_value(&event))
-                    >
-                        <option value="">"Top-level category / standalone tag"</option>
-                        {move || categories
-                            .get()
-                            .into_iter()
-                            .filter(|category| category.parent_id.is_none())
-                            .map(|category| view! { <option value=category.id>{category.name}</option> })
-                            .collect_view()}
-                    </select>
-                    <button
-                        type="button"
-                        on:click=add_category
-                        prop:disabled=move || category_saving.get()
-                        class="rounded-lg border border-primary-500/50 px-4 py-2 text-sm font-medium text-primary-300 hover:bg-primary-500/10 disabled:opacity-50"
-                    >
-                        "Add"
-                    </button>
-                </div>
-            </details>
 
             <div class="grid gap-5 lg:grid-cols-[22rem_minmax(0,1fr)]">
                 <aside class="space-y-4">

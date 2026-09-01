@@ -30,6 +30,7 @@ pub mod channels;
 pub mod contact_directory;
 pub mod contact_mail;
 pub mod contact_properties;
+pub mod contact_rules;
 pub mod contacts;
 pub mod crm;
 pub mod crm_import;

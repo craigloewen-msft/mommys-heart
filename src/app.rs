@@ -12,8 +12,9 @@ use crate::pages::{
     case_notes::{CaseNoteDetailPage, NewCaseNotePage},
     case_signup::{CaseSignupDetailsPage, CaseSignupTermsPage},
     cases::{CaseHomePage, NewCasePage},
+    contact_categories::ContactCategoriesPage,
     contact_mail::ContactMailPage,
-    contacts::ContactsPage,
+    contacts::{ContactsPage, NewContactPage},
     crm_import::CrmImportPage,
     forgot_password::ForgotPasswordPage,
     funding::FundingPage,
@@ -137,6 +138,10 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/cases/:case_id/notes/:note_id") view=CaseNoteDetailPage />
                 <Route path=path!("/contacts") view=ContactsPage />
                 <Route path=path!("/contacts/mail") view=ContactMailPage />
+                // Declared before `/contacts/:id`, which would otherwise match
+                // "categories" as a contact id.
+                <Route path=path!("/contacts/categories") view=ContactCategoriesPage />
+                <Route path=path!("/contacts/new") view=NewContactPage />
                 <Route path=path!("/contacts/:id") view=ContactsPage />
                 <Route path=path!("/organizations") view=OrganizationsPage />
                 <Route path=path!("/organizations/:id") view=OrganizationsPage />
