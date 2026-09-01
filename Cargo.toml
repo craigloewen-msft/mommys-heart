@@ -135,5 +135,7 @@ debug = 1
 
 [profile.release]
 opt-level = "s"
-lto = true
-codegen-units = 1
+# Fat LTO with a single codegen unit serialises the most expensive phase of the
+# build on a 2-vCPU runner. Thin LTO keeps most of the size win and parallelises.
+lto = "thin"
+codegen-units = 16
