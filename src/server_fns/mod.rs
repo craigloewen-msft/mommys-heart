@@ -44,6 +44,7 @@ pub mod organizations;
 pub mod pagination;
 pub mod profile;
 pub mod property_filters;
+pub mod reports;
 pub mod settings;
 pub mod users;
 pub mod volunteer_hours;

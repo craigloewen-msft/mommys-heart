@@ -1,5 +1,5 @@
-// Deep `view!` trees monomorphise into very large types; CI builds without
-// `--cfg erase_components`, so the default limit overflows during layout.
+// Deep `view!` trees monomorphise into very large types; without
+// `--cfg erase_components` the default limit overflows during layout.
 #![recursion_limit = "512"]
 
 pub mod app;
@@ -23,6 +23,7 @@ pub mod components {
     pub mod case_intake;
     pub mod category_picker;
     pub mod change_log;
+    pub mod chart;
     pub mod contact_cases;
     pub mod contact_form;
     pub mod contact_properties;
@@ -57,6 +58,7 @@ pub mod pages {
     pub mod people;
     pub mod profile;
     pub mod register;
+    pub mod reports;
     pub mod reset_password;
     pub mod settings;
     pub mod verify_email;

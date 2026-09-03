@@ -33,6 +33,28 @@ it has done so, so the feature works locally with nothing to set up. See
 Without Kingdom, any PostgreSQL 16 will do: point `DATABASE_URL` at it and the
 app migrates and seeds on startup.
 
+## AI reports
+
+`/reports` (operations administrators and above) turns a plain-language request — "total
+funding received per month, as a line chart" — into a chart, a table and a CSV
+export. On the server the request goes to an agent that is given the database's
+structure and a read-only query tool: it explores the real data first, checking
+how a status is actually spelled or what a date column really contains, and only
+then commits to the query behind the report. The exploratory queries and the
+final SQL are kept on the page so a number can always be traced back.
+
+**Reports cannot change anything.** Every query the agent runs passes two
+independent gates: `server::reports::sql_guard` rejects anything that is not a
+single `SELECT`/`WITH` — no second statement, no comments, no writing keyword,
+no credential table or column — and `server::reports::execute` then runs it
+inside a PostgreSQL `READ ONLY` transaction, with a statement timeout, that is
+rolled back afterwards. The second gate is the one that cannot be talked around:
+PostgreSQL refuses the write itself.
+
+Needs `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY` and
+`AZURE_OPENAI_REPORT_DEPLOYMENT` (see `.env.example`). Without them the page
+says so rather than failing.
+
 ## View email templates
 
 ```

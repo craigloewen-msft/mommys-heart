@@ -9,6 +9,10 @@ pub struct AzureConfig {
     pub endpoint: String,
     pub api_key: String,
     pub chat_deployment: String,
+    /// Deployment used by the AI reports agent. Kept separate from
+    /// [`Self::chat_deployment`] because writing SQL against an unfamiliar
+    /// schema wants a stronger, slower model than the document chatbot does.
+    pub report_deployment: String,
     pub embedding_deployment: String,
     pub api_version: String,
     pub docs_dir: String,
@@ -22,6 +26,7 @@ impl AzureConfig {
             endpoint: env("AZURE_OPENAI_ENDPOINT", ""),
             api_key: env("AZURE_OPENAI_API_KEY", ""),
             chat_deployment: env("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o"),
+            report_deployment: env("AZURE_OPENAI_REPORT_DEPLOYMENT", "gpt-5.6-sol"),
             embedding_deployment: env(
                 "AZURE_OPENAI_EMBEDDING_DEPLOYMENT",
                 "text-embedding-ada-002",

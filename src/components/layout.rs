@@ -104,6 +104,9 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let toggle_menu = move |_| menu_open.update(|open| *open = !*open);
     let close_menu = move |_| menu_open.set(false);
     let has_operations_admin_permissions = role.has_operations_admin_permissions();
+    // Reports read across the whole database, so the link matches the
+    // operations-admin gate on the page and on the server function behind it.
+    let can_build_reports = has_operations_admin_permissions;
 
     view! {
         <div class="min-h-screen bg-slate-950 text-slate-100">
@@ -140,6 +143,11 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                                     />
                                 }
                                 .into_any()
+                            } else {
+                                ().into_any()
+                            }}
+                            {if can_build_reports {
+                                view! { <NavLink href="/reports" label="Reports" /> }.into_any()
                             } else {
                                 ().into_any()
                             }}
@@ -199,6 +207,11 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                                 />
                             }
                             .into_any()
+                        } else {
+                            ().into_any()
+                        }}
+                        {if can_build_reports {
+                            view! { <NavLink href="/reports" label="Reports" /> }.into_any()
                         } else {
                             ().into_any()
                         }}

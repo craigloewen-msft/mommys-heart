@@ -42,6 +42,11 @@ jobs:
             ${{ secrets.ACR_LOGIN_SERVER }}/mommys-heart:latest
             ${{ secrets.ACR_LOGIN_SERVER }}/mommys-heart:${{ github.sha }}
           # Reuse unchanged layers -- above all the dependency pre-build layer --
-          # between runs, so only changed source is recompiled.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # between runs, so only changed source is recompiled. The cache lives
+          # in ACR rather than the GitHub Actions cache: a Rust dependency +
+          # target layer set runs to several GB, and `type=gha` shares a hard
+          # 10 GB per-repository quota that evicts it between runs, so the
+          # expensive layer was being rebuilt from scratch nearly every time
+          # *and* re-exported at the end of every build.
+          cache-from: type=registry,ref=${{ secrets.ACR_LOGIN_SERVER }}/mommys-heart:buildcache
+          cache-to: type=registry,ref=${{ secrets.ACR_LOGIN_SERVER }}/mommys-heart:buildcache,mode=max,image-manifest=true,oci-mediatypes=true

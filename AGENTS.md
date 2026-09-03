@@ -30,12 +30,13 @@ SharePoint document library; with no tenant configured the app keeps them in
 upload, download, and grant/revoke — so there is nothing to set up to work on
 it. Production fails fast rather than falling back.
 
-A local build passing does **not** prove CI will pass. Kingdom IDE exports
-`RUSTFLAGS=--cfg erase_components` into your shell, and your builds inherit it.
-That Leptos flag erases view types instead of monomorphising them, so deep
-`view!` trees never form the enormous concrete types they otherwise would. CI
-sets no `RUSTFLAGS`, and has failed with `queries overflow the depth limit!`
-on code that built cleanly here. To compile the way CI does:
+CI now compiles the way you do. Kingdom IDE exports
+`RUSTFLAGS=--cfg erase_components` into your shell and your builds inherit it;
+the container build sets the same flag explicitly (`Containerfile`). That Leptos
+flag erases view types instead of monomorphising them, so deep `view!` trees
+never form the enormous concrete types they otherwise would — CI used to set no
+`RUSTFLAGS` and failed with `queries overflow the depth limit!` on code that
+built cleanly here. To sanity-check a build without the flag anyway:
 
 ```bash
 env -u RUSTFLAGS cargo build --lib --release \
@@ -43,7 +44,7 @@ env -u RUSTFLAGS cargo build --lib --release \
   --target wasm32-unknown-unknown --target-dir target/oneshot-hydrate
 ```
 
-This is why both crate roots carry `#![recursion_limit = "512"]`.
+This is why both crate roots keep `#![recursion_limit = "512"]`.
 
 **These are shared, not yours.** One database serves every agent on this
 project at once. Rows you insert, edit or delete are seen by everybody, and

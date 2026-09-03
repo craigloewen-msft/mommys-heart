@@ -15,6 +15,7 @@ pub mod email;
 pub mod notifications;
 pub mod permissions;
 pub mod rag;
+pub mod reports;
 pub mod security;
 pub mod service;
 pub mod sharepoint;

@@ -1,5 +1,5 @@
-// Deep `view!` trees monomorphise into very large types; CI builds without
-// `--cfg erase_components`, so the default limit overflows during layout.
+// Deep `view!` trees monomorphise into very large types; without
+// `--cfg erase_components` the default limit overflows during layout.
 #![recursion_limit = "512"]
 
 #[cfg(feature = "ssr")]
