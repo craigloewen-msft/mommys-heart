@@ -24,7 +24,7 @@ use crate::pages::{
     organizations::OrganizationsPage,
     profile::ProfilePage,
     register::RegisterPage,
-    reports::ReportsPage,
+    reports::{NewReportPage, ReportsPage, SavedReportPage},
     reset_password::ResetPasswordPage,
     settings::SettingsPage,
     verify_email::{CaseSignupVerifyPage, VerifyEmailPage},
@@ -152,6 +152,8 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/funding/:id") view=FundingPage />
                 <Route path=path!("/inbox") view=InboxPage />
                 <Route path=path!("/reports") view=ReportsPage />
+                <Route path=path!("/reports/new") view=NewReportPage />
+                <Route path=path!("/reports/:id") view=SavedReportPage />
                 <Route path=path!("/settings") view=SettingsPage />
                 <Route path=path!("/profile") view=ProfilePage />
                 <Route path=path!("/volunteer-agreement") view=VolunteerAgreementPage />
