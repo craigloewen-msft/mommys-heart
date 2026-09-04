@@ -37,26 +37,49 @@ pub async fn build(request: &str, actor_id: &str) -> Result<Report, String> {
     tracing::info!(actor = actor_id, "building AI report: {request}");
 
     let outcome = agent::run(&cfg, request, &schema_prompt).await?;
-    let table = execute::run(&outcome.sql, MAX_REPORT_ROWS).await?;
+    let mut report = run_query(
+        &outcome.sql,
+        outcome.chart,
+        &outcome.title,
+        &outcome.summary,
+    )
+    .await?;
+    report.steps = outcome.steps;
 
     tracing::info!(
         actor = actor_id,
-        rows = table.rows.len(),
-        steps = outcome.steps.len(),
+        rows = report.table.rows.len(),
+        steps = report.steps.len(),
         "AI report ready: {}",
-        outcome.sql
+        report.sql
     );
 
-    let chart = reconcile_chart(outcome.chart, &table);
+    Ok(report)
+}
+
+/// Run one already-chosen `SELECT` and finish it into a report: chart
+/// reconciled against the columns that actually came back, plus the CSV.
+///
+/// Both the agent path and a saved report's re-run go through here, so a report
+/// looks the same however it was produced. `steps` is left empty; only the
+/// agent has exploration to show.
+pub async fn run_query(
+    sql: &str,
+    chart: ChartSpec,
+    title: &str,
+    summary: &str,
+) -> Result<Report, String> {
+    let table = execute::run(sql, MAX_REPORT_ROWS).await?;
+    let chart = reconcile_chart(chart, &table);
     let csv = to_csv(&table);
 
     Ok(Report {
-        title: outcome.title,
-        summary: outcome.summary,
-        sql: outcome.sql,
+        title: title.to_string(),
+        summary: summary.to_string(),
+        sql: sql.to_string(),
         table,
         chart,
-        steps: outcome.steps,
+        steps: Vec::new(),
         csv,
     })
 }

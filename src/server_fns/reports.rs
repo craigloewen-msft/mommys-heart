@@ -14,6 +14,8 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::server_fns::pagination::Page;
+
 /// Most rows a report will return. Beyond this the table is truncated and says so.
 pub const MAX_REPORT_ROWS: usize = 2_000;
 
@@ -138,6 +140,26 @@ pub struct Report {
     pub csv: String,
 }
 
+/// A report someone kept: its final query and chart, so it can be run again
+/// without the model.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SavedReport {
+    pub id: String,
+    pub title: String,
+    /// The prose request that originally produced it, kept for context.
+    pub request: String,
+    pub summary: String,
+    pub sql: String,
+    pub chart: ChartSpec,
+    pub author_name: String,
+    pub created_at: String,
+    /// Blank until the report has been re-run.
+    pub last_run_at: String,
+}
+
+/// Longest title a saved report may carry.
+pub const MAX_TITLE_CHARS: usize = 120;
+
 /// Build a report from a plain-language request.
 ///
 /// Restricted to operations administrators and above: a report can read across
@@ -160,6 +182,117 @@ pub async fn build_report(request: String) -> Result<Report, ServerFnError> {
     }
 
     crate::server::reports::build(&request, &user.id)
+        .await
+        .map_err(ServerFnError::new)
+}
+
+/// One page of saved reports, newest first, narrowed by an optional keyword.
+#[server(prefix = "/api")]
+pub async fn list_saved_reports(
+    keyword: String,
+    offset: i64,
+    limit: i64,
+) -> Result<Page<SavedReport>, ServerFnError> {
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+
+    crate::server::db::reports::page(&keyword, offset, limit)
+        .await
+        .map_err(ServerFnError::new)
+}
+
+#[server(prefix = "/api")]
+pub async fn load_saved_report(id: String) -> Result<Option<SavedReport>, ServerFnError> {
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+
+    crate::server::db::reports::get(&id)
+        .await
+        .map_err(ServerFnError::new)
+}
+
+/// Keep a built report. Only a title is asked for; the query, chart and author
+/// come from what was already produced.
+#[server(prefix = "/api")]
+pub async fn save_report(
+    title: String,
+    request: String,
+    summary: String,
+    sql: String,
+    chart: ChartSpec,
+) -> Result<String, ServerFnError> {
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(ServerFnError::new("Give the report a title."));
+    }
+    if title.chars().count() > MAX_TITLE_CHARS {
+        return Err(ServerFnError::new(format!(
+            "Keep the title under {MAX_TITLE_CHARS} characters."
+        )));
+    }
+
+    // Re-check the query on the way in, so nothing but a read-only SELECT is
+    // ever stored to be run later.
+    let sql = crate::server::reports::sql_guard::validate(&sql).map_err(ServerFnError::new)?;
+
+    crate::server::db::reports::create(
+        title,
+        request.trim(),
+        summary.trim(),
+        &sql,
+        &chart,
+        &user.id,
+    )
+    .await
+    .map_err(ServerFnError::new)
+}
+
+/// Run a saved report again from its stored query. No model is involved.
+#[server(prefix = "/api")]
+pub async fn run_saved_report(id: String) -> Result<Report, ServerFnError> {
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+
+    let saved = crate::server::db::reports::get(&id)
+        .await
+        .map_err(ServerFnError::new)?
+        .ok_or_else(|| ServerFnError::new("That report no longer exists."))?;
+
+    // Validated again on the way out: a query the guard has since stopped
+    // allowing must fail rather than run because it was stored earlier.
+    let sql =
+        crate::server::reports::sql_guard::validate(&saved.sql).map_err(ServerFnError::new)?;
+
+    let report = crate::server::reports::run_query(&sql, saved.chart, &saved.title, &saved.summary)
+        .await
+        .map_err(ServerFnError::new)?;
+
+    tracing::info!(actor = %user.id, report = %id, "re-ran saved report");
+    let _ = crate::server::db::reports::touch_last_run(&id).await;
+
+    Ok(report)
+}
+
+/// Delete a saved report. Any operations admin may: the library is shared.
+#[server(prefix = "/api")]
+pub async fn delete_saved_report(id: String) -> Result<(), ServerFnError> {
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+
+    crate::server::db::reports::delete(&id)
         .await
         .map_err(ServerFnError::new)
 }
