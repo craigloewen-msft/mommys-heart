@@ -5,6 +5,7 @@ use leptos_router::hooks::use_navigate;
 
 use crate::components::case_contacts::CaseContactsPanel;
 use crate::components::case_intake::{CaseIntakeFields, CaseIntakeState};
+use crate::components::case_questionnaires::CaseIntakeTaskSummary;
 use crate::components::change_log::ChangeLog;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
@@ -49,10 +50,10 @@ fn group_case_properties(case: &Case) -> Vec<(Visibility, Vec<(String, Vec<CaseP
     Visibility::ALL
         .into_iter()
         .filter_map(|visibility| {
-            let props = case
-                .properties
-                .iter()
-                .filter(|p| p.visibility == visibility);
+            let props = case.properties.iter().filter(|p| {
+                p.visibility == visibility
+                    && !crate::helpers::case_questionnaires::is_questionnaire_section(&p.section)
+            });
 
             let mut order: Vec<String> = Vec::new();
             for name in props.clone().map(|p| p.section.clone()) {
@@ -1422,9 +1423,7 @@ pub fn CaseDetail(
             // At the top level each standing folder names its own audience; below
             // it the whole subtree shares the one the breadcrumb came from.
             let at_top = found.path.is_empty();
-            let here_restricted = found
-                .visibility
-                .is_some_and(|v| v.is_restricted());
+            let here_restricted = found.visibility.is_some_and(|v| v.is_restricted());
             let rows = found
                 .entries
                 .clone()
@@ -2029,6 +2028,25 @@ pub fn CaseDetail(
                 if detail_loading.get() { "hidden".to_string() } else { "space-y-6".to_string() }
             }>
             {details_section}
+
+            {if state.is_volunteer_or_admin() && can_read_case_material {
+                view! {
+                    {move || {
+                        let properties = live_case()
+                            .map(|case| case.properties)
+                            .unwrap_or_default();
+                        view! {
+                            <CaseIntakeTaskSummary
+                                case_id=case_sv.get_value()
+                                properties=properties
+                            />
+                        }
+                    }}
+                }
+                    .into_any()
+            } else {
+                ().into_any()
+            }}
 
             {documents_panel}
 

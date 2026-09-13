@@ -202,3 +202,92 @@ async fn get_at(case_id: &str, visibility: Visibility) -> Result<Vec<CasePropert
         })
         .collect())
 }
+
+/// Replace one section while preserving every other property at this
+/// visibility. The complete list is rewritten to keep display ordering stable.
+pub async fn replace_section(
+    case_id: &str,
+    visibility: Visibility,
+    section: &str,
+    properties: Vec<CaseProperty>,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let cleaned = clean(properties)
+        .into_iter()
+        .map(|property| CaseProperty {
+            section: section.to_string(),
+            visibility,
+            ..property
+        })
+        .collect::<Vec<_>>();
+    let mut tx = pool().begin().await?;
+    sqlx::query("SELECT id FROM cases WHERE id = $1 FOR UPDATE")
+        .bind(case_id)
+        .execute(&mut *tx)
+        .await?;
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT key, value, section FROM case_properties
+         WHERE case_id = $1 AND visibility = $2 ORDER BY ord ASC",
+    )
+    .bind(case_id)
+    .bind(visibility.slug())
+    .fetch_all(&mut *tx)
+    .await?;
+    let existing = rows
+        .into_iter()
+        .map(|(key, value, section)| CaseProperty {
+            key,
+            value,
+            section,
+            visibility,
+        })
+        .collect::<Vec<_>>();
+    let current = existing
+        .iter()
+        .filter(|property| property.section == section)
+        .cloned()
+        .collect::<Vec<_>>();
+    if current == cleaned {
+        tx.commit().await?;
+        return Ok(());
+    }
+
+    let mut replacement = Vec::with_capacity(existing.len() - current.len() + cleaned.len());
+    let mut inserted = false;
+    for property in existing {
+        if property.section == section {
+            if !inserted {
+                replacement.extend(cleaned.iter().cloned());
+                inserted = true;
+            }
+        } else {
+            replacement.push(property);
+        }
+    }
+    if !inserted {
+        replacement.extend(cleaned);
+    }
+
+    sqlx::query("DELETE FROM case_properties WHERE case_id = $1 AND visibility = $2")
+        .bind(case_id)
+        .bind(visibility.slug())
+        .execute(&mut *tx)
+        .await?;
+    let mut ordering = Ordering::default();
+    for property in &replacement {
+        insert(&mut tx, case_id, &mut ordering, property).await?;
+    }
+    tx.commit().await?;
+
+    audit::record(
+        pool(),
+        audit::Entity::Case,
+        case_id,
+        actor,
+        section,
+        "",
+        "questionnaire completed",
+    )
+    .await?;
+    Ok(())
+}

@@ -21,6 +21,7 @@ pub mod components {
     pub mod admin_volunteers;
     pub mod case_contacts;
     pub mod case_intake;
+    pub mod case_questionnaires;
     pub mod category_picker;
     pub mod change_log;
     pub mod chart;
@@ -42,6 +43,7 @@ pub mod components {
 pub mod pages {
     pub mod admin;
     pub mod bulk_properties;
+    pub mod case_intake;
     pub mod case_notes;
     pub mod case_signup;
     pub mod cases;
