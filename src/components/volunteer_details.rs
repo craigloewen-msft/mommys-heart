@@ -53,9 +53,6 @@ pub fn VolunteerDetailsPanel(
     let user_id = StoredValue::new(user_id);
     let editing = RwSignal::new(false);
     let draft = RwSignal::new(VolunteerDetails::default());
-    // Whether the edit form should clear the stored number. Separate from the
-    // draft's blank `ssn`, which means "keep what is on file".
-    let remove_ssn = RwSignal::new(false);
     let save_error = RwSignal::new(None::<String>);
     let saving = RwSignal::new(false);
     let saved = RwSignal::new(false);
@@ -67,7 +64,6 @@ pub fn VolunteerDetailsPanel(
 
     let begin_edit = move |_| {
         draft.set(details.get_untracked().to_edit());
-        remove_ssn.set(false);
         save_error.set(None);
         saved.set(false);
         editing.set(true);
@@ -84,16 +80,18 @@ pub fn VolunteerDetailsPanel(
         }
         let edit = draft.get_untracked();
         // Checked here too so the message appears without a round trip; both
-        // sides run the same validator.
-        if let Err(message) = edit.normalized().validate() {
+        // sides run the same validator. A blank SSN keeps the one on file.
+        if let Err(message) = edit
+            .normalized()
+            .validate_with(details.get_untracked().has_ssn)
+        {
             save_error.set(Some(message));
             return;
         }
-        let clear = remove_ssn.get_untracked();
         saving.set(true);
         save_error.set(None);
         spawn_local(async move {
-            match save_my_volunteer_details(edit, clear).await {
+            match save_my_volunteer_details(edit).await {
                 Ok(updated) => {
                     details.set(updated);
                     // A changed number invalidates anything already revealed.
@@ -168,9 +166,11 @@ pub fn VolunteerDetailsPanel(
 
     let read_only = move || {
         let d = details.get();
+        let signed_by_guardian = d.signer_is_guardian;
         view! {
             <div class="mt-2">
                 <DetailRow label="Skills and area of focus" value=d.skills_focus.clone() />
+                <DetailRow label="Volunteer role" value=d.volunteer_role.clone() />
                 <DetailRow label="Date of birth" value=format_dob(&d.date_of_birth) />
                 {ssn_row()}
                 <DetailRow label="Phone" value=d.phone.clone() />
@@ -180,6 +180,17 @@ pub fn VolunteerDetailsPanel(
                     value=d.emergency_relationship.clone()
                 />
                 <DetailRow label="Emergency contact phone" value=d.emergency_phone.clone() />
+                <DetailRow label="Full legal name" value=d.legal_name.clone() />
+                <DetailRow label="Electronic signature" value=d.signature_name.clone() />
+                <Show when=move || signed_by_guardian>
+                    <DetailRow label="Signed by guardian" value=d.guardian_name.clone() />
+                    <DetailRow
+                        label="Guardian's relationship"
+                        value=d.guardian_relationship.clone()
+                    />
+                    <DetailRow label="Guardian's email" value=d.guardian_email.clone() />
+                </Show>
+                <DetailRow label="Signed on" value=d.signed_at.clone() />
             </div>
         }
         .into_any()
@@ -198,6 +209,18 @@ pub fn VolunteerDetailsPanel(
                         on:input=move |event| {
                             let value = event_target_value(&event);
                             draft.update(|d| d.skills_focus = value);
+                        }
+                    />
+                </div>
+
+                <div>
+                    <label class=LABEL_CLASS>"Volunteer role"</label>
+                    <input
+                        class=INPUT_CLASS
+                        prop:value=move || draft.get().volunteer_role
+                        on:input=move |event| {
+                            let value = event_target_value(&event);
+                            draft.update(|d| d.volunteer_role = value);
                         }
                     />
                 </div>
@@ -232,7 +255,15 @@ pub fn VolunteerDetailsPanel(
                 </div>
 
                 <div>
-                    <label class=LABEL_CLASS>"Social Security Number (optional)"</label>
+                    <label class=LABEL_CLASS>
+                        {move || {
+                            if has_ssn {
+                                "Social Security Number (leave blank to keep the number on file)"
+                            } else {
+                                "Social Security Number (required)"
+                            }
+                        }}
+                    </label>
                     <input
                         class=INPUT_CLASS
                         placeholder=move || {
@@ -242,27 +273,12 @@ pub fn VolunteerDetailsPanel(
                                 "000-00-0000"
                             }
                         }
-                        prop:disabled=move || remove_ssn.get()
                         prop:value=move || draft.get().ssn
                         on:input=move |event| {
                             let value = event_target_value(&event);
                             draft.update(|d| d.ssn = value);
                         }
                     />
-                    // Only offered when there is something to remove.
-                    <Show when=move || has_ssn>
-                        <label class="mt-2 flex items-center gap-2 text-xs text-slate-400">
-                            <input
-                                class="h-3.5 w-3.5 rounded border-slate-700 bg-slate-950 text-primary-500"
-                                type="checkbox"
-                                prop:checked=move || remove_ssn.get()
-                                on:change=move |event| {
-                                    remove_ssn.set(event_target_checked(&event));
-                                }
-                            />
-                            <span>"Remove the number on file"</span>
-                        </label>
-                    </Show>
                 </div>
 
                 <div class="grid gap-4 sm:grid-cols-2">

@@ -145,9 +145,11 @@ pub async fn apply_to_volunteer(
             "Please read and accept the current volunteer agreement.",
         ));
     }
-    // Normalize first so what is validated is exactly what gets stored.
+    // Normalize first so what is validated is exactly what gets stored. Signing
+    // requires the SSN outright, plus the consent and typed signature.
     let details = details.normalized();
-    details.validate().map_err(ServerFnError::new)?;
+    details.validate_with(false).map_err(ServerFnError::new)?;
+    details.validate_signature().map_err(ServerFnError::new)?;
 
     let existing = volunteers::get(&user.id)
         .await
@@ -193,41 +195,43 @@ pub async fn apply_to_volunteer(
 }
 
 /// Update the caller's own volunteer details, always scoped to the signed-in
-/// user. A blank `ssn` keeps the number on file; `remove_ssn` clears it.
+/// user. A blank `ssn` keeps the number on file.
 #[server(prefix = "/api")]
 pub async fn save_my_volunteer_details(
     details: VolunteerDetails,
-    remove_ssn: bool,
 ) -> Result<VolunteerDetailsView, ServerFnError> {
     use crate::server::db::volunteers;
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
     let details = details.normalized();
-    details.validate().map_err(ServerFnError::new)?;
 
     let existing = volunteers::get(&user.id)
         .await
         .map_err(ServerFnError::new)?
         .ok_or_else(|| ServerFnError::new("You do not have a volunteer record to edit."))?;
 
-    volunteers::save_details(&user.id, &details, remove_ssn, &user.full_name())
+    // The browser is never sent the stored number, so a blank box means "keep it".
+    details
+        .validate_with(existing.details.has_ssn)
+        .map_err(ServerFnError::new)?;
+
+    volunteers::save_details(&user.id, &details, &user.full_name())
         .await
         .map_err(ServerFnError::new)?;
 
     Ok(VolunteerDetailsView {
         skills_focus: details.skills_focus,
+        volunteer_role: details.volunteer_role,
         date_of_birth: details.date_of_birth,
-        has_ssn: if remove_ssn {
-            false
-        } else {
-            !details.ssn.is_empty() || existing.details.has_ssn
-        },
+        has_ssn: !details.ssn.is_empty() || existing.details.has_ssn,
         phone: details.phone,
         emergency_first_name: details.emergency_first_name,
         emergency_last_name: details.emergency_last_name,
         emergency_relationship: details.emergency_relationship,
         emergency_phone: details.emergency_phone,
+        // The signature block is not editable here; it stays as signed.
+        ..existing.details
     })
 }
 

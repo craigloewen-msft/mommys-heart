@@ -12,8 +12,11 @@ use leptos_router::hooks::use_navigate;
 
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
+use crate::helpers::dates;
 use crate::helpers::volunteer_details::{VolunteerDetails, BACKGROUND_CHECK_CONSENT};
 use crate::helpers::volunteer_terms::{
+    CONSENT_CHECKBOX_LABEL, ELECTRONIC_CONSENT, ELECTRONIC_CONSENT_HEADING, ELECTRONIC_EXECUTION,
+    ELECTRONIC_EXECUTION_HEADING, FOUNDATION_SIGNATORY, FOUNDATION_SIGNATORY_TITLE,
     VOLUNTEER_AGREEMENT_SECTIONS, VOLUNTEER_AGREEMENT_VERSION, VOLUNTEER_ATTESTATION,
 };
 use crate::server_fns::err_text;
@@ -23,6 +26,7 @@ use crate::state::AppState;
 
 const INPUT_CLASS: &str = "mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/30 disabled:cursor-not-allowed disabled:opacity-50";
 const LABEL_CLASS: &str = "block text-sm font-medium text-slate-300";
+const HEADING_CLASS: &str = "mt-7 text-sm font-semibold text-slate-200";
 
 /// The red asterisk marking a required field.
 #[component]
@@ -85,15 +89,25 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
     // Only answerable once the agreement has been read and accepted.
     let unlocked = move || read_to_end.get() && accepted.get();
 
+    // Drives the parent/guardian block, which the entered date of birth decides.
+    let is_minor = move || dates::is_minor(&details.get().date_of_birth);
+
     require_login(state, move || {
         let navigate = navigate.clone();
         let submit = move || {
             if !accepted.get_untracked() || submitting.get_untracked() {
                 return;
             }
-            let submitted = details.get_untracked();
-            // Validate before the round trip; the server runs the same check.
-            if let Err(message) = submitted.normalized().validate() {
+            let mut submitted = details.get_untracked();
+            // The tick box is the consent; date and time are generated server-side.
+            submitted.electronic_consent = accepted.get_untracked();
+            submitted.signer_is_guardian = dates::is_minor(&submitted.date_of_birth);
+            let submitted = submitted.normalized();
+            // Validate before the round trip; the server runs the same checks.
+            if let Err(message) = submitted
+                .validate_with(false)
+                .and_then(|()| submitted.validate_signature())
+            {
                 error.set(message);
                 return;
             }
@@ -170,6 +184,13 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
                         <section class="border-t border-slate-800 p-5 sm:p-7">
                             <p class="text-sm text-slate-400">{VOLUNTEER_ATTESTATION}</p>
 
+                            <h3 class="mt-6 text-sm font-semibold uppercase tracking-wide text-slate-200">
+                                {ELECTRONIC_CONSENT_HEADING}
+                            </h3>
+                            <p class="mt-2 text-sm leading-relaxed text-slate-400">
+                                {ELECTRONIC_CONSENT}
+                            </p>
+
                             <label
                                 class="mt-5 flex items-start gap-3 text-sm"
                                 class=("text-slate-200", move || read_to_end.get())
@@ -185,7 +206,7 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
                                         error.set(String::new());
                                     }
                                 />
-                                <span>"I have read and accept the Volunteer Agreement."</span>
+                                <span>{CONSENT_CHECKBOX_LABEL}</span>
                             </label>
 
                             <Show when=move || read_to_end.get() && !accepted.get()>
@@ -196,9 +217,172 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
                         </section>
 
                         <section class="border-t border-slate-800 p-5 sm:p-7">
+                            <h2 class="text-lg font-semibold text-slate-100">
+                                "Volunteer information and signature"
+                            </h2>
+                            <p class="mt-1 text-sm text-slate-400">
+                                "The date and time of submission are recorded automatically."
+                            </p>
+
+                            <Show when=move || !unlocked()>
+                                <p class="mb-5 mt-4 rounded-lg bg-slate-800/60 px-3 py-2 text-xs text-slate-400">
+                                    "Read the agreement to the end and accept it above to fill this in."
+                                </p>
+                            </Show>
+
+                            <div class="mt-4 grid gap-5 sm:grid-cols-2">
+                                <div>
+                                    <label class=LABEL_CLASS>
+                                        "Volunteer\u{2019}s full legal name " <Required />
+                                    </label>
+                                    <input
+                                        class=INPUT_CLASS
+                                        prop:disabled=move || !unlocked()
+                                        prop:value=move || details.get().legal_name
+                                        on:input=move |event| {
+                                            let value = event_target_value(&event);
+                                            details.update(|d| d.legal_name = value);
+                                        }
+                                    />
+                                </div>
+                                <div>
+                                    <label class=LABEL_CLASS>
+                                        "Electronic signature (type full legal name) " <Required />
+                                    </label>
+                                    <input
+                                        class=INPUT_CLASS
+                                        prop:disabled=move || !unlocked()
+                                        prop:value=move || details.get().signature_name
+                                        on:input=move |event| {
+                                            let value = event_target_value(&event);
+                                            details.update(|d| d.signature_name = value);
+                                        }
+                                    />
+                                    <p class="mt-1 text-xs text-slate-500">
+                                        "If the volunteer is under 18, this is the parent or legal guardian\u{2019}s name."
+                                    </p>
+                                </div>
+                                <div>
+                                    <label class=LABEL_CLASS>"Email address"</label>
+                                    <input
+                                        class=INPUT_CLASS
+                                        type="email"
+                                        disabled=true
+                                        prop:value=move || email.get()
+                                    />
+                                </div>
+                                <div>
+                                    <label class=LABEL_CLASS>"Date and time of submission"</label>
+                                    <input
+                                        class=INPUT_CLASS
+                                        disabled=true
+                                        prop:value="Recorded automatically when you submit"
+                                    />
+                                </div>
+                            </div>
+
+                            <Show when=move || is_minor()>
+                                <h3 class=HEADING_CLASS>"If the volunteer is under 18"</h3>
+                                <p class="mt-1 text-xs text-slate-500">
+                                    "A parent or legal guardian must sign on the volunteer\u{2019}s behalf."
+                                </p>
+                                <div class="mt-4 grid gap-5 sm:grid-cols-2">
+                                    <div>
+                                        <label class=LABEL_CLASS>
+                                            "Parent/legal guardian\u{2019}s full legal name " <Required />
+                                        </label>
+                                        <input
+                                            class=INPUT_CLASS
+                                            prop:disabled=move || !unlocked()
+                                            prop:value=move || details.get().guardian_name
+                                            on:input=move |event| {
+                                                let value = event_target_value(&event);
+                                                details.update(|d| d.guardian_name = value);
+                                            }
+                                        />
+                                    </div>
+                                    <div>
+                                        <label class=LABEL_CLASS>
+                                            "Relationship to minor volunteer " <Required />
+                                        </label>
+                                        <input
+                                            class=INPUT_CLASS
+                                            prop:disabled=move || !unlocked()
+                                            prop:value=move || details.get().guardian_relationship
+                                            on:input=move |event| {
+                                                let value = event_target_value(&event);
+                                                details.update(|d| d.guardian_relationship = value);
+                                            }
+                                        />
+                                    </div>
+                                    <div>
+                                        <label class=LABEL_CLASS>
+                                            "Parent/legal guardian\u{2019}s email address " <Required />
+                                        </label>
+                                        <input
+                                            class=INPUT_CLASS
+                                            type="email"
+                                            prop:disabled=move || !unlocked()
+                                            prop:value=move || details.get().guardian_email
+                                            on:input=move |event| {
+                                                let value = event_target_value(&event);
+                                                details.update(|d| d.guardian_email = value);
+                                            }
+                                        />
+                                    </div>
+                                </div>
+                            </Show>
+
+                            <h3 class=HEADING_CLASS>"Mommy\u{2019}s Heart acceptance"</h3>
+                            <div class="mt-4 grid gap-5 sm:grid-cols-2">
+                                <div>
+                                    <label class=LABEL_CLASS>
+                                        "Authorized representative\u{2019}s full legal name"
+                                    </label>
+                                    <input
+                                        class=INPUT_CLASS
+                                        disabled=true
+                                        prop:value=FOUNDATION_SIGNATORY
+                                    />
+                                </div>
+                                <div>
+                                    <label class=LABEL_CLASS>"Title"</label>
+                                    <input
+                                        class=INPUT_CLASS
+                                        disabled=true
+                                        prop:value=FOUNDATION_SIGNATORY_TITLE
+                                    />
+                                </div>
+                                <div>
+                                    <label class=LABEL_CLASS>
+                                        "Electronic signature (type full legal name)"
+                                    </label>
+                                    <input
+                                        class=INPUT_CLASS
+                                        disabled=true
+                                        prop:value=FOUNDATION_SIGNATORY
+                                    />
+                                </div>
+                                <div>
+                                    <label class=LABEL_CLASS>"Date"</label>
+                                    <input
+                                        class=INPUT_CLASS
+                                        disabled=true
+                                        prop:value="Same date as the volunteer\u{2019}s submission"
+                                    />
+                                </div>
+                            </div>
+
+                            <h3 class=HEADING_CLASS>{ELECTRONIC_EXECUTION_HEADING}</h3>
+                            <p class="mt-2 text-sm leading-relaxed text-slate-400">
+                                {ELECTRONIC_EXECUTION}
+                            </p>
+                        </section>
+
+                        <section class="border-t border-slate-800 p-5 sm:p-7">
                             <div class="mb-6">
                                 <h2 class="text-lg font-semibold text-slate-100">
-                                    "Volunteer information"
+                                    "Volunteer\u{2019}s contact information"
                                 </h2>
                                 <p class="mt-1 text-sm text-slate-400">
                                     "Fields marked with " <Required /> " are required."
@@ -211,26 +395,7 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
                                 </p>
                             </Show>
 
-                            <div>
-                                <label class=LABEL_CLASS>
-                                    "Volunteer skills and area of focus " <Required />
-                                </label>
-                                <textarea
-                                    class=INPUT_CLASS
-                                    rows="3"
-                                    prop:disabled=move || !unlocked()
-                                    prop:value=move || details.get().skills_focus
-                                    on:input=move |event| {
-                                        let value = event_target_value(&event);
-                                        details.update(|d| d.skills_focus = value);
-                                    }
-                                />
-                            </div>
-
-                            <h3 class="mt-7 text-sm font-semibold text-slate-200">
-                                "Volunteer contact information"
-                            </h3>
-                            <p class="mt-1 text-xs text-slate-500">{BACKGROUND_CHECK_CONSENT}</p>
+                            <p class="text-xs text-slate-500">{BACKGROUND_CHECK_CONSENT}</p>
 
                             <div class="mt-4 grid gap-5 sm:grid-cols-2">
                                 <div>
@@ -249,7 +414,9 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
                                     />
                                 </div>
                                 <div>
-                                    <label class=LABEL_CLASS>"Social Security Number"</label>
+                                    <label class=LABEL_CLASS>
+                                        "Social Security Number " <Required />
+                                    </label>
                                     <input
                                         class=INPUT_CLASS
                                         placeholder="000-00-0000"
@@ -261,7 +428,7 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
                                         }
                                     />
                                     <p class="mt-1 text-xs text-slate-500">
-                                        "Optional. Only a site administrator can view it, and every viewing is logged."
+                                        "Only a site administrator can view it, and every viewing is logged."
                                     </p>
                                 </div>
                                 <div>
@@ -291,9 +458,37 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
                                         }
                                     />
                                 </div>
+                                <div>
+                                    <label class=LABEL_CLASS>"Volunteer role"</label>
+                                    <input
+                                        class=INPUT_CLASS
+                                        prop:disabled=move || !unlocked()
+                                        prop:value=move || details.get().volunteer_role
+                                        on:input=move |event| {
+                                            let value = event_target_value(&event);
+                                            details.update(|d| d.volunteer_role = value);
+                                        }
+                                    />
+                                </div>
                             </div>
 
-                            <h3 class="mt-7 text-sm font-semibold text-slate-200">
+                            <div class="mt-5">
+                                <label class=LABEL_CLASS>
+                                    "Volunteer special skills and area of focus " <Required />
+                                </label>
+                                <textarea
+                                    class=INPUT_CLASS
+                                    rows="3"
+                                    prop:disabled=move || !unlocked()
+                                    prop:value=move || details.get().skills_focus
+                                    on:input=move |event| {
+                                        let value = event_target_value(&event);
+                                        details.update(|d| d.skills_focus = value);
+                                    }
+                                />
+                            </div>
+
+                            <h3 class=HEADING_CLASS>
                                 "Emergency contact information"
                             </h3>
 

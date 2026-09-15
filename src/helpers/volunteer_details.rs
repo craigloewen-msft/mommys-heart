@@ -1,5 +1,5 @@
-//! The volunteer's own details: skills, date of birth, contact, emergency
-//! contact, and the optional Social Security Number.
+//! The volunteer's own details: skills, role, date of birth, contact, emergency
+//! contact, the required Social Security Number, and the electronic signature.
 //!
 //! Pure functions, so one implementation serves both the browser form and the
 //! server function. The SSN is write-only from the browser's side: the read
@@ -27,16 +27,38 @@ pub const BACKGROUND_CHECK_CONSENT: &str = "By providing the information below, 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct VolunteerDetails {
     pub skills_focus: String,
+    /// The role the volunteer is applying for, beside their skills.
+    #[serde(default)]
+    pub volunteer_role: String,
     /// ISO `YYYY-MM-DD`, as an `<input type="date">` produces. Displayed as
     /// `MM-DD-YYYY` by [`format_dob`].
     pub date_of_birth: String,
-    /// Optional. Digits only after normalization; empty means "not provided".
+    /// Required when signing the agreement. Digits only after normalization; on
+    /// the profile edit form an empty value means "keep the number on file".
     pub ssn: String,
     pub phone: String,
     pub emergency_first_name: String,
     pub emergency_last_name: String,
     pub emergency_relationship: String,
     pub emergency_phone: String,
+    /// The volunteer's full legal name, as printed on the agreement.
+    #[serde(default)]
+    pub legal_name: String,
+    /// The full legal name typed into the electronic-signature field.
+    #[serde(default)]
+    pub signature_name: String,
+    /// Whether a parent or legal guardian is signing for a minor.
+    #[serde(default)]
+    pub signer_is_guardian: bool,
+    #[serde(default)]
+    pub guardian_name: String,
+    #[serde(default)]
+    pub guardian_relationship: String,
+    #[serde(default)]
+    pub guardian_email: String,
+    /// Whether the electronic consent box was ticked.
+    #[serde(default)]
+    pub electronic_consent: bool,
 }
 
 impl VolunteerDetails {
@@ -45,6 +67,7 @@ impl VolunteerDetails {
     pub fn normalized(&self) -> Self {
         Self {
             skills_focus: self.skills_focus.trim().to_string(),
+            volunteer_role: self.volunteer_role.trim().to_string(),
             date_of_birth: self.date_of_birth.trim().to_string(),
             ssn: digits(&self.ssn),
             phone: normalize_phone(&self.phone),
@@ -52,21 +75,26 @@ impl VolunteerDetails {
             emergency_last_name: self.emergency_last_name.trim().to_string(),
             emergency_relationship: self.emergency_relationship.trim().to_string(),
             emergency_phone: normalize_phone(&self.emergency_phone),
+            legal_name: self.legal_name.trim().to_string(),
+            signature_name: self.signature_name.trim().to_string(),
+            signer_is_guardian: self.signer_is_guardian,
+            guardian_name: self.guardian_name.trim().to_string(),
+            guardian_relationship: self.guardian_relationship.trim().to_string(),
+            guardian_email: self.guardian_email.trim().to_string(),
+            electronic_consent: self.electronic_consent,
         }
     }
 
-    /// Whether these details are complete and well-formed; the error is shown to
-    /// the volunteer as-is. Age is not gated — paragraph 13 allows minors.
-    pub fn validate(&self) -> Result<(), String> {
+    /// Whether these details are complete and well-formed when a number is
+    /// already stored (`ssn_on_file`), in which case a blank SSN means "keep it".
+    /// The error is shown to the volunteer as-is. Age is not gated — paragraph 13
+    /// allows minors, who sign through a parent or guardian instead.
+    pub fn validate_with(&self, ssn_on_file: bool) -> Result<(), String> {
         if self.skills_focus.trim().is_empty() {
             return Err("Please describe your skills and area of focus.".to_string());
         }
         validate_date_of_birth(self.date_of_birth.trim())?;
-        if !self.ssn.is_empty() && digits(&self.ssn).len() != SSN_DIGITS {
-            return Err(
-                "A Social Security Number has 9 digits. Leave it blank to skip it.".to_string(),
-            );
-        }
+        self.validate_ssn(ssn_on_file)?;
         if format_phone(&self.phone).is_none() {
             return Err(
                 "Enter your phone number as 10 digits, for example (555) 123-4567.".to_string(),
@@ -84,6 +112,68 @@ impl VolunteerDetails {
         }
         Ok(())
     }
+
+    /// The strict rules, used when signing: no number on file to fall back on.
+    pub fn validate(&self) -> Result<(), String> {
+        self.validate_with(false)
+    }
+
+    /// The extra rules that apply when signing the agreement: consent, a typed
+    /// signature, and a parent or guardian when the volunteer is a minor.
+    pub fn validate_signature(&self) -> Result<(), String> {
+        if !self.electronic_consent {
+            return Err(
+                "Tick the acknowledgment box to adopt your typed name as your electronic signature."
+                    .to_string(),
+            );
+        }
+        if self.legal_name.trim().is_empty() {
+            return Err("Please give the volunteer's full legal name.".to_string());
+        }
+        if self.signature_name.trim().is_empty() {
+            return Err("Type your full legal name as your electronic signature.".to_string());
+        }
+        if !dates::is_minor(&self.date_of_birth) {
+            return Ok(());
+        }
+        if !self.signer_is_guardian {
+            return Err(
+                "A volunteer under 18 must have a parent or legal guardian sign on their behalf."
+                    .to_string(),
+            );
+        }
+        if self.guardian_name.trim().is_empty() {
+            return Err("Please give the parent or legal guardian's full legal name.".to_string());
+        }
+        if self.guardian_relationship.trim().is_empty() {
+            return Err("Please give the guardian's relationship to the volunteer.".to_string());
+        }
+        if !is_email(&self.guardian_email) {
+            return Err("Enter the parent or legal guardian's email address.".to_string());
+        }
+        // A guardian signs in their own name, so the signature must be theirs.
+        if self.signature_name.trim() != self.guardian_name.trim() {
+            return Err(
+                "The electronic signature must be the parent or legal guardian's full legal name."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// The SSN rule on its own: nine digits, or blank only when one is on file.
+    fn validate_ssn(&self, ssn_on_file: bool) -> Result<(), String> {
+        if self.ssn.trim().is_empty() {
+            if ssn_on_file {
+                return Ok(());
+            }
+            return Err("A Social Security Number is required.".to_string());
+        }
+        if digits(&self.ssn).len() != SSN_DIGITS {
+            return Err("A Social Security Number has 9 digits.".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// The read side of [`VolunteerDetails`]: identical but for the SSN, which is
@@ -91,6 +181,8 @@ impl VolunteerDetails {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct VolunteerDetailsView {
     pub skills_focus: String,
+    #[serde(default)]
+    pub volunteer_role: String,
     /// ISO `YYYY-MM-DD`, or empty for a volunteer who predates this form.
     pub date_of_birth: String,
     /// Whether a Social Security Number is on file. Never the number itself.
@@ -100,6 +192,21 @@ pub struct VolunteerDetailsView {
     pub emergency_last_name: String,
     pub emergency_relationship: String,
     pub emergency_phone: String,
+    #[serde(default)]
+    pub legal_name: String,
+    #[serde(default)]
+    pub signature_name: String,
+    #[serde(default)]
+    pub signer_is_guardian: bool,
+    #[serde(default)]
+    pub guardian_name: String,
+    #[serde(default)]
+    pub guardian_relationship: String,
+    #[serde(default)]
+    pub guardian_email: String,
+    /// Pre-formatted date and time of submission; only ever shown.
+    #[serde(default)]
+    pub signed_at: String,
 }
 
 impl VolunteerDetailsView {
@@ -119,6 +226,7 @@ impl VolunteerDetailsView {
     pub fn to_edit(&self) -> VolunteerDetails {
         VolunteerDetails {
             skills_focus: self.skills_focus.clone(),
+            volunteer_role: self.volunteer_role.clone(),
             date_of_birth: self.date_of_birth.clone(),
             ssn: String::new(),
             phone: self.phone.clone(),
@@ -126,6 +234,15 @@ impl VolunteerDetailsView {
             emergency_last_name: self.emergency_last_name.clone(),
             emergency_relationship: self.emergency_relationship.clone(),
             emergency_phone: self.emergency_phone.clone(),
+            // The signature block is fixed at the moment of signing and is not
+            // editable here; sending it back blank leaves it untouched.
+            legal_name: String::new(),
+            signature_name: String::new(),
+            signer_is_guardian: false,
+            guardian_name: String::new(),
+            guardian_relationship: String::new(),
+            guardian_email: String::new(),
+            electronic_consent: false,
         }
     }
 
@@ -140,6 +257,16 @@ impl VolunteerDetailsView {
 /// Just the digits of `value`.
 fn digits(value: &str) -> String {
     value.chars().filter(char::is_ascii_digit).collect()
+}
+
+/// A crude but sufficient email check: one `@` with something either side and a
+/// dot in the domain. The address is only ever a contact point for a guardian.
+fn is_email(value: &str) -> bool {
+    let value = value.trim();
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }
 
 /// A phone number as `(000) 000-0000`, or the trimmed input when it is not ten

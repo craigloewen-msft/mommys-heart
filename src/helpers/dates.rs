@@ -40,3 +40,19 @@ pub fn today() -> String {
         crate::state::today()
     }
 }
+
+/// Whether someone born on ISO `value` is under 18 today. An unparseable or
+/// empty date is not treated as a minor; date-of-birth validation catches it.
+pub fn is_minor(value: &str) -> bool {
+    let Some((year, month, day)) = parse_iso(value.trim()) else {
+        return false;
+    };
+    let Some((this_year, this_month, this_day)) = parse_iso(&today()) else {
+        return false;
+    };
+    let mut age = this_year - year;
+    if (this_month, this_day) < (month, day) {
+        age -= 1;
+    }
+    age < 18
+}
