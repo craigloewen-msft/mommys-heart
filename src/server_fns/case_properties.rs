@@ -8,6 +8,7 @@
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::helpers::visibility::Visibility;
 
@@ -62,7 +63,7 @@ pub async fn set_case_properties(
     use crate::server_fns::capabilities::CaseCapability;
 
     let user = require_user().await?;
-    require_cap(&user, &case_id, CaseCapability::EditCase).await?;
+    require_cap(&user, &case_id, CaseCapability::AddNotes).await?;
     require_visibility(&user, visibility)?;
     case_properties::replace(&case_id, visibility, properties, &user.full_name())
         .await
@@ -74,6 +75,66 @@ pub async fn set_case_properties(
         crate::server_fns::settings::NotificationKind::CaseData,
         "updated the case properties".to_string(),
         crate::server::notifications::audience_for(visibility),
+    );
+    Ok(())
+}
+
+/// Save one volunteer-only intake questionnaire without replacing any other
+/// case information.
+#[server(prefix = "/api")]
+pub async fn save_case_questionnaire(
+    case_id: String,
+    questionnaire_slug: String,
+    answers: BTreeMap<String, String>,
+) -> Result<(), ServerFnError> {
+    use crate::helpers::case_questionnaires::{
+        answer_properties, questionnaire, required_followups, validate_answers,
+        GENERAL_QUESTIONNAIRE,
+    };
+    use crate::server::db::case_properties;
+    use crate::server::permissions::{require_cap, require_user, require_visibility};
+    use crate::server_fns::capabilities::CaseCapability;
+
+    // `AddNotes`, matching `set_case_properties`: completing an intake form is
+    // recording information on a case, not editing the case itself.
+    let user = require_user().await?;
+    require_cap(&user, &case_id, CaseCapability::AddNotes).await?;
+    require_visibility(&user, Visibility::VolunteerOnly)?;
+
+    let questionnaire = questionnaire(&questionnaire_slug)
+        .ok_or_else(|| ServerFnError::new("Questionnaire not found."))?;
+    validate_answers(questionnaire, &answers).map_err(ServerFnError::new)?;
+
+    if questionnaire.slug != GENERAL_QUESTIONNAIRE.slug {
+        let properties = case_properties::get_case_properties(&case_id, true)
+            .await
+            .map_err(ServerFnError::new)?;
+        let is_required = required_followups(&properties)
+            .iter()
+            .any(|required| required.questionnaire.slug == questionnaire.slug);
+        if !is_required {
+            return Err(ServerFnError::new(
+                "This follow-up is not required by the current general intake.",
+            ));
+        }
+    }
+
+    case_properties::replace_section(
+        &case_id,
+        Visibility::VolunteerOnly,
+        questionnaire.section,
+        answer_properties(questionnaire, &answers),
+        &user.full_name(),
+    )
+    .await
+    .map_err(ServerFnError::new)?;
+    crate::server::notifications::notify_case(
+        case_id,
+        user.id.clone(),
+        user.full_name(),
+        crate::server_fns::settings::NotificationKind::CaseData,
+        format!("completed the {}", questionnaire.title.to_lowercase()),
+        crate::server::notifications::audience_for(Visibility::VolunteerOnly),
     );
     Ok(())
 }

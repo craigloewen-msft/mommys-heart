@@ -3,8 +3,6 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 
-use crate::components::case_intake::{CaseIntakeFields, CaseIntakeState};
-use crate::helpers::case_intake::CaseIntake;
 #[cfg(feature = "hydrate")]
 use crate::helpers::terms::TERMS_VERSION;
 use crate::helpers::terms::{TERMS_ATTESTATION, TERMS_MINOR_NOTICE, TERMS_SECTIONS};
@@ -225,18 +223,16 @@ struct AccountFields {
     password_confirmation: String,
 }
 
-async fn start_case_signup(account: AccountFields, intake: CaseIntake) -> Result<(), String> {
+async fn start_case_signup(account: AccountFields, summary: String) -> Result<(), String> {
     #[cfg(feature = "hydrate")]
     {
-        let intake_json = serde_json::to_string(&intake)
-            .map_err(|_| "Could not prepare the case information.".to_string())?;
         return auth::register_case_signup(
             account.first_name,
             account.last_name,
             account.email,
             account.password,
             account.password_confirmation,
-            intake_json,
+            summary,
             TERMS_VERSION.to_string(),
         )
         .await
@@ -251,7 +247,7 @@ async fn start_case_signup(account: AccountFields, intake: CaseIntake) -> Result
             account.email,
             account.password,
             account.password_confirmation,
-            intake,
+            summary,
         );
         Ok(())
     }
@@ -268,7 +264,7 @@ pub fn CaseSignupDetailsPage() -> impl IntoView {
     let email = RwSignal::new(String::new());
     let password = RwSignal::new(String::new());
     let password_confirmation = RwSignal::new(String::new());
-    let intake = CaseIntakeState::new();
+    let summary = RwSignal::new(String::new());
     let error = RwSignal::new(String::new());
     let pending = RwSignal::new(false);
 
@@ -302,16 +298,16 @@ pub fn CaseSignupDetailsPage() -> impl IntoView {
                 password: password.get_untracked(),
                 password_confirmation: password_confirmation.get_untracked(),
             };
-            let intake = intake.value();
-            if let Err(message) = intake.validate() {
-                error.set(message);
+            let summary = summary.get_untracked().trim().to_string();
+            if summary.is_empty() {
+                error.set("Please tell us briefly what you need help with.".to_string());
                 return;
             }
             let navigate = navigate.clone();
             pending.set(true);
             error.set(String::new());
             spawn_local(async move {
-                match start_case_signup(account, intake).await {
+                match start_case_signup(account, summary).await {
                     Ok(()) => navigate("/case-signup/verify", Default::default()),
                     Err(message) => {
                         error.set(message);
@@ -342,12 +338,30 @@ pub fn CaseSignupDetailsPage() -> impl IntoView {
                         <div class="mb-6 flex items-start gap-3">
                             <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary-500 text-sm font-bold text-white">"2"</span>
                             <div>
-                                <h2 class="text-lg font-semibold text-slate-100">"Provide case info"</h2>
-                                <p class="mt-1 text-sm text-slate-400">"Fields marked with * are required."</p>
+                                <h2 class="text-lg font-semibold text-slate-100">"Tell us what you need"</h2>
+                                <p class="mt-1 text-sm text-slate-400">
+                                    "A few words is enough. A member of our team will go through the full intake with you."
+                                </p>
                             </div>
                         </div>
 
-                        <CaseIntakeFields state=intake />
+                        <div>
+                            <label class=label_class>
+                                "What do you need help with? "
+                                <span class="text-rose-400" aria-hidden="true">"*"</span>
+                            </label>
+                            <textarea
+                                class=input_class
+                                rows="4"
+                                required
+                                placeholder="For example: I need help with custody of my two children."
+                                prop:value=move || summary.get()
+                                on:input=move |event| summary.set(event_target_value(&event))
+                            ></textarea>
+                            <p class="mt-2 text-xs text-slate-500">
+                                "Please do not include anything you would rather tell us in person \u{2014} we will ask when we speak."
+                            </p>
+                        </div>
                     </section>
 
                     <section class="border-t border-slate-800 p-5 sm:p-7">

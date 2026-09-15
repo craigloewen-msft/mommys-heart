@@ -4,7 +4,7 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 
 use crate::components::case_contacts::CaseContactsPanel;
-use crate::components::case_intake::{CaseIntakeFields, CaseIntakeState};
+use crate::components::case_questionnaires::CaseIntakeTaskSummary;
 use crate::components::change_log::ChangeLog;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
@@ -49,10 +49,10 @@ fn group_case_properties(case: &Case) -> Vec<(Visibility, Vec<(String, Vec<CaseP
     Visibility::ALL
         .into_iter()
         .filter_map(|visibility| {
-            let props = case
-                .properties
-                .iter()
-                .filter(|p| p.visibility == visibility);
+            let props = case.properties.iter().filter(|p| {
+                p.visibility == visibility
+                    && !crate::helpers::case_questionnaires::is_questionnaire_section(&p.section)
+            });
 
             let mut order: Vec<String> = Vec::new();
             for name in props.clone().map(|p| p.section.clone()) {
@@ -420,7 +420,6 @@ pub fn NewCasePage() -> impl IntoView {
 
     let name = RwSignal::new(String::new());
     let status = RwSignal::new(CaseStatus::Open.slug().to_string());
-    let intake = CaseIntakeState::new();
     let error = RwSignal::new(String::new());
 
     let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
@@ -433,15 +432,15 @@ pub fn NewCasePage() -> impl IntoView {
                 let navigate = navigate.clone();
                 let status =
                     CaseStatus::from_slug(&status.get_untracked()).unwrap_or(CaseStatus::Open);
-                let intake = intake.value();
-                if let Err(message) = intake.validate() {
-                    error.set(message);
-                    return;
-                }
                 let name_val = name.get_untracked();
                 spawn_local(async move {
-                    match cases::create_case(name_val, status, intake).await {
-                        Ok(_) => navigate("/cases", Default::default()),
+                    match cases::create_case(name_val, status).await {
+                        // Straight into the intake questionnaire: creating the
+                        // case is the start of intake, not a separate errand to
+                        // remember later.
+                        Ok(case_id) => {
+                            navigate(&format!("/cases/{case_id}/intake"), Default::default())
+                        }
                         Err(e) => error.set(err_text(e)),
                     }
                 });
@@ -494,12 +493,12 @@ pub fn NewCasePage() -> impl IntoView {
                             "A coordinator will review this case before it is opened."
                         </p>
                     </Show>
-                    <div class="border-t border-slate-800 pt-5">
-                        <div class="mb-5">
-                            <h2 class="text-sm font-semibold text-slate-200">"Case intake"</h2>
-                            <p class="mt-1 text-sm text-slate-400">"Fields marked with * are required."</p>
-                        </div>
-                        <CaseIntakeFields state=intake />
+                    <div class="rounded-lg border border-slate-800 bg-slate-950 p-4">
+                        <h2 class="text-sm font-semibold text-slate-200">"What happens next"</h2>
+                        <p class="mt-1 text-sm text-slate-400">
+                            "Creating the case opens the intake questionnaire. The general \
+                             intake decides which specialised intakes are needed."
+                        </p>
                     </div>
                     <Show when=move || !error.get().is_empty()>
                         <p class="text-sm text-rose-300">{move || error.get()}</p>
@@ -1422,9 +1421,7 @@ pub fn CaseDetail(
             // At the top level each standing folder names its own audience; below
             // it the whole subtree shares the one the breadcrumb came from.
             let at_top = found.path.is_empty();
-            let here_restricted = found
-                .visibility
-                .is_some_and(|v| v.is_restricted());
+            let here_restricted = found.visibility.is_some_and(|v| v.is_restricted());
             let rows = found
                 .entries
                 .clone()
@@ -2029,6 +2026,25 @@ pub fn CaseDetail(
                 if detail_loading.get() { "hidden".to_string() } else { "space-y-6".to_string() }
             }>
             {details_section}
+
+            {if state.is_volunteer_or_admin() && can_read_case_material {
+                view! {
+                    {move || {
+                        let properties = live_case()
+                            .map(|case| case.properties)
+                            .unwrap_or_default();
+                        view! {
+                            <CaseIntakeTaskSummary
+                                case_id=case_sv.get_value()
+                                properties=properties
+                            />
+                        }
+                    }}
+                }
+                    .into_any()
+            } else {
+                ().into_any()
+            }}
 
             {documents_panel}
 
