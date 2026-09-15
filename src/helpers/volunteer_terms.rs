@@ -9,7 +9,7 @@ use crate::helpers::terms::TermsSection;
 /// The version of the volunteer agreement currently in force. Stored verbatim on
 /// every acceptance; bump it whenever [`VOLUNTEER_AGREEMENT_SECTIONS`] changes in
 /// substance.
-pub const VOLUNTEER_AGREEMENT_VERSION: &str = "2026-08-10";
+pub const VOLUNTEER_AGREEMENT_VERSION: &str = "2026-08-10.2";
 
 /// The agreement, in display order.
 pub const VOLUNTEER_AGREEMENT_SECTIONS: &[TermsSection] = &[
@@ -162,9 +162,26 @@ pub const VOLUNTEER_AGREEMENT_SECTIONS: &[TermsSection] = &[
 /// from [`VOLUNTEER_AGREEMENT_SECTIONS`] because it is what the checkbox attests
 /// to, not part of the agreement it attests about.
 ///
-/// The paper form's closing signature clause is replaced by what happens here,
-/// since this acceptance captures no signature from either party.
-pub const VOLUNTEER_ATTESTATION: &str = "Volunteer acknowledges, affirms, and certifies that they have read and reviewed, and now and hereby agree to all above-stated 20 paragraphs.  By accepting below, Volunteer certifies that they understand the terms and conditions set forth above are a binding contract with the Foundation.";
+/// The signature this attests to is the typed full legal name captured below it,
+/// together with the Foundation President's countersignature.
+pub const VOLUNTEER_ATTESTATION: &str = "Volunteer acknowledges, affirms, and certifies that they have read and reviewed, and now and hereby agree to all above-stated 20 paragraphs.  By affixing their signature, together with the Foundation President, Volunteer certifies that they understand the terms and conditions set forth above are a binding contract with the Foundation.";
+
+/// The heading above the electronic consent provision.
+pub const ELECTRONIC_CONSENT_HEADING: &str = "ELECTRONIC CONSENT AND SIGNATURE";
+
+/// The electronic consent provision, which the tick box below it adopts.
+pub const ELECTRONIC_CONSENT: &str = "By checking the acknowledgment box below and typing my full legal name in the electronic-signature field, I represent and certify that I am the Volunteer identified in this Agreement or, if the Volunteer is under 18 years of age, that I am the Volunteer\u{2019}s parent or legal guardian and have full legal authority to enter into this Agreement on the Volunteer\u{2019}s behalf; that all information I have provided is true, accurate, and complete; that I have received, carefully read, understand, and voluntarily agree to this entire Volunteer Agreement, including its confidentiality, intellectual-property, work-for-hire, conduct, assumption-of-risk, release, indemnification, arbitration, background-check authorization, and other provisions; that I have had sufficient time and opportunity to ask questions and seek independent legal advice before signing; that I am signing knowingly and voluntarily, without coercion or undue influence; that I understand this is an unpaid volunteer position and does not create an employment relationship or entitlement to wages, benefits, insurance, or continued volunteer service; that I consent to conducting this transaction and receiving, signing, and retaining this Agreement electronically; and that I specifically intend to adopt the full legal name typed below as my electronic signature. I understand and agree that my electronic signature identifies me, authenticates this Agreement, evidences my intent to be legally bound by all of its terms, and has the same legal validity, force, and effect as my handwritten signature. I further consent to Mommy\u{2019}s Heart, Inc. retaining this electronically signed Agreement and related authentication records, including the date and time of submission, document version, account or email information, and other reasonable audit-trail information, and I agree that accurate electronic copies and records may be used as evidence of my acceptance to the same extent as an original paper document. I confirm that I can access, download, print, and retain a complete copy of this Agreement and understand that I may request a paper copy by contacting Mommy\u{2019}s Heart, Inc. at info@mommysheartinc.org.";
+
+/// The wording of the acknowledgment box itself.
+pub const CONSENT_CHECKBOX_LABEL: &str = "I have read, understand, and agree to the Electronic Consent and Signature provision above; I voluntarily accept all terms of this Volunteer Agreement; and I adopt the full legal name typed below as my electronic signature.";
+
+/// The counterparts clause shown beneath the signature blocks.
+pub const ELECTRONIC_EXECUTION_HEADING: &str = "Electronic Execution and Counterparts";
+pub const ELECTRONIC_EXECUTION: &str = "This Agreement may be executed electronically and in counterparts. Each electronically signed counterpart will be deemed an original, and all counterparts together will constitute one agreement. The Parties agree that electronic signatures and electronic records used in connection with this Agreement will have the same validity, force, and effect as handwritten signatures and original paper records to the fullest extent permitted by applicable law. This Agreement will become effective on the date it is electronically signed by the last Party.";
+
+/// Who countersigns for the Foundation, shown read-only in the acceptance block.
+pub const FOUNDATION_SIGNATORY: &str = "Julianne Michelle Reeves Stroh";
+pub const FOUNDATION_SIGNATORY_TITLE: &str = "President and Executive Director";
 
 /// Whether `version` is an agreement version this build knows how to honour. Only
 /// the current wording may be accepted — an older tab holding a stale version

@@ -83,9 +83,11 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     "INSERT INTO volunteers (
                          user_id, status, agreement_version, decided_by_name, skills_focus,
                          date_of_birth, ssn, phone, emergency_first_name, emergency_last_name,
-                         emergency_relationship, emergency_phone
+                         emergency_relationship, emergency_phone, volunteer_role, legal_name,
+                         signature_name, electronic_consent, signed_at
                      )
-                     VALUES ($1, 'approved', $2, 'Seed', $3, NULLIF($4, '')::date, $5, $6, $7, $8, $9, $10)",
+                     VALUES ($1, 'approved', $2, 'Seed', $3, NULLIF($4, '')::date, $5, $6, $7, $8, $9, $10,
+                             $11, $12, $13, $14, CASE WHEN $14 THEN now() ELSE NULL END)",
                 )
                 .bind(&u.id)
                 .bind(if signed {
@@ -105,6 +107,18 @@ async fn seed() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .bind(if signed { "Patel" } else { "" })
                 .bind(if signed { "Sister" } else { "" })
                 .bind(if signed { "(555) 204-1188" } else { "" })
+                .bind(if signed { "Case intake volunteer" } else { "" })
+                .bind(if signed {
+                    format!("{} {}", u.first_name, u.last_name)
+                } else {
+                    String::new()
+                })
+                .bind(if signed {
+                    format!("{} {}", u.first_name, u.last_name)
+                } else {
+                    String::new()
+                })
+                .bind(signed)
                 .execute(pool)
                 .await?;
             }
