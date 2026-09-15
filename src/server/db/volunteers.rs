@@ -51,6 +51,7 @@ struct VolunteerRow {
     decision_note: String,
     decided_at: Option<chrono::DateTime<chrono::Utc>>,
     skills_focus: String,
+    volunteer_role: String,
     date_of_birth: Option<String>,
     /// Whether a number is on file. Never the number itself.
     has_ssn: bool,
@@ -59,6 +60,13 @@ struct VolunteerRow {
     emergency_last_name: String,
     emergency_relationship: String,
     emergency_phone: String,
+    legal_name: String,
+    signature_name: String,
+    signer_is_guardian: bool,
+    guardian_name: String,
+    guardian_relationship: String,
+    guardian_email: String,
+    signed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 fn stamp(at: chrono::DateTime<chrono::Utc>) -> String {
@@ -74,6 +82,7 @@ impl From<VolunteerRow> for VolunteerApplication {
             agreement_version: row.agreement_version,
             details: VolunteerDetailsView {
                 skills_focus: row.skills_focus,
+                volunteer_role: row.volunteer_role,
                 date_of_birth: row.date_of_birth.unwrap_or_default(),
                 has_ssn: row.has_ssn,
                 phone: row.phone,
@@ -81,6 +90,13 @@ impl From<VolunteerRow> for VolunteerApplication {
                 emergency_last_name: row.emergency_last_name,
                 emergency_relationship: row.emergency_relationship,
                 emergency_phone: row.emergency_phone,
+                legal_name: row.legal_name,
+                signature_name: row.signature_name,
+                signer_is_guardian: row.signer_is_guardian,
+                guardian_name: row.guardian_name,
+                guardian_relationship: row.guardian_relationship,
+                guardian_email: row.guardian_email,
+                signed_at: row.signed_at.map(stamp).unwrap_or_default(),
             },
             agreed_at: stamp(row.agreed_at),
             decided_by_name: row.decided_by_name,
@@ -93,9 +109,10 @@ impl From<VolunteerRow> for VolunteerApplication {
 /// The columns every ordinary read selects. `ssn` is absent by design.
 const SELECT_COLUMNS: &str =
     "status, agreement_version, agreed_at, decided_by_name, decision_note, decided_at,
-     skills_focus, to_char(date_of_birth, 'YYYY-MM-DD') AS date_of_birth,
+     skills_focus, volunteer_role, to_char(date_of_birth, 'YYYY-MM-DD') AS date_of_birth,
      (ssn <> '') AS has_ssn, phone, emergency_first_name, emergency_last_name,
-     emergency_relationship, emergency_phone";
+     emergency_relationship, emergency_phone, legal_name, signature_name,
+     signer_is_guardian, guardian_name, guardian_relationship, guardian_email, signed_at";
 
 /// One person's volunteer record, or `None` if they have never applied.
 pub async fn get(user_id: &str) -> Result<Option<VolunteerApplication>, sqlx::Error> {
@@ -132,9 +149,12 @@ pub async fn apply(
         "INSERT INTO volunteers (
              user_id, status, agreement_version, skills_focus, date_of_birth, ssn,
              phone, emergency_first_name, emergency_last_name, emergency_relationship,
-             emergency_phone
+             emergency_phone, volunteer_role, legal_name, signature_name,
+             signer_is_guardian, guardian_name, guardian_relationship, guardian_email,
+             electronic_consent, signed_at
          )
-         VALUES ($1, $2, $3, $4, NULLIF($5, '')::date, $6, $7, $8, $9, $10, $11)
+         VALUES ($1, $2, $3, $4, NULLIF($5, '')::date, $6, $7, $8, $9, $10, $11,
+                 $12, $13, $14, $15, $16, $17, $18, $19, now())
          ON CONFLICT (user_id) DO UPDATE SET
              status = EXCLUDED.status,
              agreement_version = EXCLUDED.agreement_version,
@@ -150,6 +170,15 @@ pub async fn apply(
              emergency_last_name = EXCLUDED.emergency_last_name,
              emergency_relationship = EXCLUDED.emergency_relationship,
              emergency_phone = EXCLUDED.emergency_phone,
+             volunteer_role = EXCLUDED.volunteer_role,
+             legal_name = EXCLUDED.legal_name,
+             signature_name = EXCLUDED.signature_name,
+             signer_is_guardian = EXCLUDED.signer_is_guardian,
+             guardian_name = EXCLUDED.guardian_name,
+             guardian_relationship = EXCLUDED.guardian_relationship,
+             guardian_email = EXCLUDED.guardian_email,
+             electronic_consent = EXCLUDED.electronic_consent,
+             signed_at = now(),
              decided_by = CASE WHEN EXCLUDED.status = 'pending' THEN NULL ELSE volunteers.decided_by END,
              decided_by_name = CASE WHEN EXCLUDED.status = 'pending' THEN '' ELSE volunteers.decided_by_name END,
              decision_note = CASE WHEN EXCLUDED.status = 'pending' THEN '' ELSE volunteers.decision_note END,
@@ -166,6 +195,14 @@ pub async fn apply(
     .bind(&details.emergency_last_name)
     .bind(&details.emergency_relationship)
     .bind(&details.emergency_phone)
+    .bind(&details.volunteer_role)
+    .bind(&details.legal_name)
+    .bind(&details.signature_name)
+    .bind(details.signer_is_guardian)
+    .bind(&details.guardian_name)
+    .bind(&details.guardian_relationship)
+    .bind(&details.guardian_email)
+    .bind(details.electronic_consent)
     .execute(&mut *tx)
     .await?;
 
@@ -176,14 +213,15 @@ pub async fn apply(
 }
 
 /// Update one volunteer's own details, auditing each field that changed. A blank
-/// `details.ssn` keeps the stored number; only `remove_ssn` clears it.
+/// `details.ssn` keeps the stored number, which can be replaced but not cleared:
+/// the agreement requires one.
 pub async fn save_details(
     user_id: &str,
     details: &VolunteerDetails,
-    remove_ssn: bool,
     actor: &str,
 ) -> Result<(), sqlx::Error> {
     type DetailsRow = (
+        String,
         String,
         Option<String>,
         bool,
@@ -197,8 +235,9 @@ pub async fn save_details(
     let mut tx = pool().begin().await?;
 
     let current = sqlx::query_as::<_, DetailsRow>(
-        "SELECT skills_focus, to_char(date_of_birth, 'YYYY-MM-DD'), (ssn <> ''), phone,
-                emergency_first_name, emergency_last_name, emergency_relationship, emergency_phone
+        "SELECT skills_focus, volunteer_role, to_char(date_of_birth, 'YYYY-MM-DD'), (ssn <> ''),
+                phone, emergency_first_name, emergency_last_name, emergency_relationship,
+                emergency_phone
          FROM volunteers WHERE user_id = $1 FOR UPDATE",
     )
     .bind(user_id)
@@ -206,6 +245,7 @@ pub async fn save_details(
     .await?;
     let Some((
         skills_focus,
+        volunteer_role,
         date_of_birth,
         had_ssn,
         phone,
@@ -222,29 +262,31 @@ pub async fn save_details(
         "UPDATE volunteers SET
              skills_focus = $2,
              date_of_birth = NULLIF($3, '')::date,
-             ssn = CASE WHEN $4 THEN '' WHEN $5 = '' THEN ssn ELSE $5 END,
-             phone = $6,
-             emergency_first_name = $7,
-             emergency_last_name = $8,
-             emergency_relationship = $9,
-             emergency_phone = $10
+             ssn = CASE WHEN $4 = '' THEN ssn ELSE $4 END,
+             phone = $5,
+             emergency_first_name = $6,
+             emergency_last_name = $7,
+             emergency_relationship = $8,
+             emergency_phone = $9,
+             volunteer_role = $10
          WHERE user_id = $1",
     )
     .bind(user_id)
     .bind(&details.skills_focus)
     .bind(&details.date_of_birth)
-    .bind(remove_ssn)
     .bind(&details.ssn)
     .bind(&details.phone)
     .bind(&details.emergency_first_name)
     .bind(&details.emergency_last_name)
     .bind(&details.emergency_relationship)
     .bind(&details.emergency_phone)
+    .bind(&details.volunteer_role)
     .execute(&mut *tx)
     .await?;
 
     let changes = [
         ("volunteer skills", skills_focus, &details.skills_focus),
+        ("volunteer role", volunteer_role, &details.volunteer_role),
         (
             "volunteer date of birth",
             date_of_birth.unwrap_or_default(),
@@ -288,11 +330,7 @@ pub async fn save_details(
     }
 
     // Presence only. The number never appears in the log.
-    let has_ssn = if remove_ssn {
-        false
-    } else {
-        had_ssn || !details.ssn.is_empty()
-    };
+    let has_ssn = had_ssn || !details.ssn.is_empty();
     if has_ssn != had_ssn {
         audit::record_in_transaction(
             &mut tx,
@@ -300,8 +338,8 @@ pub async fn save_details(
             user_id,
             actor,
             "volunteer SSN",
-            if had_ssn { "on file" } else { "" },
-            if has_ssn { "on file" } else { "removed" },
+            "",
+            "on file",
         )
         .await?;
     }
