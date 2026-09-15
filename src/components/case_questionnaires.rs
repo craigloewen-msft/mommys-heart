@@ -5,11 +5,14 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 
 use crate::helpers::case_questionnaires::{
-    answers_for, followups_for_answers, is_complete, required_followups, validate_answers,
-    CaseQuestionnaire, QuestionnaireInput, QuestionnaireQuestion, GENERAL_QUESTIONNAIRE,
+    american_separator, answered_but_not_required, answers_for, followups_for_answers, is_complete,
+    required_followups, validate_answers, CaseQuestionnaire, QuestionnaireBlock,
+    QuestionnaireInput, QuestionnaireQuestion, GENERAL_QUESTIONNAIRE,
 };
 use crate::server_fns::case_properties::{self, CaseProperty};
+use crate::server_fns::contacts::search_active_contacts;
 use crate::server_fns::err_text;
+use crate::server_fns::organizations::search_active_organizations;
 
 const INPUT_CLASS: &str = "mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/30";
 
@@ -102,6 +105,21 @@ pub fn CaseQuestionnaires(
             on_saved,
         )
     }));
+    // Answers whose trigger was later retracted. Shown read-only so the work
+    // stays visible and auditable instead of disappearing from every screen;
+    // the server refuses to save a follow-up the intake no longer requires.
+    completed_views.extend(answered_but_not_required(&properties).into_iter().map(
+        |questionnaire| {
+            questionnaire_card(
+                case_id.clone(),
+                questionnaire,
+                Some("No longer required by the current general intake answers."),
+                &properties,
+                false,
+                on_saved,
+            )
+        },
+    ));
     let has_completed = !completed_views.is_empty();
     let completed_section = if has_completed {
         view! {
@@ -259,11 +277,25 @@ fn questionnaire_card(
         });
     };
 
+    // Built once; each block shows or hides itself reactively. Rebuilding the
+    // list on every answer change would recreate the inputs while they are
+    // being typed into.
     let questions = questionnaire
-        .questions
+        .blocks
         .iter()
-        .map(|question| question_control(*question, answers))
-        .collect_view();
+        .map(|block| {
+            let block = *block;
+            let rendered = block_view(block, answers);
+            let hidden = move || {
+                if answers.with(|values| block.show_when.holds(values)) {
+                    ""
+                } else {
+                    "hidden"
+                }
+            };
+            view! { <div class=hidden>{rendered}</div> }.into_any()
+        })
+        .collect::<Vec<_>>();
 
     let trigger_preview = (questionnaire.slug == GENERAL_QUESTIONNAIRE.slug).then(|| {
         view! {
@@ -362,7 +394,7 @@ fn questionnaire_card(
 
             <Show when=move || !can_complete && !complete>
                 <p class="mt-3 text-xs text-slate-500">
-                    "Edit access is required to complete this questionnaire."
+                    "Add notes access is required to complete this questionnaire."
                 </p>
             </Show>
         </article>
@@ -370,22 +402,375 @@ fn questionnaire_card(
     .into_any()
 }
 
+/// One display block: its heading and the questions and repeat groups currently
+/// visible within it.
+/// One display block: its heading, questions, and repeat groups.
+///
+/// Every control is built **once** and then shown or hidden by a `Show`, rather
+/// than rebuilt from a reactive closure. Rebuilding on each answer change would
+/// recreate the DOM nodes mid-typing, so the field being edited would lose focus
+/// and drop characters.
+fn block_view(
+    block: QuestionnaireBlock,
+    answers: RwSignal<BTreeMap<String, String>>,
+) -> AnyView {
+    let questions = block
+        .questions
+        .iter()
+        .map(|question| {
+            let question = *question;
+            let control =
+                question_control(question.key.to_string(), question.label.to_string(), question, answers);
+            let hidden = move || {
+                if answers.with(|values| question.show_when.holds(values)) {
+                    ""
+                } else {
+                    "hidden"
+                }
+            };
+            view! { <div class=hidden>{control}</div> }.into_any()
+        })
+        .collect::<Vec<_>>();
+
+    // Keyed on the entry index, so changing the count only adds or removes the
+    // entries that actually changed: typing inside "Child 1" never rebuilds it.
+    // This also avoids materialising every entry up to `max` on first render.
+    let repeats = block
+        .repeats
+        .iter()
+        .map(|repeat| {
+            let repeat = *repeat;
+            view! {
+                <div class="space-y-3">
+                    <For
+                        each=move || 0..answers.with(|values| repeat.entries(values))
+                        key=|index| *index
+                        let:index
+                    >
+                        <fieldset class="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
+                            <legend class="px-1 text-xs font-semibold text-slate-300">
+                                {format!("{} {}", repeat.noun, index + 1)}
+                            </legend>
+                            <div class="space-y-3">
+                                {repeat
+                                    .fields
+                                    .iter()
+                                    .map(|field| {
+                                        let field = *field;
+                                        let control = question_control(
+                                            repeat.field_key(index, &field),
+                                            repeat.field_label(index, &field),
+                                            field,
+                                            answers,
+                                        );
+                                        let hidden = move || {
+                                            if answers
+                                                .with(|values| field.show_when.holds(values))
+                                            {
+                                                ""
+                                            } else {
+                                                "hidden"
+                                            }
+                                        };
+                                        view! { <div class=hidden>{control}</div> }
+                                    })
+                                    .collect_view()}
+                            </div>
+                        </fieldset>
+                    </For>
+                </div>
+            }
+            .into_any()
+        })
+        .collect::<Vec<_>>();
+
+    view! {
+        <section class="space-y-4 border-t border-slate-800 pt-4 first:border-t-0 first:pt-0">
+            <div>
+                <h4 class="text-sm font-semibold text-slate-100">{block.title}</h4>
+                <p class="mt-0.5 text-xs text-slate-500">{block.description}</p>
+            </div>
+            <div class="space-y-4">{questions}</div>
+            <div class="space-y-3">{repeats}</div>
+        </section>
+    }
+    .into_any()
+}
+
+/// A typeahead over the contact or organization directory that degrades to a
+/// plain text box: intake volunteers may not hold the information-management
+/// grant those searches require, and that must not block the form.
+#[component]
+fn DirectoryLookup(
+    storage_key: String,
+    question: QuestionnaireQuestion,
+    answers: RwSignal<BTreeMap<String, String>>,
+    organizations: bool,
+) -> impl IntoView {
+    let key = StoredValue::new(storage_key);
+    let answer = move || answers.with(|values| values.get(&key.get_value()).cloned().unwrap_or_default());
+    let set_answer = move |value: String| {
+        answers.update(|values| {
+            values.insert(key.get_value(), value);
+        });
+    };
+
+    let required_now =
+        move || question.required && answers.with(|values| question.show_when.holds(values));
+
+    let results = RwSignal::new(Vec::<(String, String)>::new());
+    let open = RwSignal::new(false);
+    // Once a search is refused we stop asking and behave as a text field.
+    let unavailable = RwSignal::new(false);
+    let generation = RwSignal::new(0u32);
+
+    let search = move |query: String| {
+        if unavailable.get_untracked() || query.trim().len() < 2 {
+            results.set(Vec::new());
+            return;
+        }
+        generation.update(|value| *value += 1);
+        let mine = generation.get_untracked();
+        spawn_local(async move {
+            let found = if organizations {
+                search_active_organizations(query)
+                    .await
+                    .map(|list| list.into_iter().map(|o| (o.id, o.name)).collect::<Vec<_>>())
+            } else {
+                search_active_contacts(query)
+                    .await
+                    .map(|list| list.into_iter().map(|c| (c.id, c.label)).collect::<Vec<_>>())
+            };
+            match found {
+                Ok(list) => {
+                    if generation.get_untracked() == mine {
+                        results.set(list);
+                    }
+                }
+                // No access, or the lookup failed: fall back to free text.
+                Err(_) => unavailable.set(true),
+            }
+        });
+    };
+
+    view! {
+        <div class="relative">
+            <input
+                class=INPUT_CLASS
+                required=required_now
+                prop:value=answer
+                on:focus=move |_| open.set(true)
+                on:blur=move |_| open.set(false)
+                on:input=move |event| {
+                    let value = event_target_value(&event);
+                    set_answer(value.clone());
+                    search(value);
+                }
+            />
+            <Show when=move || open.get() && !results.get().is_empty()>
+                <ul
+                    data-directory-results
+                    tabindex="-1"
+                    class="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-lg border border-slate-700 bg-slate-950 py-1 shadow-lg"
+                >
+                    {move || {
+                        results
+                            .get()
+                            .into_iter()
+                            .map(|(_, name)| {
+                                let chosen = name.clone();
+                                view! {
+                                    <li>
+                                        <button
+                                            type="button"
+                                            class="block w-full px-3 py-1.5 text-left text-sm text-slate-200 hover:bg-slate-800"
+                                            // mousedown fires before the input's
+                                            // blur, so the pick is not lost.
+                                            on:mousedown=move |event| {
+                                                event.prevent_default();
+                                                set_answer(chosen.clone());
+                                                results.set(Vec::new());
+                                                open.set(false);
+                                            }
+                                        >
+                                            {name.clone()}
+                                        </button>
+                                    </li>
+                                }
+                            })
+                            .collect_view()
+                    }}
+                </ul>
+            </Show>
+            <Show when=move || unavailable.get()>
+                <p class="mt-1 text-xs text-slate-500">
+                    "Directory search unavailable \u{2014} type the name instead."
+                </p>
+            </Show>
+        </div>
+    }
+}
+
+/// Checkboxes whose ticked values are stored as one comma-separated string.
+#[component]
+fn MultiSelectControl(
+    storage_key: String,
+    options: &'static [&'static str],
+    answers: RwSignal<BTreeMap<String, String>>,
+) -> impl IntoView {
+    let key = StoredValue::new(storage_key);
+    let selected = move || {
+        answers.with(|values| {
+            values
+                .get(&key.get_value())
+                .map(|value| {
+                    value
+                        .split(american_separator())
+                        .map(|part| part.trim().to_string())
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+    };
+    let toggle = move |option: &'static str, on: bool| {
+        let mut current = selected();
+        current.retain(|value| value != option);
+        if on {
+            current.push(option.to_string());
+        }
+        answers.update(|values| {
+            values.insert(key.get_value(), current.join(", "));
+        });
+    };
+
+    view! {
+        <div class="mt-1 grid gap-1.5 sm:grid-cols-2">
+            {options
+                .iter()
+                .map(|option| {
+                    let option = *option;
+                    view! {
+                        <label class="flex items-center gap-2 text-sm text-slate-300">
+                            <input
+                                type="checkbox"
+                                class="h-4 w-4 rounded border-slate-700 bg-slate-950 text-primary-500"
+                                prop:checked=move || selected().iter().any(|value| value == option)
+                                on:change=move |event| toggle(option, event_target_checked(&event))
+                            />
+                            {option}
+                        </label>
+                    }
+                })
+                .collect_view()}
+        </div>
+    }
+}
+
+/// A dropdown that reveals a free-text box when "Other" (or an unlisted stored
+/// value) is in play.
+#[component]
+fn SelectOtherControl(
+    storage_key: String,
+    options: &'static [&'static str],
+    question: QuestionnaireQuestion,
+    answers: RwSignal<BTreeMap<String, String>>,
+) -> impl IntoView {
+    let key = StoredValue::new(storage_key);
+    let answer = move || answers.with(|values| values.get(&key.get_value()).cloned().unwrap_or_default());
+    let set_answer = move |value: String| {
+        answers.update(|values| {
+            values.insert(key.get_value(), value);
+        });
+    };
+    let required_now =
+        move || question.required && answers.with(|values| question.show_when.holds(values));
+
+    // A stored value that is not one of the options is free text already.
+    let is_other = move || {
+        let current = answer();
+        !current.is_empty() && !options.contains(&current.as_str())
+    };
+    let show_other = RwSignal::new(false);
+
+    view! {
+        <>
+            <select
+                class=INPUT_CLASS
+                required=required_now
+                on:change=move |event| {
+                    let value = event_target_value(&event);
+                    if value == "Other" {
+                        show_other.set(true);
+                        set_answer(String::new());
+                    } else {
+                        show_other.set(false);
+                        set_answer(value);
+                    }
+                }
+            >
+                <option value="">"Select an answer"</option>
+                {options
+                    .iter()
+                    .map(|option| {
+                        let option = *option;
+                        view! {
+                            <option value=option selected=move || answer() == option>{option}</option>
+                        }
+                    })
+                    .collect_view()}
+            </select>
+            <Show when=move || show_other.get() || is_other()>
+                <input
+                    class=format!("{INPUT_CLASS} mt-2")
+                    placeholder="Please specify"
+                    prop:value=move || if is_other() { answer() } else { String::new() }
+                    on:input=move |event| set_answer(event_target_value(&event))
+                />
+            </Show>
+        </>
+    }
+}
+
+/// One labelled question. `storage_key` is the question's key, or the indexed
+/// key when the question is a field of a repeat group.
 fn question_control(
+    storage_key: String,
+    label: String,
     question: QuestionnaireQuestion,
     answers: RwSignal<BTreeMap<String, String>>,
 ) -> AnyView {
-    let answer =
-        move || answers.with(|values| values.get(question.key).cloned().unwrap_or_default());
+    let key = StoredValue::new(storage_key.clone());
+    let answer = move || answers.with(|values| values.get(&key.get_value()).cloned().unwrap_or_default());
     let set_answer = move |value: String| {
         answers.update(|values| {
-            values.insert(question.key.to_string(), value);
+            values.insert(key.get_value(), value);
         });
     };
+    // Only require what is visible: the browser refuses to submit a form with an
+    // invalid `required` field, and cannot focus one inside a hidden container,
+    // so a hidden-but-required field silently blocks the whole questionnaire.
+    let required_now =
+        move || question.required && answers.with(|values| question.show_when.holds(values));
+
+    let text_input = move |kind: &'static str| {
+        view! {
+            <input
+                type=kind
+                class=INPUT_CLASS
+                required=required_now
+                prop:value=answer
+                on:input=move |event| set_answer(event_target_value(&event))
+            />
+        }
+        .into_any()
+    };
+
     let control = match question.input {
         QuestionnaireInput::Select(options) => view! {
             <select
                 class=INPUT_CLASS
-                required=question.required
+                required=required_now
                 on:change=move |event| set_answer(event_target_value(&event))
             >
                 <option value="">"Select an answer"</option>
@@ -401,12 +786,61 @@ fn question_control(
             </select>
         }
         .into_any(),
-        QuestionnaireInput::Text => view! {
+        QuestionnaireInput::SelectOther(options) => view! {
+            <SelectOtherControl
+                storage_key=storage_key.clone()
+                options=options
+                question=question
+                answers=answers
+            />
+        }
+        .into_any(),
+        QuestionnaireInput::MultiSelect(options) => view! {
+            <MultiSelectControl storage_key=storage_key.clone() options=options answers=answers />
+        }
+        .into_any(),
+        QuestionnaireInput::Text => text_input("text"),
+        QuestionnaireInput::Date => text_input("date"),
+        QuestionnaireInput::Email => text_input("email"),
+        QuestionnaireInput::Phone => text_input("tel"),
+        QuestionnaireInput::Number => view! {
             <input
+                type="number"
+                min="0"
                 class=INPUT_CLASS
-                required=question.required
+                required=required_now
                 prop:value=answer
                 on:input=move |event| set_answer(event_target_value(&event))
+            />
+        }
+        .into_any(),
+        QuestionnaireInput::Currency => view! {
+            <input
+                type="text"
+                inputmode="decimal"
+                placeholder="0.00"
+                class=INPUT_CLASS
+                required=required_now
+                prop:value=answer
+                on:input=move |event| set_answer(event_target_value(&event))
+            />
+        }
+        .into_any(),
+        QuestionnaireInput::OrganizationLookup => view! {
+            <DirectoryLookup
+                storage_key=storage_key.clone()
+                question=question
+                answers=answers
+                organizations=true
+            />
+        }
+        .into_any(),
+        QuestionnaireInput::ContactLookup => view! {
+            <DirectoryLookup
+                storage_key=storage_key.clone()
+                question=question
+                answers=answers
+                organizations=false
             />
         }
         .into_any(),
@@ -414,7 +848,7 @@ fn question_control(
             <textarea
                 class=INPUT_CLASS
                 rows="3"
-                required=question.required
+                required=required_now
                 prop:value=answer
                 on:input=move |event| set_answer(event_target_value(&event))
             ></textarea>
@@ -425,13 +859,16 @@ fn question_control(
     view! {
         <div>
             <label class="block text-sm font-medium text-slate-300">
-                {question.label}
+                {label}
                 {if question.required {
                     view! { <span class="text-rose-400" aria-hidden="true">" *"</span> }.into_any()
                 } else {
                     view! { <span class="font-normal text-slate-500">" (optional)"</span> }.into_any()
                 }}
             </label>
+            {question.help.map(|text| view! {
+                <p class="mt-0.5 text-xs text-slate-500">{text}</p>
+            })}
             {control}
         </div>
     }

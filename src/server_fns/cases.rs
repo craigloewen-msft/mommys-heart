@@ -7,7 +7,6 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::helpers::case_intake::CaseIntake;
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::message::{Message, MessageTranscriptExport};
@@ -348,24 +347,18 @@ pub async fn admin_list_cases_page(
 
 /// Create a case owned by the caller. Any signed-in user may create one.
 #[server(prefix = "/api")]
-pub async fn create_case(
-    name: String,
-    status: CaseStatus,
-    intake: CaseIntake,
-) -> Result<String, ServerFnError> {
+pub async fn create_case(name: String, status: CaseStatus) -> Result<String, ServerFnError> {
     use crate::server::db::cases;
-    use crate::server::permissions::{has_volunteer_access, require_user, require_visibility};
+    use crate::server::permissions::{has_volunteer_access, require_user};
 
     let user = require_user().await?;
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err(ServerFnError::new("Case name is required."));
     }
-    intake.validate().map_err(ServerFnError::new)?;
-    let properties = intake.properties();
-    for property in &properties {
-        require_visibility(&user, property.visibility)?;
-    }
+    // A new case starts with only its standing paperwork; everything else is
+    // recorded through the intake questionnaires.
+    let properties = Vec::new();
     // Staff creating a case *is* the acceptance; a client's still needs a decision.
     let status = if has_volunteer_access(&user) {
         status

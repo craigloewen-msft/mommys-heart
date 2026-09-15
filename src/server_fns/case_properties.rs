@@ -95,8 +95,10 @@ pub async fn save_case_questionnaire(
     use crate::server::permissions::{require_cap, require_user, require_visibility};
     use crate::server_fns::capabilities::CaseCapability;
 
+    // `AddNotes`, matching `set_case_properties`: completing an intake form is
+    // recording information on a case, not editing the case itself.
     let user = require_user().await?;
-    require_cap(&user, &case_id, CaseCapability::EditCase).await?;
+    require_cap(&user, &case_id, CaseCapability::AddNotes).await?;
     require_visibility(&user, Visibility::VolunteerOnly)?;
 
     let questionnaire = questionnaire(&questionnaire_slug)

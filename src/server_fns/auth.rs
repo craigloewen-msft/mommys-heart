@@ -4,8 +4,6 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "ssr")]
-use crate::helpers::case_intake::CaseIntake;
 use crate::server_fns::users::{User, UserSummary};
 
 /// The result of a successful password check
@@ -387,11 +385,25 @@ pub async fn register(
     Ok(())
 }
 
+/// The property a signup's free-text "what do you need help with" answer is
+/// stored under. Volunteer-only: it is the client's account of why they came,
+/// which belongs with the team's intake record.
+pub const SIGNUP_SUMMARY_KEY: &str = "What the client asked for at signup";
+
+/// Cap on that answer. The public form is deliberately a few sentences, not an
+/// intake: the full questionnaire is completed with a volunteer afterwards.
+pub const SIGNUP_SUMMARY_MAX_CHARS: usize = 2000;
+
 /// Begin a client signup that will create both an account and a case after email
 /// verification. The client has already accepted the Terms and Conditions to
 /// reach this form; `terms_version` says which wording they were shown, and is
 /// carried on the pending row so the acceptance is recorded only if the
 /// registration actually completes.
+///
+/// `intake_json` now carries the short free-text summary rather than a serialized
+/// questionnaire. The name is kept because it is the column on
+/// `pending_registrations`, and renaming it would mean a migration for a field
+/// that is only in flight between signup and email verification.
 #[server(prefix = "/api")]
 pub async fn register_case_signup(
     first_name: String,
@@ -434,10 +446,19 @@ pub async fn register_case_signup(
     }
     let terms_version = terms_version.trim().to_string();
 
-    let intake: CaseIntake = serde_json::from_str(&intake_json)
-        .map_err(|_| ServerFnError::new("The case information could not be read."))?;
-    intake.validate().map_err(ServerFnError::new)?;
-    let intake_json = serde_json::to_string(&intake).map_err(ServerFnError::new)?;
+    // The public form asks only what the client needs help with; a volunteer
+    // completes the full intake questionnaire with them afterwards.
+    let intake_json = intake_json.trim().to_string();
+    if intake_json.is_empty() {
+        return Err(ServerFnError::new(
+            "Please tell us briefly what you need help with.",
+        ));
+    }
+    if intake_json.chars().count() > SIGNUP_SUMMARY_MAX_CHARS {
+        return Err(ServerFnError::new(format!(
+            "Please keep this under {SIGNUP_SUMMARY_MAX_CHARS} characters; we will take the details when we speak."
+        )));
+    }
 
     if let Some(seconds) = throttle::seconds_locked(throttle::Action::Register, &email)
         .await
@@ -608,15 +629,21 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
     .map_err(ServerFnError::new)?;
 
     if let Some(signup) = pending.case_signup {
-        let intake: CaseIntake =
-            serde_json::from_str(&signup.intake_json).map_err(ServerFnError::new)?;
+        // Volunteer-only: the client's own words about why they came, kept with
+        // the team's intake record rather than shown back on the shared list.
+        let summary = vec![crate::server_fns::case_properties::CaseProperty {
+            key: SIGNUP_SUMMARY_KEY.to_string(),
+            value: signup.intake_json.clone(),
+            section: crate::helpers::sections::INTAKE.to_string(),
+            visibility: crate::helpers::visibility::Visibility::VolunteerOnly,
+        }];
         cases::create_from_signup_in(
             &mut tx,
             &signup.case_id,
             &id,
             &account.full_name(),
             &signup.case_name,
-            intake.properties(),
+            summary,
             &signup.terms_version,
         )
         .await

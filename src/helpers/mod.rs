@@ -9,7 +9,6 @@
 //! Everything here is plain data and pure functions — no database access, no
 //! request handling — so it compiles for both the server and the WASM client.
 
-pub mod case_intake;
 pub mod case_questionnaires;
 pub mod dates;
 pub mod format;
