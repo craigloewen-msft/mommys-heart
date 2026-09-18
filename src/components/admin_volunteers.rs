@@ -275,13 +275,38 @@ fn ApplicationCard(
     let skills_focus = volunteer.skills_focus.clone();
     let agreed_at = volunteer.agreed_at.clone();
     let note = RwSignal::new(String::new());
+    let change_email = RwSignal::new(false);
+    let new_email = RwSignal::new(String::new());
+    let confirm_email = RwSignal::new(String::new());
     let deciding = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let note_id = StoredValue::new(format!("volunteer-application-note-{}", volunteer.id));
+    let change_email_id = StoredValue::new(format!(
+        "volunteer-application-change-email-{}",
+        volunteer.id
+    ));
+    let new_email_id = StoredValue::new(format!("volunteer-application-email-{}", volunteer.id));
+    let confirm_email_id = StoredValue::new(format!(
+        "volunteer-application-email-confirm-{}",
+        volunteer.id
+    ));
     let contact_href = format!("mailto:{email}");
 
     let decide = move |approve: bool| {
         if deciding.get_untracked() {
+            return;
+        }
+        // Only an approval may carry an address change; the server enforces the
+        // same rule and re-checks the confirmation.
+        let (wanted_email, wanted_confirm) = if approve && change_email.get_untracked() {
+            (new_email.get_untracked(), confirm_email.get_untracked())
+        } else {
+            (String::new(), String::new())
+        };
+        if !wanted_email.trim().is_empty()
+            && wanted_email.trim().to_lowercase() != wanted_confirm.trim().to_lowercase()
+        {
+            error.set(Some("The two email addresses do not match.".to_string()));
             return;
         }
         deciding.set(true);
@@ -289,7 +314,15 @@ fn ApplicationCard(
         let target = user_id.get_value();
         let decision_note = note.get_untracked();
         spawn_local(async move {
-            match decide_volunteer_application(target, approve, decision_note).await {
+            match decide_volunteer_application(
+                target,
+                approve,
+                decision_note,
+                wanted_email,
+                wanted_confirm,
+            )
+            .await
+            {
                 Ok(()) => {
                     reload.update(|value| *value += 1);
                     // The decided row leaves the queue, so keep the badge in step.
@@ -369,6 +402,70 @@ fn ApplicationCard(
                             prop:value=move || note.get()
                             on:input=move |event| note.set(event_target_value(&event))
                         />
+                    </div>
+
+                    // Optional: give them their official volunteer address as
+                    // the account's sign-in email, at the moment of approval.
+                    <div class="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+                        <label class="flex items-center gap-2 text-xs font-medium text-slate-300">
+                            <input
+                                id=change_email_id.get_value()
+                                type="checkbox"
+                                class="h-4 w-4 rounded border-slate-700 bg-slate-950"
+                                prop:disabled=move || deciding.get()
+                                prop:checked=move || change_email.get()
+                                on:change=move |event| change_email
+                                    .set(event_target_checked(&event))
+                            />
+                            "Change their email address"
+                        </label>
+                        <Show when=move || change_email.get()>
+                            <div class="mt-2 space-y-2">
+                                <p class="text-xs text-slate-500">
+                                    "This replaces the address they sign in with. Their password is unchanged."
+                                </p>
+                                <div>
+                                    <label
+                                        class="mb-1 block text-xs font-medium text-slate-300"
+                                        for=new_email_id.get_value()
+                                    >
+                                        "Official volunteer email"
+                                    </label>
+                                    <input
+                                        id=new_email_id.get_value()
+                                        type="email"
+                                        class="min-w-0 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500"
+                                        placeholder="name@example.org"
+                                        maxlength="254"
+                                        autocomplete="off"
+                                        prop:disabled=move || deciding.get()
+                                        prop:value=move || new_email.get()
+                                        on:input=move |event| new_email
+                                            .set(event_target_value(&event))
+                                    />
+                                </div>
+                                <div>
+                                    <label
+                                        class="mb-1 block text-xs font-medium text-slate-300"
+                                        for=confirm_email_id.get_value()
+                                    >
+                                        "Confirm email"
+                                    </label>
+                                    <input
+                                        id=confirm_email_id.get_value()
+                                        type="email"
+                                        class="min-w-0 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500"
+                                        placeholder="Type it again"
+                                        maxlength="254"
+                                        autocomplete="off"
+                                        prop:disabled=move || deciding.get()
+                                        prop:value=move || confirm_email.get()
+                                        on:input=move |event| confirm_email
+                                            .set(event_target_value(&event))
+                                    />
+                                </div>
+                            </div>
+                        </Show>
                     </div>
                     <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
                         <button

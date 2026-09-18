@@ -292,7 +292,12 @@ pub fn notify_volunteer_application_filed(applicant_name: String, applicant_emai
 /// Notify an applicant that their volunteer application was approved or declined.
 /// Approval follows the account-permission preference; decline remains required
 /// because it is the applicant's only notice.
-pub fn notify_volunteer_decision(user_id: String, approved: bool, decision_note: String) {
+pub fn notify_volunteer_decision(
+    user_id: String,
+    approved: bool,
+    decision_note: String,
+    previous_email: Option<String>,
+) {
     let Some(cfg) = configured_email() else {
         return;
     };
@@ -312,9 +317,60 @@ pub fn notify_volunteer_decision(user_id: String, approved: bool, decision_note:
         {
             return;
         }
-        let email =
-            templates::volunteer_application_decided(&Brand::from_env(), approved, &decision_note);
-        dispatch(&cfg, vec![recipient], &email, "Volunteer application").await;
+        // The lookup runs after commit, so this is already the new address.
+        let new_email = previous_email
+            .as_ref()
+            .map(|_| recipient.email.clone())
+            .filter(|_| approved);
+        let email = templates::volunteer_application_decided(
+            &Brand::from_env(),
+            approved,
+            &decision_note,
+            new_email.as_deref(),
+        );
+        // Copy the old address too, so someone who cannot yet read the new
+        // mailbox still learns which address now signs them in.
+        let mut recipients = vec![recipient.clone()];
+        if let Some(previous) = previous_email.filter(|_| approved) {
+            recipients.push(Recipient {
+                email: previous,
+                ..recipient
+            });
+        }
+        for recipient in recipients {
+            dispatch(&cfg, vec![recipient], &email, "Volunteer application").await;
+        }
+    });
+}
+
+/// Notify a user that an administrator changed their primary email address.
+/// Sent to both the new and old addresses: it changes how they sign in, so it
+/// is a required account notice rather than an optional one.
+pub fn notify_email_changed(user_id: String, actor_name: String, previous_email: String) {
+    let Some(cfg) = configured_email() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let recipient = match settings::recipient_for_user(&user_id).await {
+            Ok(Some(recipient)) => recipient,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!("email-change recipient lookup failed for {user_id}: {error}");
+                return;
+            }
+        };
+        let email = templates::account_permissions_changed(
+            &Brand::from_env(),
+            &actor_name,
+            &format!("changed your sign-in email address to {}", recipient.email),
+        );
+        let old = Recipient {
+            email: previous_email,
+            ..recipient.clone()
+        };
+        for recipient in [recipient, old] {
+            dispatch(&cfg, vec![recipient], &email, "Email address change").await;
+        }
     });
 }
 

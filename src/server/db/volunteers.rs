@@ -22,6 +22,7 @@ pub enum Error {
     Database(sqlx::Error),
     NotFound,
     AlreadyDecided,
+    EmailTaken,
 }
 
 impl fmt::Display for Error {
@@ -32,13 +33,37 @@ impl fmt::Display for Error {
             Self::AlreadyDecided => {
                 write!(formatter, "This application has already been decided.")
             }
+            Self::EmailTaken => {
+                write!(
+                    formatter,
+                    "Another account already uses that email address."
+                )
+            }
         }
     }
 }
 
 impl From<sqlx::Error> for Error {
     fn from(error: sqlx::Error) -> Self {
+        // A race on the case-insensitive email index reads as a plain message.
+        if let sqlx::Error::Database(database) = &error {
+            if database.constraint().is_some_and(|constraint| {
+                constraint == "users_email_lower_idx" || constraint == "users_email_key"
+            }) {
+                return Self::EmailTaken;
+            }
+        }
         Self::Database(error)
+    }
+}
+
+impl From<users::EmailChangeError> for Error {
+    fn from(error: users::EmailChangeError) -> Self {
+        match error {
+            users::EmailChangeError::Database(error) => Self::Database(error),
+            users::EmailChangeError::NotFound => Self::NotFound,
+            users::EmailChangeError::Taken => Self::EmailTaken,
+        }
     }
 }
 
@@ -464,13 +489,19 @@ pub async fn pending_count() -> Result<i64, sqlx::Error> {
 /// Approve or decline a pending application. Approving delegates to
 /// [`users::set_role_in`], which grants the role and audits it atomically.
 /// Deciding one that is no longer pending errors rather than overwriting.
+///
+/// On approval `new_email` may carry the official volunteer address to make the
+/// account's primary email; it is applied in the same transaction, before the
+/// contact record is built from the account. Returns the previous email when it
+/// was actually changed, so the caller can also notify the old address.
 pub async fn decide(
     user_id: &str,
     approve: bool,
     actor_id: &str,
     actor_name: &str,
     note: &str,
-) -> Result<(), Error> {
+    new_email: Option<&str>,
+) -> Result<Option<String>, Error> {
     let mut tx = pool().begin().await?;
     // CRM audit rows written below inherit the deciding admin's stable identity.
     audit::set_actor_in_transaction(&mut tx, actor_id).await?;
@@ -488,7 +519,13 @@ pub async fn decide(
         None => return Err(Error::NotFound),
     }
 
+    let mut previous_email = None;
     if approve {
+        // Ahead of the role and contact work, so the contact record created
+        // below is built from the account's new address.
+        if let Some(new_email) = new_email {
+            previous_email = users::set_email_in(&mut tx, user_id, new_email, actor_name).await?;
+        }
         // Sets the role *and* flips this record to approved, together.
         users::set_role_in(&mut tx, user_id, AccountRole::Volunteer, actor_name).await?;
         // `set_role_in` returns early when the account already holds the role,
@@ -520,5 +557,5 @@ pub async fn decide(
     .await?;
 
     tx.commit().await?;
-    Ok(())
+    Ok(previous_email)
 }

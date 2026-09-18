@@ -256,7 +256,33 @@ const MAX_NAME_LENGTH: usize = 100;
 
 /// Upper bound for an email address, matching the practical SMTP limit.
 #[cfg(feature = "ssr")]
-const MAX_EMAIL_LENGTH: usize = 254;
+pub(crate) const MAX_EMAIL_LENGTH: usize = 254;
+
+/// Normalize and check an address an admin typed for someone else, requiring it
+/// to be confirmed by typing it twice. Returns the lowercased address.
+#[cfg(feature = "ssr")]
+pub(crate) fn validate_confirmed_email(
+    email: &str,
+    confirm_email: &str,
+) -> Result<String, ServerFnError> {
+    let email = email.trim().to_lowercase();
+    let confirm = confirm_email.trim().to_lowercase();
+    if email.is_empty() {
+        return Err(ServerFnError::new("Please enter an email address."));
+    }
+    if email != confirm {
+        return Err(ServerFnError::new("The two email addresses do not match."));
+    }
+    if !email.contains('@') {
+        return Err(ServerFnError::new("Please enter a valid email address."));
+    }
+    if email.chars().count() > MAX_EMAIL_LENGTH {
+        return Err(ServerFnError::new(format!(
+            "Email addresses must be {MAX_EMAIL_LENGTH} characters or fewer."
+        )));
+    }
+    Ok(email)
+}
 
 /// Upper bound for a password, so hashing cost stays bounded.
 #[cfg(feature = "ssr")]

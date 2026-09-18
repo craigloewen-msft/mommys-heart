@@ -481,6 +481,40 @@ pub async fn set_user_role(user_id: String, role: AccountRole) -> Result<(), Ser
     Ok(())
 }
 
+/// Change a user's primary (sign-in) email address. Site admin only, and the
+/// address must be typed twice — both copies are sent so the confirmation is
+/// enforced on the server, not just in the browser.
+///
+/// The account keeps its password and sessions; only the address it signs in
+/// with changes. Both the old and new addresses are notified.
+#[server(prefix = "/api")]
+pub async fn set_user_email(
+    user_id: String,
+    new_email: String,
+    confirm_new_email: String,
+) -> Result<(), ServerFnError> {
+    use crate::server::db::users;
+    use crate::server::permissions::{require_site_admin, require_user};
+    use crate::server_fns::auth::validate_confirmed_email;
+
+    let actor = require_user().await?;
+    require_site_admin(&actor)?;
+    let user_id = user_id.trim().to_string();
+    if user_id.is_empty() {
+        return Err(ServerFnError::new("No account was chosen."));
+    }
+    let new_email = validate_confirmed_email(&new_email, &confirm_new_email)?;
+
+    let previous = users::set_email(&user_id, &new_email, &actor.id, &actor.full_name())
+        .await
+        .map_err(|error| ServerFnError::new(error.to_string()))?;
+    // `None` means it already matched, so there is nothing to announce.
+    if let Some(previous) = previous {
+        crate::server::notifications::notify_email_changed(user_id, actor.full_name(), previous);
+    }
+    Ok(())
+}
+
 /// Retire an account, or restore a retired one. Site admin only.
 ///
 /// The account keeps everything — role, case assignments, volunteer agreement,

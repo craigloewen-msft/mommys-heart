@@ -362,11 +362,13 @@ pub fn volunteer_application_filed(
 /// Build the applicant's notification that their volunteer application was
 /// approved or declined. A decline says so plainly and invites them to reapply:
 /// the email is the *only* place the outcome is communicated, so it has to stand
-/// on its own.
+/// on its own. `new_email`, when present, is the official address the approving
+/// admin made their sign-in address.
 pub fn volunteer_application_decided(
     brand: &Brand,
     approved: bool,
     decision_note: &str,
+    new_email: Option<&str>,
 ) -> RenderedEmail {
     let theme = Theme {
         accent: if approved {
@@ -386,10 +388,19 @@ pub fn volunteer_application_decided(
     } else {
         format!("<br><br>{}", escape(decision_note))
     };
+    // Sign-in address changes are the one detail they must not miss.
+    let email_change = match new_email.filter(|_| approved) {
+        Some(address) => format!(
+            "<br><br>Your sign-in email address is now <strong>{}</strong>. \
+             Use it the next time you sign in; your password is unchanged.",
+            escape(address),
+        ),
+        None => String::new(),
+    };
     let callout = if approved {
         format!(
             "Welcome aboard \u{2014} your volunteer application has been <strong>approved</strong>. \
-             Your account now has volunteer access, and a case can be assigned to you.{note}"
+             Your account now has volunteer access, and a case can be assigned to you.{note}{email_change}"
         )
     } else {
         format!(
@@ -434,7 +445,11 @@ pub fn volunteer_application_decided(
     let plain_text = plain(
         brand,
         &if approved {
-            format!("Your volunteer application was approved. {decision_note}")
+            let suffix = match new_email {
+                Some(address) => format!(" Your sign-in email address is now {address}."),
+                None => String::new(),
+            };
+            format!("Your volunteer application was approved. {decision_note}{suffix}")
         } else {
             format!("Your volunteer application was not approved at this time. {decision_note}")
         },
