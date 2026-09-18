@@ -274,14 +274,22 @@ pub async fn list_pending_volunteer_applications() -> Result<Vec<Volunteer>, Ser
 /// Approve or decline a volunteer application. Site admins only, because
 /// approving grants a role. Either outcome emails the applicant; a decline has
 /// no other visible effect and they may apply again.
+///
+/// On approval the admin may also set the volunteer's official email address as
+/// their primary (sign-in) address. It must be typed twice, and both copies are
+/// sent so the confirmation is checked on the server too. Empty leaves the
+/// address alone.
 #[server(prefix = "/api")]
 pub async fn decide_volunteer_application(
     user_id: String,
     approve: bool,
     note: String,
+    new_email: String,
+    confirm_new_email: String,
 ) -> Result<(), ServerFnError> {
     use crate::server::db::volunteers;
     use crate::server::permissions::{require_site_admin, require_user};
+    use crate::server_fns::auth::validate_confirmed_email;
 
     let actor = require_user().await?;
     require_site_admin(&actor)?;
@@ -295,9 +303,23 @@ pub async fn decide_volunteer_application(
         ));
     }
     let note = note.trim().to_string();
-    volunteers::decide(&user_id, approve, &actor.id, &actor.full_name(), &note)
-        .await
-        .map_err(|error| ServerFnError::new(error.to_string()))?;
-    crate::server::notifications::notify_volunteer_decision(user_id, approve, note);
+    // Only an approval may carry an address change, and only a non-empty one
+    // asks for it at all.
+    let new_email = if approve && !new_email.trim().is_empty() {
+        Some(validate_confirmed_email(&new_email, &confirm_new_email)?)
+    } else {
+        None
+    };
+    let previous_email = volunteers::decide(
+        &user_id,
+        approve,
+        &actor.id,
+        &actor.full_name(),
+        &note,
+        new_email.as_deref(),
+    )
+    .await
+    .map_err(|error| ServerFnError::new(error.to_string()))?;
+    crate::server::notifications::notify_volunteer_decision(user_id, approve, note, previous_email);
     Ok(())
 }

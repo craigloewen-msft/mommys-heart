@@ -168,6 +168,107 @@ pub async fn email_exists(email: &str) -> Result<bool, sqlx::Error> {
     Ok(exists.is_some())
 }
 
+/// What can go wrong changing an account's primary email. The `Display` text is
+/// what the admin reads.
+#[derive(Debug)]
+pub enum EmailChangeError {
+    Database(sqlx::Error),
+    NotFound,
+    Taken,
+}
+
+impl std::fmt::Display for EmailChangeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Database(error) => write!(formatter, "{error}"),
+            Self::NotFound => write!(formatter, "That account no longer exists."),
+            Self::Taken => write!(
+                formatter,
+                "Another account already uses that email address."
+            ),
+        }
+    }
+}
+
+impl From<sqlx::Error> for EmailChangeError {
+    fn from(error: sqlx::Error) -> Self {
+        // A race on the case-insensitive email index reads as a plain message.
+        if let sqlx::Error::Database(database) = &error {
+            if database.constraint().is_some_and(|constraint| {
+                constraint == "users_email_lower_idx" || constraint == "users_email_key"
+            }) {
+                return Self::Taken;
+            }
+        }
+        Self::Database(error)
+    }
+}
+
+/// Replace a user's primary email inside `tx`, auditing the change. Returns the
+/// previous address, or `None` when it already matched (case-insensitively).
+pub async fn set_email_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: &str,
+    new_email: &str,
+    actor: &str,
+) -> Result<Option<String>, EmailChangeError> {
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT email FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let Some(current) = current else {
+        return Err(EmailChangeError::NotFound);
+    };
+    if current.eq_ignore_ascii_case(new_email) {
+        return Ok(None);
+    }
+
+    let taken: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM users WHERE lower(email) = lower($1) AND id <> $2 LIMIT 1",
+    )
+    .bind(new_email)
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if taken.is_some() {
+        return Err(EmailChangeError::Taken);
+    }
+
+    sqlx::query("UPDATE users SET email = $1 WHERE id = $2")
+        .bind(new_email)
+        .bind(user_id)
+        .execute(&mut **tx)
+        .await?;
+    audit::record_in_transaction(
+        tx,
+        audit::Entity::User,
+        user_id,
+        actor,
+        "email",
+        &current,
+        new_email,
+    )
+    .await?;
+    Ok(Some(current))
+}
+
+/// Replace a user's primary email in its own transaction. Used by the admin
+/// user screen; the volunteer approval path uses [`set_email_in`] so the change
+/// lands with the approval.
+pub async fn set_email(
+    user_id: &str,
+    new_email: &str,
+    actor_id: &str,
+    actor: &str,
+) -> Result<Option<String>, EmailChangeError> {
+    let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_id).await?;
+    let previous = set_email_in(&mut tx, user_id, new_email, actor).await?;
+    tx.commit().await?;
+    Ok(previous)
+}
+
 /// Overwrite a user's password hash. Used by the self-service password-reset
 /// flow after a valid reset token is consumed.
 pub async fn set_password_hash(user_id: &str, password_hash: &str) -> Result<(), sqlx::Error> {

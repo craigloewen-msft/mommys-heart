@@ -130,6 +130,56 @@ pub fn UserCard(
         });
     };
 
+    // --- email address -----------------------------------------------------
+    let email_target = StoredValue::new(user_id.clone());
+    let current_email = StoredValue::new(user.email.clone());
+    let email_editing = RwSignal::new(false);
+    let email_value = RwSignal::new(String::new());
+    let email_confirm = RwSignal::new(String::new());
+    let email_busy = RwSignal::new(false);
+    let email_feedback = RwSignal::new(None::<Result<String, String>>);
+    let email_input_id = StoredValue::new(format!("account-email-{user_id}"));
+    let email_confirm_id = StoredValue::new(format!("account-email-confirm-{user_id}"));
+
+    let apply_email_change = move |_| {
+        if email_busy.get_untracked() {
+            return;
+        }
+        let wanted = email_value.get_untracked();
+        let confirm = email_confirm.get_untracked();
+        if wanted.trim().is_empty() {
+            email_feedback.set(Some(Err("Please enter an email address.".to_string())));
+            return;
+        }
+        // The server checks this too; catching it here saves a round-trip.
+        if wanted.trim().to_lowercase() != confirm.trim().to_lowercase() {
+            email_feedback.set(Some(Err(
+                "The two email addresses do not match.".to_string()
+            )));
+            return;
+        }
+        email_busy.set(true);
+        email_feedback.set(None);
+        spawn_local(async move {
+            let outcome =
+                crate::server_fns::users::set_user_email(email_target.get_value(), wanted, confirm)
+                    .await
+                    .map(|_| "Email address updated.".to_string())
+                    .map_err(err_text);
+            match outcome {
+                Ok(message) => {
+                    email_feedback.set(Some(Ok(message)));
+                    email_editing.set(false);
+                    email_value.set(String::new());
+                    email_confirm.set(String::new());
+                    reload.update(|value| *value += 1);
+                }
+                Err(message) => email_feedback.set(Some(Err(message))),
+            }
+            email_busy.set(false);
+        });
+    };
+
     // --- account status (deactivation) ------------------------------------
     let status_target = StoredValue::new(user_id.clone());
     let status_busy = RwSignal::new(false);
@@ -509,6 +559,124 @@ pub fn UserCard(
             >
                 {rows}
             </div>
+        }
+        .into_any()
+    };
+
+    let email_section = move || {
+        if !is_site_admin {
+            return view! {
+                <section class="mt-4 border-t border-slate-800 pt-4">
+                    <h3 class="text-sm font-semibold text-slate-200">"Email address"</h3>
+                    <p class="mt-1 text-sm text-slate-400">{current_email.get_value()}</p>
+                    <p class="mt-1 text-xs text-slate-500">
+                        "Only a site admin can change an account's email address."
+                    </p>
+                </section>
+            }
+            .into_any();
+        }
+
+        view! {
+            <section class="mt-4 border-t border-slate-800 pt-4">
+                <h3 class="text-sm font-semibold text-slate-200">"Email address"</h3>
+                <p class="mt-1 text-sm text-slate-300">{current_email.get_value()}</p>
+                <p class="mt-1 text-xs text-slate-500">
+                    "This is the address they sign in with. Changing it does not change their password, and both the old and new addresses are notified."
+                </p>
+                <Show
+                    when=move || email_editing.get()
+                    fallback=move || view! {
+                        <button
+                            type="button"
+                            on:click=move |_| {
+                                email_feedback.set(None);
+                                email_editing.set(true);
+                            }
+                            class="mt-3 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                        >
+                            "Change email address"
+                        </button>
+                    }
+                >
+                    <div class="mt-3 space-y-3 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                        <div>
+                            <label
+                                class="block text-xs font-medium text-slate-400"
+                                for=email_input_id.get_value()
+                            >
+                                "New email address"
+                            </label>
+                            <input
+                                id=email_input_id.get_value()
+                                type="email"
+                                maxlength="254"
+                                autocomplete="off"
+                                class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+                                placeholder="name@example.org"
+                                prop:disabled=move || email_busy.get()
+                                prop:value=move || email_value.get()
+                                on:input=move |event| email_value.set(event_target_value(&event))
+                            />
+                        </div>
+                        <div>
+                            <label
+                                class="block text-xs font-medium text-slate-400"
+                                for=email_confirm_id.get_value()
+                            >
+                                "Confirm new email address"
+                            </label>
+                            <input
+                                id=email_confirm_id.get_value()
+                                type="email"
+                                maxlength="254"
+                                autocomplete="off"
+                                class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+                                placeholder="Type it again"
+                                prop:disabled=move || email_busy.get()
+                                prop:value=move || email_confirm.get()
+                                on:input=move |event| email_confirm.set(event_target_value(&event))
+                            />
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                            <button
+                                type="button"
+                                on:click=apply_email_change
+                                prop:disabled=move || email_busy.get()
+                                class="rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-50"
+                            >
+                                {move || if email_busy.get() { "Saving…" } else { "Save email address" }}
+                            </button>
+                            <button
+                                type="button"
+                                on:click=move |_| {
+                                    email_editing.set(false);
+                                    email_value.set(String::new());
+                                    email_confirm.set(String::new());
+                                }
+                                prop:disabled=move || email_busy.get()
+                                class="rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                            >
+                                "Cancel"
+                            </button>
+                        </div>
+                    </div>
+                </Show>
+                <Show when=move || email_feedback.get().is_some()>
+                    {move || email_feedback.get().map(|feedback| match feedback {
+                        Ok(message) => view! {
+                            <p class="mt-3 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300" aria-live="polite">
+                                {message}
+                            </p>
+                        }.into_any(),
+                        Err(message) => view! {
+                            <p class="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-300" role="alert">
+                                {message}
+                            </p>
+                        }.into_any(),
+                    })}
+                </Show>
+            </section>
         }
         .into_any()
     };
@@ -1354,6 +1522,7 @@ pub fn UserCard(
             </div>
 
             {account_role_section}
+            {email_section}
             {account_status_section}
             {information_access_section}
             {case_access_section}
