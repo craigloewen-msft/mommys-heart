@@ -62,6 +62,8 @@ serde_json = "1"
 server_fn = { version = "0.8", default-features = false, features = ["multipart"], optional = true }
 async-trait = { version = "0.1", optional = true }
 infer = { version = "0.19.0", default-features = false, optional = true }
+# Generated PDFs (SSR only), e.g. the volunteer agreement download.
+printpdf = { version = "0.12", default-features = false, optional = true }
 futures = { version = "0.3.32", optional = true }
 base64 = { version = "0.22.1", optional = true }
 hmac = { version = "0.12", optional = true }
@@ -101,6 +103,7 @@ ssr = [
     "dep:is-terminal",
     "dep:async-trait",
     "dep:infer",
+    "dep:printpdf",
     "dep:futures",
     "dep:base64",
     "dep:hmac",
@@ -113,7 +116,7 @@ ssr = [
 
 # Silence a false-positive cfg check emitted by the wasm build tooling.
 [package.metadata.cargo-all-features]
-denylist = ["axum", "tokio", "tower", "tower-http", "leptos_axum", "reqwest", "dotenvy", "zip", "quick-xml", "sqlx", "argon2", "rand", "sha2", "hex", "chrono", "axum-extra", "time", "tracing", "tracing-subscriber", "is-terminal", "async-trait", "infer", "futures", "base64", "hmac"]
+denylist = ["axum", "tokio", "tower", "tower-http", "leptos_axum", "reqwest", "dotenvy", "zip", "quick-xml", "sqlx", "argon2", "rand", "sha2", "hex", "chrono", "axum-extra", "time", "tracing", "tracing-subscriber", "is-terminal", "async-trait", "infer", "printpdf", "futures", "base64", "hmac"]
 
 [package.metadata.leptos]
 output-name = "mommys-heart-app"

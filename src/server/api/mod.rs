@@ -15,6 +15,7 @@ pub mod docs;
 pub mod health;
 pub mod message_transcripts;
 pub mod version;
+pub mod volunteer_agreement;
 
 pub use cors::cors_layer;
 

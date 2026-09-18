@@ -451,6 +451,7 @@ pub fn ProfilePage() -> impl IntoView {
                 }
                 .into_any()
             };
+            let pdf_href = format!("/api/volunteers/{}/volunteer-agreement.pdf", p.id);
             let decided = (!volunteer.decided_at.is_empty()).then(|| {
                 let who = if volunteer.decided_by_name.is_empty() {
                     String::new()
@@ -471,6 +472,14 @@ pub fn ProfilePage() -> impl IntoView {
                             >
                                 {move || if agreement_open.get() { "Hide" } else { "View agreement" }}
                             </button>
+                            <a
+                                href=pdf_href
+                                download
+                                title="Download volunteer agreement"
+                                class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                            >
+                                "Download PDF"
+                            </a>
                         </div>
                     </div>
                     <div class="mt-2">
