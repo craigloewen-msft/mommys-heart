@@ -1,7 +1,7 @@
 //! Route-backed administrative workspaces: cases, users, and admin tools.
 
 use leptos::prelude::*;
-use leptos_router::components::{Redirect, A};
+use leptos_router::components::Redirect;
 use leptos_router::hooks::use_params_map;
 
 use crate::components::admin_activity::AdminActivityFeed;
@@ -18,17 +18,6 @@ enum AdminWorkspace {
     Cases,
     Users,
     Activity,
-}
-
-impl AdminWorkspace {
-    /// The slug the tab strip matches on.
-    fn slug(self) -> &'static str {
-        match self {
-            Self::Cases => "cases",
-            Self::Users => "users",
-            Self::Activity => "activity",
-        }
-    }
 }
 
 /// `/admin` has one obvious starting place.
@@ -85,6 +74,12 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
         let is_site_admin = actor.role.is_site_admin();
         let actor_user_id = actor.id;
 
+        let title = match workspace {
+            AdminWorkspace::Cases => "Manage Cases",
+            AdminWorkspace::Users => "Manage Users",
+            AdminWorkspace::Activity => "Site Activity",
+        };
+
         let content = match workspace {
             AdminWorkspace::Cases => view! {
                 <ManageCases
@@ -119,92 +114,17 @@ fn admin_page(workspace: AdminWorkspace, selected_id: Option<String>) -> AnyView
             .into_any(),
         };
 
+        let tools = matches!(workspace, AdminWorkspace::Activity)
+            .then(|| view! { <AdminTools /> });
+
         view! {
-            <Layout title="Admin".to_string()>
-                <div class="mb-8">
-                    <p class="text-sm text-slate-400">
-                        "Review pending work, manage accounts, and use the operational tools kept under Admin."
-                    </p>
-                    <AdminWorkspaceNav selected=workspace.slug() />
-                </div>
-
+            <Layout title=title.to_string()>
                 {content}
-
-                <AdminTools />
+                {tools}
             </Layout>
         }
         .into_any()
     })
-}
-
-/// The workspace tabs for the remaining operational admin areas.
-#[component]
-pub fn AdminWorkspaceNav(#[prop(into)] selected: String) -> impl IntoView {
-    let state = expect_context::<AppState>();
-    let case_attention = Signal::derive(move || {
-        state.cases_pending_review.get() + state.admin_case_request_pending.get()
-    });
-    let user_attention = Signal::derive(move || {
-        state.volunteer_requests_pending.get()
-            + state.admin_role_request_pending.get()
-            + state.admin_information_request_pending.get()
-    });
-    view! {
-        <nav
-            class="mt-5 grid grid-cols-3 gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5"
-            aria-label="Admin workspaces"
-        >
-            <WorkspaceLink
-                href="/admin/cases"
-                label="Cases"
-                selected=selected == "cases"
-                badge=case_attention
-            />
-            <WorkspaceLink
-                href="/admin/users"
-                label="Users"
-                selected=selected == "users"
-                badge=user_attention
-            />
-            <WorkspaceLink
-                href="/admin/activity"
-                label="Activity"
-                selected=selected == "activity"
-                badge=Signal::derive(|| 0)
-            />
-        </nav>
-    }
-}
-
-#[component]
-fn WorkspaceLink(
-    href: &'static str,
-    label: &'static str,
-    selected: bool,
-    #[prop(into)] badge: Signal<i64>,
-) -> impl IntoView {
-    let classes = if selected {
-        "flex items-center justify-center gap-2 rounded-lg bg-primary-500/15 px-4 py-2.5 text-sm font-semibold text-primary-200 ring-1 ring-primary-500/30"
-    } else {
-        "flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-    };
-    view! {
-        <A
-            href=href
-            attr:class=classes
-            attr:aria-current=selected.then_some("page")
-        >
-            {label}
-            {move || {
-                let count = badge.get();
-                (count > 0).then(|| view! {
-                    <span class="inline-flex min-w-5 items-center justify-center rounded-full bg-primary-500 px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-white">
-                        {count}
-                    </span>
-                })
-            }}
-        </A>
-    }
 }
 
 #[component]
