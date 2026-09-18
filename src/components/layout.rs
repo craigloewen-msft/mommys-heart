@@ -7,7 +7,8 @@ use crate::state::AppState;
 #[derive(Clone, Copy)]
 enum NavBadge {
     UnreadMessages,
-    PendingAdminWork,
+    PendingCaseWork,
+    PendingUserWork,
 }
 
 /// A top-navbar link that highlights when its route is active.
@@ -30,12 +31,13 @@ fn NavLink(
     };
     let unread = move || match badge {
         Some(NavBadge::UnreadMessages) => state.total_unread(),
-        Some(NavBadge::PendingAdminWork) => {
-            state.admin_case_request_pending.get()
+        Some(NavBadge::PendingCaseWork) => {
+            state.cases_pending_review.get() + state.admin_case_request_pending.get()
+        }
+        Some(NavBadge::PendingUserWork) => {
+            state.volunteer_requests_pending.get()
                 + state.admin_role_request_pending.get()
                 + state.admin_information_request_pending.get()
-                + state.cases_pending_review.get()
-                + state.volunteer_requests_pending.get()
         }
         None => 0,
     };
@@ -44,7 +46,7 @@ fn NavLink(
         <A
             href=href
             attr:class=move || {
-                let base = "px-3 py-2 rounded-lg text-sm font-medium transition-colors";
+                let base = "px-2.5 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors";
                 if active() {
                     format!("{base} bg-primary-500/15 text-primary-300")
                 } else if unread() > 0 {
@@ -91,7 +93,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
     let my_profile_href = format!("/profile/{}", user.id);
     let role_label = role.label();
     let role_badge = format!(
-        "rounded-full px-2 py-0.5 text-xs font-medium {}",
+        "rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap {}",
         role.badge_classes(),
     );
 
@@ -112,7 +114,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
         <div class="min-h-screen bg-slate-950 text-slate-100">
             <header class="sticky top-0 z-20 border-b border-slate-800 bg-slate-900/80 backdrop-blur">
                 <div class="mx-auto max-w-7xl px-4 sm:px-6">
-                    <div class="flex h-16 items-center gap-2 sm:gap-4">
+                    <div class="flex h-16 items-center gap-2 xl:gap-3">
                         <A href="/" attr:class="flex items-center gap-2 shrink-0">
                             <span class="grid h-8 w-8 place-items-center rounded-lg bg-primary-500/20 text-lg text-primary-400">
                                 "\u{2665}"
@@ -122,7 +124,7 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                             </span>
                         </A>
 
-                        <nav class="hidden xl:flex items-center gap-1">
+                        <nav class="hidden xl:flex items-center gap-0.5">
                             <NavLink href="/cases" label="Cases" />
                             <NavLink href="/inbox" label="Case Chat" badge=NavBadge::UnreadMessages />
                             {move || if state.has_information_management_access() {
@@ -137,10 +139,16 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                             {if has_operations_admin_permissions {
                                 view! {
                                     <NavLink
-                                        href="/admin"
-                                        label="Admin"
-                                        badge=NavBadge::PendingAdminWork
+                                        href="/admin/cases"
+                                        label="Manage Cases"
+                                        badge=NavBadge::PendingCaseWork
                                     />
+                                    <NavLink
+                                        href="/admin/users"
+                                        label="Manage Users"
+                                        badge=NavBadge::PendingUserWork
+                                    />
+                                    <NavLink href="/admin/activity" label="Site Activity" />
                                 }
                                 .into_any()
                             } else {
@@ -155,19 +163,19 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                         </nav>
 
                         <div class="ml-auto flex items-center gap-2 sm:gap-3">
-                            <div class="hidden sm:flex flex-col items-end leading-tight">
-                                <span class="text-sm font-medium">{user_name}</span>
+                            <div class="hidden sm:flex xl:hidden 2xl:flex flex-col items-end leading-tight">
+                                <span class="text-sm font-medium whitespace-nowrap">{user_name}</span>
                                 <span class=role_badge>{role_label}</span>
                             </div>
                             <A
                                 href=my_profile_href.clone()
-                                attr:class="hidden sm:inline-flex rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
+                                attr:class="hidden sm:inline-flex whitespace-nowrap rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
                             >
                                 "My Profile"
                             </A>
                             <button
                                 on:click=logout
-                                class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
+                                class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium whitespace-nowrap text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
                             >
                                 "Log out"
                             </button>
@@ -201,10 +209,16 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
                         {if has_operations_admin_permissions {
                             view! {
                                 <NavLink
-                                    href="/admin"
-                                    label="Admin"
-                                    badge=NavBadge::PendingAdminWork
+                                    href="/admin/cases"
+                                    label="Manage Cases"
+                                    badge=NavBadge::PendingCaseWork
                                 />
+                                <NavLink
+                                    href="/admin/users"
+                                    label="Manage Users"
+                                    badge=NavBadge::PendingUserWork
+                                />
+                                <NavLink href="/admin/activity" label="Site Activity" />
                             }
                             .into_any()
                         } else {
