@@ -2,9 +2,19 @@
 //! the dedicated REST API (`server::api`) and the UI data loaders
 //! (`crate::api_client`, SSR branch).
 
-use crate::server::api::version::VersionResponse;
+use serde::{Deserialize, Serialize};
+
 use crate::server::rag;
 use crate::server::rag::ChatResponse;
+
+/// `GET /api/version` response body.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VersionResponse {
+    pub version: String,
+    pub chat_model: String,
+    pub embedding_model: String,
+    pub captcha_enabled: bool,
+}
 
 /// The Turnstile secret, if CAPTCHA enforcement is configured.
 pub fn turnstile_secret() -> Option<String> {

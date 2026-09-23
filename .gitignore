@@ -26,3 +26,8 @@ target/
 # Subscriber/contact exports. These carry names, emails, phone numbers and home
 # addresses for real people and must never be committed.
 *.csv
+
+# Scratch dirs written by code-analysis tooling. Anchored so an agent worktree
+# or a source dir that happens to share the name is not swallowed whole.
+/.ua
+/graphify-out

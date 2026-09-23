@@ -1,18 +1,8 @@
 //! `GET /api/version` — build + model info.
 
 use axum::{routing::get, Json, Router};
-use serde::{Deserialize, Serialize};
 
-use crate::server::service;
-
-/// `GET /api/version` response body.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct VersionResponse {
-    pub version: String,
-    pub chat_model: String,
-    pub embedding_model: String,
-    pub captcha_enabled: bool,
-}
+use crate::server::service::{self, VersionResponse};
 
 pub fn routes<S>() -> Router<S>
 where
