@@ -44,6 +44,7 @@ pub mod terms_acceptances;
 pub mod throttle;
 pub mod trusted_devices;
 pub mod users;
+pub mod volunteer_applicants;
 pub mod volunteer_hours;
 pub mod volunteers;
 

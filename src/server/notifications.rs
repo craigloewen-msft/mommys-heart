@@ -343,6 +343,54 @@ pub fn notify_volunteer_decision(
     });
 }
 
+/// Notify a volunteer applicant who has no account yet that their application
+/// was decided.
+///
+/// Unlike [`notify_volunteer_decision`], there is no user to look preferences up
+/// for: the recipient is the raw address they applied with, and both outcomes
+/// are required notices — approval because it carries the only link that can
+/// complete the account, decline because it is their only word on the matter.
+/// The approval always goes to the *original* address even when an admin issued
+/// a new one, since that is the only mailbox they are known to hold.
+pub fn notify_volunteer_applicant_decision(
+    first_name: String,
+    email: String,
+    approved: bool,
+    decision_note: String,
+    setup_url: Option<String>,
+    new_email: Option<String>,
+) {
+    let Some(cfg) = configured_email() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let brand = Brand::from_env();
+        let message = if approved {
+            let Some(setup_url) = setup_url else {
+                tracing::warn!("volunteer applicant approved with no setup link for {email}");
+                return;
+            };
+            templates::volunteer_applicant_approved(
+                &brand,
+                &first_name,
+                &setup_url,
+                &decision_note,
+                new_email.as_deref(),
+            )
+        } else {
+            templates::volunteer_applicant_declined(&brand, &decision_note)
+        };
+        // No account means no stored preferences; every category is on by
+        // default, and these are required notices in any case.
+        let recipient = Recipient {
+            email,
+            name: first_name,
+            settings: crate::server_fns::settings::NotificationSettings::all_on(),
+        };
+        dispatch(&cfg, vec![recipient], &message, "Volunteer application").await;
+    });
+}
+
 /// Notify a user that an administrator changed their primary email address.
 /// Sent to both the new and old addresses: it changes how they sign in, so it
 /// is a required account notice rather than an optional one.

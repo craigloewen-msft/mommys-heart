@@ -104,24 +104,23 @@ pub fn LoginPage() -> impl IntoView {
                         </button>
                     </form>
 
-                    <p class="mt-5 text-center text-sm text-slate-400">
-                        "No account? "
-                        <A
-                            href="/register"
-                            attr:class="font-medium text-primary-400 hover:text-primary-300"
-                        >
-                            "Create one"
-                        </A>
-                    </p>
-                    <p class="mt-3 text-center text-sm text-slate-400">
-                        "New client with a case? "
-                        <A
-                            href="/case-signup"
-                            attr:class="font-medium text-primary-400 hover:text-primary-300"
-                        >
-                            "Start case signup"
-                        </A>
-                    </p>
+                    <div class="mt-6 border-t border-slate-800 pt-5">
+                        <p class="text-center text-sm text-slate-400">"Don't have an account?"</p>
+                        <div class="mt-3 grid gap-2">
+                            <A
+                                href="/volunteer-signup"
+                                attr:class="block rounded-lg border border-primary-500/40 bg-primary-500/10 px-4 py-2.5 text-center text-sm font-semibold text-primary-300 transition-colors hover:bg-primary-500/20"
+                            >
+                                "Sign up as a volunteer"
+                            </A>
+                            <A
+                                href="/case-signup"
+                                attr:class="block rounded-lg border border-slate-700 px-4 py-2.5 text-center text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-800"
+                            >
+                                "Sign up as a new client"
+                            </A>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

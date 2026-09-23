@@ -47,6 +47,7 @@ pub mod property_filters;
 pub mod reports;
 pub mod settings;
 pub mod users;
+pub mod volunteer_applicants;
 pub mod volunteer_hours;
 pub mod volunteers;
 

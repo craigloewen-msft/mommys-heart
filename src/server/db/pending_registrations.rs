@@ -76,36 +76,21 @@ fn hash(raw: &str) -> String {
     hex::encode(Sha256::digest(raw.as_bytes()))
 }
 
-/// Persist a new pending registration for `challenge_token`. `code` is the
-/// plaintext 6-digit code emailed to the user; `account` carries the details the
-/// user row will be created from once the code is verified. Any prior pending
-/// registration for the same token is replaced (used on resend, which reuses the
-/// challenge but rotates the code and resets the attempt counter/expiry).
-pub async fn create(
-    challenge_token: &str,
-    account: &PendingAccount,
-    code: &str,
-) -> Result<(), sqlx::Error> {
+/// Rotate the emailed code on an existing pending registration, resetting the
+/// attempt counter and expiry. Used by the resend button, which keeps the same
+/// challenge cookie and only replaces the code.
+///
+/// Deliberately narrower than an upsert: [`create_case_signup`] is the only way
+/// a pending registration can be born, so every row here is a client case
+/// signup by construction.
+pub async fn rotate_code(challenge_token: &str, code: &str) -> Result<(), sqlx::Error> {
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(CHALLENGE_TTL_MINUTES);
     sqlx::query(
-        "INSERT INTO pending_registrations
-             (challenge_hash, first_name, last_name, email, password_hash, code_hash, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (challenge_hash) DO UPDATE SET
-             first_name = EXCLUDED.first_name,
-             last_name = EXCLUDED.last_name,
-             email = EXCLUDED.email,
-             password_hash = EXCLUDED.password_hash,
-             code_hash = EXCLUDED.code_hash,
-             attempts = 0,
-             created_at = now(),
-             expires_at = EXCLUDED.expires_at",
+        "UPDATE pending_registrations
+         SET code_hash = $2, attempts = 0, created_at = now(), expires_at = $3
+         WHERE challenge_hash = $1",
     )
     .bind(hash(challenge_token))
-    .bind(&account.first_name)
-    .bind(&account.last_name)
-    .bind(&account.email)
-    .bind(&account.password_hash)
     .bind(hash(code))
     .bind(expires_at)
     .execute(pool())
