@@ -462,6 +462,124 @@ pub fn volunteer_application_decided(
     }
 }
 
+/// Build the setup invitation for an approved volunteer applicant, who has no
+/// account yet. Always sent to the address they *applied* with, since that is
+/// the only mailbox they are known to hold: when an admin has issued them an
+/// official address, this email is how they find out, and the link is how they
+/// set a password and become a real account.
+pub fn volunteer_applicant_approved(
+    brand: &Brand,
+    first_name: &str,
+    setup_url: &str,
+    decision_note: &str,
+    new_email: Option<&str>,
+) -> RenderedEmail {
+    let theme = Theme {
+        accent: palette::color("emerald-300"),
+        emoji: "\u{2705}",
+    };
+    let subject = format!("[{}] Finish setting up your volunteer account", brand.name);
+    let greeting = if first_name.trim().is_empty() {
+        String::new()
+    } else {
+        format!("{}, ", escape(first_name.trim()))
+    };
+    let note = if decision_note.is_empty() {
+        String::new()
+    } else {
+        format!("<br><br>{}", escape(decision_note))
+    };
+    // The one detail they must not miss: the address they applied with is not
+    // the one that will sign them in.
+    let email_change = match new_email {
+        Some(address) => format!(
+            "<br><br>You have been given a new email address: <strong>{}</strong>. \
+             That is the address you will sign in with from now on \u{2014} not the one \
+             this message was sent to.",
+            escape(address),
+        ),
+        None => String::new(),
+    };
+    let callout = format!(
+        "{greeting}your volunteer application has been <strong>approved</strong>. \
+         One step left: follow the link below to choose a password and confirm \
+         your email address, and your account is ready.{email_change}{note}"
+    );
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: "Your volunteer application was approved. Set your password to finish.",
+            eyebrow: "Volunteer application",
+            heading: "Finish setting up your account",
+            callout_html: &callout,
+            cta: Some((setup_url, "Complete my account")),
+            body_note: "This link is personal to you and expires in 14 days.",
+            footer_html: "This is a required notification about your account.",
+        },
+    );
+    let address_line = match new_email {
+        Some(address) => format!(
+            "\n\nYou have been given a new email address: {address}. That is the address \
+             you will sign in with from now on."
+        ),
+        None => String::new(),
+    };
+    let plain_text = format!(
+        "Your volunteer application was approved.{address_line}\n\n{decision_note}\n\n\
+         Choose a password and finish setting up your account:\n{setup_url}\n\n\
+         This link expires in 14 days.\n\n\u{2014} {}\n",
+        brand.name,
+    );
+    RenderedEmail {
+        subject,
+        html,
+        plain_text,
+    }
+}
+
+/// Build the decline notice for a volunteer applicant with no account. No
+/// account is created, and the email is their only notice, so it says so plainly.
+pub fn volunteer_applicant_declined(brand: &Brand, decision_note: &str) -> RenderedEmail {
+    let theme = Theme {
+        accent: palette::color("rose-400"),
+        emoji: "\u{274C}",
+    };
+    let subject = format!("[{}] Your volunteer application", brand.name);
+    let note = if decision_note.is_empty() {
+        String::new()
+    } else {
+        format!("<br><br>{}", escape(decision_note))
+    };
+    let callout = format!(
+        "Thank you for offering your time. After review, your volunteer application was \
+         <strong>not approved</strong> at this time, and no account has been created.{note}"
+    );
+    let html = layout(
+        brand,
+        &theme,
+        &LayoutParts {
+            preheader: "Your volunteer application was declined.",
+            eyebrow: "Volunteer application",
+            heading: "Your application was declined",
+            callout_html: &callout,
+            cta: None,
+            body_note: "You are welcome to read the volunteer agreement and apply again.",
+            footer_html: "This is a required notification about your application.",
+        },
+    );
+    let plain_text = format!(
+        "Your volunteer application was not approved at this time, and no account has \
+         been created.\n\n{decision_note}\n\nYou are welcome to apply again.\n\n\u{2014} {}\n",
+        brand.name,
+    );
+    RenderedEmail {
+        subject,
+        html,
+        plain_text,
+    }
+}
+
 /// Build the site-admin notification for a newly filed approval request.
 pub fn admin_request_filed(brand: &Brand, request: &AdminRequest) -> RenderedEmail {
     let theme = Theme {

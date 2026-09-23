@@ -24,12 +24,12 @@ use crate::pages::{
     mfa::MfaVerifyPage,
     organizations::OrganizationsPage,
     profile::ProfilePage,
-    register::RegisterPage,
     reports::{NewReportPage, ReportsPage, SavedReportPage},
     reset_password::ResetPasswordPage,
     settings::SettingsPage,
-    verify_email::{CaseSignupVerifyPage, VerifyEmailPage},
-    volunteer_agreement::VolunteerAgreementPage,
+    verify_email::CaseSignupVerifyPage,
+    volunteer_agreement::{VolunteerAgreementPage, VolunteerSignupPage},
+    volunteer_setup::VolunteerSetupPage,
 };
 use crate::state::AppState;
 
@@ -129,11 +129,14 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/mfa") view=MfaVerifyPage />
                 <Route path=path!("/forgot-password") view=ForgotPasswordPage />
                 <Route path=path!("/reset-password") view=ResetPasswordPage />
-                <Route path=path!("/register") view=RegisterPage />
-                <Route path=path!("/verify-email") view=VerifyEmailPage />
+                // The only two ways to create an account: a client opening a
+                // case, and a volunteer applying. There is deliberately no
+                // general registration route.
                 <Route path=path!("/case-signup") view=CaseSignupTermsPage />
                 <Route path=path!("/case-signup/details") view=CaseSignupDetailsPage />
                 <Route path=path!("/case-signup/verify") view=CaseSignupVerifyPage />
+                <Route path=path!("/volunteer-signup") view=VolunteerSignupPage />
+                <Route path=path!("/volunteer-setup") view=VolunteerSetupPage />
                 <Route path=path!("/cases") view=CaseHomePage />
                 <Route path=path!("/cases/new") view=NewCasePage />
                 <Route path=path!("/cases/:case_id/intake") view=CaseIntakePage />

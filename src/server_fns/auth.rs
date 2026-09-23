@@ -1,5 +1,11 @@
-//! Authentication server functions: register (with email-OTP verification),
-//! login, MFA verification, logout, and self-service password reset.
+//! Authentication server functions: client case-signup registration (with
+//! email-OTP verification), login, MFA verification, logout, and self-service
+//! password reset.
+//!
+//! There is deliberately no general "create an account" function here. An
+//! account is only ever born one of two ways: a client case signup, which ends
+//! at [`verify_registration`], or an approved volunteer application, which ends
+//! at [`crate::server_fns::volunteer_applicants::complete_volunteer_setup`].
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -18,6 +24,17 @@ pub enum LoginOutcome {
     /// Password correct, but an emailed one-time code is still required. The
     /// client should route to the MFA screen and call [`verify_mfa`].
     MfaRequired,
+}
+
+/// Append a `Set-Cookie` header to the outgoing response. Server-only.
+///
+/// Shared with [`crate::server_fns::volunteer_applicants`], which mints a
+/// session the same way once a volunteer completes their account setup.
+#[cfg(feature = "ssr")]
+pub(crate) fn append_session_cookie(
+    cookie: axum_extra::extract::cookie::Cookie<'static>,
+) -> Result<(), ServerFnError> {
+    append_cookie(cookie)
 }
 
 /// Append a `Set-Cookie` header to the outgoing response. Server-only.
@@ -290,7 +307,7 @@ const MAX_PASSWORD_LENGTH: usize = 200;
 
 /// Reject a password that is too short or implausibly long.
 #[cfg(feature = "ssr")]
-fn validate_password(password: &str) -> Result<(), ServerFnError> {
+pub(crate) fn validate_password(password: &str) -> Result<(), ServerFnError> {
     let length = password.chars().count();
     if length < MIN_PASSWORD_LENGTH {
         return Err(ServerFnError::new(format!(
@@ -307,7 +324,7 @@ fn validate_password(password: &str) -> Result<(), ServerFnError> {
 
 /// Reject account fields that exceed their maximum length.
 #[cfg(feature = "ssr")]
-fn validate_account_lengths(
+pub(crate) fn validate_account_lengths(
     first_name: &str,
     last_name: &str,
     email: &str,
@@ -322,92 +339,6 @@ fn validate_account_lengths(
             "Email addresses must be {MAX_EMAIL_LENGTH} characters or fewer."
         )));
     }
-    Ok(())
-}
-
-/// Begin registering a new client account. Rather than creating the account
-/// immediately, this validates the input, emails a 6-digit verification code to
-/// the address, and stashes the pending signup behind a short-lived `register`
-/// cookie. The account is only created once the code is confirmed via
-/// [`verify_registration`], so an unverified email never becomes a real account.
-#[server(prefix = "/api")]
-pub async fn register(
-    first_name: String,
-    last_name: String,
-    email: String,
-    password: String,
-) -> Result<(), ServerFnError> {
-    use crate::server::auth::{
-        build_register_cookie, generate_code, generate_token, hash_password, REGISTER_COOKIE_NAME,
-    };
-    use crate::server::db::pending_registrations::{self, PendingAccount};
-    use crate::server::db::{throttle, users};
-    use crate::server::email::auth_notifications as auth_email;
-
-    cleanup_expired_registrations().await;
-
-    let first_name = first_name.trim().to_string();
-    let last_name = last_name.trim().to_string();
-    let email = email.trim().to_lowercase();
-    if first_name.is_empty() || last_name.is_empty() || email.is_empty() || password.is_empty() {
-        return Err(ServerFnError::new(
-            "Please fill in first name, last name, email, and password.",
-        ));
-    }
-    validate_account_lengths(&first_name, &last_name, &email)?;
-    validate_password(&password)?;
-
-    // Rate-limit sign-up attempts per email so this endpoint cannot be used to
-    // email-bomb a victim with verification codes.
-    if let Some(secs) = throttle::seconds_locked(throttle::Action::Register, &email)
-        .await
-        .map_err(ServerFnError::new)?
-    {
-        let minutes = throttle::minutes_remaining(secs);
-        return Err(ServerFnError::new(format!(
-            "Too many sign-up attempts. Please try again in about {minutes} minute{}.",
-            if minutes == 1 { "" } else { "s" }
-        )));
-    }
-
-    if users::email_exists(&email)
-        .await
-        .map_err(ServerFnError::new)?
-    {
-        return Err(ServerFnError::new(
-            "An account with that email already exists.",
-        ));
-    }
-
-    // Counted only once a code is actually sent, so rejected attempts (duplicate
-    // email, bad input) cannot lock a legitimate user out of their own sign-up.
-    let _ = throttle::record_failure(throttle::Action::Register, &email).await;
-
-    let password_hash = hash_password(&password).map_err(ServerFnError::new)?;
-    let challenge = generate_token();
-    let code = generate_code();
-    let account = PendingAccount {
-        first_name,
-        last_name,
-        email: email.clone(),
-        password_hash,
-    };
-    pending_registrations::create(&challenge, &account, &code)
-        .await
-        .map_err(ServerFnError::new)?;
-    if let Err(error) =
-        auth_email::send_email_verification(&email, &account.full_name(), &code).await
-    {
-        let _ = pending_registrations::delete(&challenge).await;
-        tracing::warn!("failed to send verification code to {email}: {error}");
-        return Err(ServerFnError::new(
-            "We couldn't send your verification code. Please try again.",
-        ));
-    }
-    if let Some(previous_challenge) = request_cookie(REGISTER_COOKIE_NAME).await {
-        let _ = pending_registrations::delete(&previous_challenge).await;
-    }
-    append_cookie(build_register_cookie(challenge))?;
     Ok(())
 }
 
@@ -755,7 +686,7 @@ pub async fn resend_registration_code() -> Result<(), ServerFnError> {
     let _ = throttle::record_failure(throttle::Action::ResendCode, &account.email).await;
 
     let code = generate_code();
-    pending_registrations::create(&challenge, &account, &code)
+    pending_registrations::rotate_code(&challenge, &code)
         .await
         .map_err(ServerFnError::new)?;
     auth_email::send_email_verification(&account.email, &account.full_name(), &code)

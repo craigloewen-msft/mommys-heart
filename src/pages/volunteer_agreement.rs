@@ -1,9 +1,17 @@
-//! `/volunteer-agreement`: read the Volunteer Agreement, give the details that
-//! go with it, and accept, which files an application for review.
+//! `/volunteer-agreement` and `/volunteer-signup`: read the Volunteer Agreement,
+//! give the details that go with it, and accept.
 //!
-//! Mirrors the client terms at [`crate::pages::case_signup`], including the
-//! scroll-to-the-end gate. The information fields stay disabled until the
-//! agreement is read to the end and the box is ticked.
+//! One form serves two callers, because the wording, the scroll-to-the-end gate
+//! and every validation rule are identical for both:
+//!
+//! - [`VolunteerAgreementPage`] (`/volunteer-agreement`) is for someone who
+//!   already has an account — a volunteer re-signing an updated agreement. It
+//!   requires a session and files against their user id.
+//! - [`VolunteerSignupPage`] (`/volunteer-signup`) is the public door. It has no
+//!   session, so it also asks for a name and email, and files an application
+//!   that carries no account at all until an admin approves it.
+//!
+//! Mirrors the client terms at [`crate::pages::case_signup`].
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -21,6 +29,7 @@ use crate::helpers::volunteer_terms::{
 };
 use crate::server_fns::err_text;
 use crate::server_fns::profile::load_profile;
+use crate::server_fns::volunteer_applicants::apply_as_volunteer;
 use crate::server_fns::volunteers::apply_to_volunteer;
 use crate::state::AppState;
 
@@ -34,21 +43,40 @@ fn Required() -> impl IntoView {
     view! { <span class="text-rose-400" aria-hidden="true">"*"</span> }
 }
 
+/// The signed-in route: an existing account accepts the current agreement.
 #[component]
 pub fn VolunteerAgreementPage() -> impl IntoView {
+    agreement_page(false)
+}
+
+/// The public route: apply to volunteer with no account at all.
+#[component]
+pub fn VolunteerSignupPage() -> impl IntoView {
+    agreement_page(true)
+}
+
+fn agreement_page(public: bool) -> AnyView {
     let state = expect_context::<AppState>();
-    let navigate = use_navigate();
+    // Stored rather than captured directly: `body` below is called from inside
+    // a guard's `Fn` closure, so everything it holds has to be `Copy`.
+    let navigate = StoredValue::new(use_navigate());
     let accepted = RwSignal::new(false);
     let error = RwSignal::new(String::new());
     let submitting = RwSignal::new(false);
+    // Set once a public application has been filed, which replaces the form with
+    // an acknowledgment: there is no account to navigate to.
+    let filed = RwSignal::new(false);
     // The acceptance control stays locked until the agreement has been scrolled
     // to the bottom.
     let read_to_end = RwSignal::new(false);
     let agreement_ref = NodeRef::<leptos::html::Div>::new();
 
     let details = RwSignal::new(VolunteerDetails::default());
-    // Shown read-only: the account's email is the sign-in identity.
+    // Read-only for a signed-in volunteer (the account's email is their sign-in
+    // identity); typed in by a public applicant, who has no account yet.
     let email = RwSignal::new(String::new());
+    let first_name = RwSignal::new(String::new());
+    let last_name = RwSignal::new(String::new());
 
     // Whether the pane is scrolled to (or within a pixel of) its end. Also true
     // when the content is short enough not to scroll at all: a pane with no
@@ -67,8 +95,11 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
     Effect::new(move |_| check_scrolled());
 
     // Prefill contact from the account, so the volunteer confirms what we hold
-    // rather than retyping it.
+    // rather than retyping it. A public applicant has no account to read.
     Effect::new(move |_| {
+        if public {
+            return;
+        }
         let Some(current) = state.current_user_summary.get() else {
             return;
         };
@@ -92,8 +123,7 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
     // Drives the parent/guardian block, which the entered date of birth decides.
     let is_minor = move || dates::is_minor(&details.get().date_of_birth);
 
-    require_login(state, move || {
-        let navigate = navigate.clone();
+    let body = move || {
         let submit = move || {
             if !accepted.get_untracked() || submitting.get_untracked() {
                 return;
@@ -111,11 +141,39 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
                 error.set(message);
                 return;
             }
+            // The public form carries the identity the application is filed
+            // under, so it is checked here too rather than only server-side.
+            let (first, last, address) = (
+                first_name.get_untracked().trim().to_string(),
+                last_name.get_untracked().trim().to_string(),
+                email.get_untracked().trim().to_string(),
+            );
+            if public && (first.is_empty() || last.is_empty() || !address.contains('@')) {
+                error.set(
+                    "Please give your first name, last name, and a valid email address.".to_string(),
+                );
+                return;
+            }
             submitting.set(true);
             error.set(String::new());
-            let navigate = navigate.clone();
+            let navigate = navigate.get_value();
             spawn_local(async move {
-                match apply_to_volunteer(VOLUNTEER_AGREEMENT_VERSION.to_string(), submitted).await {
+                let outcome = if public {
+                    apply_as_volunteer(
+                        first,
+                        last,
+                        address,
+                        VOLUNTEER_AGREEMENT_VERSION.to_string(),
+                        submitted,
+                    )
+                    .await
+                } else {
+                    apply_to_volunteer(VOLUNTEER_AGREEMENT_VERSION.to_string(), submitted).await
+                };
+                match outcome {
+                    // A public applicant has no account to land in, so they get
+                    // an acknowledgment instead of a redirect.
+                    Ok(()) if public => filed.set(true),
                     Ok(()) => navigate("/profile", Default::default()),
                     Err(e) => {
                         error.set(err_text(e));
@@ -126,10 +184,28 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
         };
 
         view! {
-            <Layout title="Volunteer agreement".to_string()>
                 <div class="mx-auto w-full max-w-4xl">
+                    <Show when=move || filed.get()>
+                        <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-6 text-center">
+                            <h2 class="text-lg font-semibold text-emerald-200">
+                                "Thank you \u{2014} we have your application"
+                            </h2>
+                            <p class="mx-auto mt-2 max-w-prose text-sm text-emerald-100/80">
+                                "An administrator will review it and email you at the address you gave. \
+                                 If you are approved, that email will carry a link to finish setting up \
+                                 your account and choose a password."
+                            </p>
+                            <A
+                                href="/login"
+                                attr:class="mt-5 inline-block rounded-lg border border-emerald-500/40 px-4 py-2 text-sm font-semibold text-emerald-200 hover:bg-emerald-500/10"
+                            >
+                                "Back to sign in"
+                            </A>
+                        </div>
+                    </Show>
                     <form
                         class="overflow-hidden rounded-lg border border-slate-800 bg-slate-900 shadow-lg shadow-black/5"
+                        class=("hidden", move || filed.get())
                         on:submit=move |event| {
                             event.prevent_default();
                             submit();
@@ -431,16 +507,55 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
                                         "Only a site administrator can view it, and every viewing is logged."
                                     </p>
                                 </div>
+                                <Show when=move || public>
+                                    <div>
+                                        <label class=LABEL_CLASS>
+                                            "First name " <Required />
+                                        </label>
+                                        <input
+                                            class=INPUT_CLASS
+                                            autocomplete="given-name"
+                                            prop:disabled=move || !unlocked()
+                                            prop:value=move || first_name.get()
+                                            on:input=move |event| first_name
+                                                .set(event_target_value(&event))
+                                        />
+                                    </div>
+                                    <div>
+                                        <label class=LABEL_CLASS>
+                                            "Last name " <Required />
+                                        </label>
+                                        <input
+                                            class=INPUT_CLASS
+                                            autocomplete="family-name"
+                                            prop:disabled=move || !unlocked()
+                                            prop:value=move || last_name.get()
+                                            on:input=move |event| last_name
+                                                .set(event_target_value(&event))
+                                        />
+                                    </div>
+                                </Show>
                                 <div>
-                                    <label class=LABEL_CLASS>"Email"</label>
+                                    <label class=LABEL_CLASS>
+                                        "Email " <Show when=move || public><Required /></Show>
+                                    </label>
                                     <input
                                         class=INPUT_CLASS
                                         type="email"
-                                        disabled=true
+                                        autocomplete="email"
+                                        // A signed-in volunteer's address is their
+                                        // sign-in identity and is not editable here;
+                                        // a public applicant has to give us one.
+                                        prop:disabled=move || !public || !unlocked()
                                         prop:value=move || email.get()
+                                        on:input=move |event| email.set(event_target_value(&event))
                                     />
                                     <p class="mt-1 text-xs text-slate-500">
-                                        "Your sign-in email address."
+                                        {if public {
+                                            "We'll email you here about your application. If you're approved you may be given a different address to sign in with."
+                                        } else {
+                                            "Your sign-in email address."
+                                        }}
                                     </p>
                                 </div>
                                 <div>
@@ -558,7 +673,7 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
 
                             <div class="mt-7 flex flex-wrap items-center justify-end gap-3">
                                 <A
-                                    href="/profile"
+                                    href=if public { "/login" } else { "/profile" }
                                     attr:class="min-h-10 rounded-lg border border-slate-700 px-5 py-2.5 text-sm font-semibold text-slate-300 hover:bg-slate-800"
                                 >
                                     "Cancel"
@@ -578,8 +693,46 @@ pub fn VolunteerAgreementPage() -> impl IntoView {
                         </section>
                     </form>
                 </div>
-            </Layout>
         }
         .into_any()
-    })
+    };
+
+    // The public door is standalone: no navbar to render for a visitor with no
+    // session, and no login to require.
+    if public {
+        view! {
+            <main class="min-h-screen bg-slate-950 px-4 py-8 text-slate-100 sm:py-12">
+                <div class="mx-auto w-full max-w-4xl">
+                    <header class="mb-7 flex items-center justify-between gap-4">
+                        <div class="flex items-center gap-3">
+                            <span class="grid h-10 w-10 place-items-center rounded-lg bg-primary-500/15 text-2xl text-primary-500">
+                                "\u{2665}"
+                            </span>
+                            <div>
+                                <p class="text-sm font-medium text-slate-400">"Mommy's Heart"</p>
+                                <h1 class="text-2xl font-semibold text-slate-100">
+                                    "Volunteer with us"
+                                </h1>
+                            </div>
+                        </div>
+                        <A
+                            href="/login"
+                            attr:class="text-sm font-medium text-primary-500 hover:text-primary-600"
+                        >
+                            "Sign in"
+                        </A>
+                    </header>
+                    {body()}
+                </div>
+            </main>
+        }
+        .into_any()
+    } else {
+        require_login(state, move || {
+            view! {
+                <Layout title="Volunteer agreement".to_string()>{body()}</Layout>
+            }
+            .into_any()
+        })
+    }
 }

@@ -24,7 +24,6 @@ use crate::helpers::volunteer_terms::{VOLUNTEER_AGREEMENT_SECTIONS, VOLUNTEER_AG
 use crate::server_fns::err_text;
 use crate::server_fns::profile::{load_profile, save_my_profile, ProfileEdit, UserProfile};
 use crate::server_fns::users::AccountRole;
-use crate::server_fns::volunteers::VolunteerStatus;
 use crate::state::AppState;
 
 const INPUT_CLASS: &str = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
@@ -290,8 +289,12 @@ pub fn ProfilePage() -> impl IntoView {
             .into_any()
         };
 
-        // Own profile only. Holding the role and having signed are independent
-        // facts: a client applies, an existing volunteer just signs.
+        // Own profile only, and volunteers only. Holding the role and having
+        // signed are independent facts, so a volunteer may still be asked to
+        // accept an updated agreement.
+        //
+        // A client sees nothing here: volunteering is a public signup now, not
+        // something an existing account applies for.
         let become_volunteer = move || {
             let Some(p) = profile.get() else {
                 return ().into_any();
@@ -299,25 +302,11 @@ pub fn ProfilePage() -> impl IntoView {
             if !p.is_self {
                 return ().into_any();
             }
-            let status = p.volunteer.as_ref().map(|v| v.status);
-            if status == Some(VolunteerStatus::Pending) {
-                return view! {
-                    <div class=SECTION_CLASS>
-                        <h3 class="text-sm font-semibold text-slate-200">"Volunteer application"</h3>
-                        <p class="mt-2 text-sm text-slate-400">
-                            "Your volunteer application is being reviewed. We'll email you when there's a decision."
-                        </p>
-                    </div>
-                }
-                .into_any();
-            }
-
-            // The Volunteer role exactly. Admins have volunteer *privileges*
-            // without being volunteers, and have no agreement to sign.
-            if p.role.has_operations_admin_permissions() {
+            // Admins have volunteer *privileges* without being volunteers, and
+            // have no agreement to sign. Nor does anyone who is not one.
+            if p.role != AccountRole::Volunteer {
                 return ().into_any();
             }
-            let already_a_volunteer = p.role == AccountRole::Volunteer;
             // Only the current wording counts, so a volunteer on a superseded
             // version is asked to accept the new one.
             let signed = p
@@ -329,7 +318,7 @@ pub fn ProfilePage() -> impl IntoView {
                 .as_ref()
                 .is_some_and(|v| v.has_agreement() && !v.is_current_agreement());
             // Nothing to do: they hold the role and have signed the current one.
-            if already_a_volunteer && signed {
+            if signed {
                 return ().into_any();
             }
 
@@ -339,21 +328,13 @@ pub fn ProfilePage() -> impl IntoView {
                     "The volunteer agreement has been updated since you last accepted it. Please read the current version and accept it.",
                     "Read and accept the current agreement",
                 )
-            } else if already_a_volunteer {
+            } else {
                 (
                     "Volunteer agreement",
                     "Your account has volunteer access, but we don't have your acceptance of the volunteer agreement on file. Please read and accept it.",
                     "Read and accept the agreement",
                 )
-            } else {
-                (
-                    "Become a volunteer",
-                    "Volunteers work directly with the families the Foundation supports. Read the volunteer agreement and accept it to apply \u{2014} an administrator reviews every application.",
-                    "Read the volunteer agreement",
-                )
             };
-            // A declined or revoked person sees the invitation again: they are
-            // free to accept the agreement and apply afresh.
             view! {
                 <div class=SECTION_CLASS>
                     <h3 class="text-sm font-semibold text-slate-200">{heading}</h3>

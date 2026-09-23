@@ -120,9 +120,13 @@ impl Volunteer {
     }
 }
 
-/// Accept the volunteer agreement and submit the details that go with it: a
-/// client files an application, an existing volunteer records their acceptance.
-/// Administrators are refused, since approving one would demote them.
+/// Accept the volunteer agreement and submit the details that go with it.
+///
+/// Volunteers only: this is how an existing volunteer records their acceptance
+/// of a new version of the wording. It is deliberately *not* a way to become
+/// one — that is the public signup at
+/// [`crate::server_fns::volunteer_applicants::apply_as_volunteer`], which an
+/// admin approves. Clients and administrators are refused.
 #[server(prefix = "/api")]
 pub async fn apply_to_volunteer(
     agreement_version: String,
@@ -133,9 +137,9 @@ pub async fn apply_to_volunteer(
     use crate::server_fns::users::AccountRole;
 
     let user = require_user().await?;
-    if user.role.has_operations_admin_permissions() {
+    if user.role != AccountRole::Volunteer {
         return Err(ServerFnError::new(
-            "Administrator accounts cannot apply to volunteer.",
+            "Only volunteers can accept the volunteer agreement here.",
         ));
     }
     // An old tab holding a stale version never saw the wording it claims to
@@ -162,35 +166,27 @@ pub async fn apply_to_volunteer(
             "Your volunteer application is already awaiting review.",
         ));
     }
-    let already_a_volunteer = user.role == AccountRole::Volunteer;
     // Only the current wording counts as already signed, so a volunteer on a
     // superseded version is not turned away.
-    if already_a_volunteer
-        && existing
-            .as_ref()
-            .is_some_and(VolunteerApplication::is_current_agreement)
+    if existing
+        .as_ref()
+        .is_some_and(VolunteerApplication::is_current_agreement)
     {
         return Err(ServerFnError::new(
             "You have already accepted the current volunteer agreement.",
         ));
     }
+    // Always `true`: the caller is a volunteer already, so this records an
+    // acceptance rather than filing anything for review.
     volunteers::apply(
         &user.id,
         agreement_version.trim(),
         &details,
-        already_a_volunteer,
+        true,
         &user.full_name(),
     )
     .await
     .map_err(ServerFnError::new)?;
-    // Only a genuine application needs a decision, so only that emails the site
-    // admins. An existing volunteer signing the paperwork has nothing to review.
-    if !already_a_volunteer {
-        crate::server::notifications::notify_volunteer_application_filed(
-            user.full_name(),
-            user.email.clone(),
-        );
-    }
     Ok(())
 }
 

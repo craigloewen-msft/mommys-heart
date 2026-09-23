@@ -32,7 +32,9 @@ pub struct AppBadges {
 /// caller may not see are zero rather than an error.
 #[server(prefix = "/api")]
 pub async fn load_app_badges() -> Result<AppBadges, ServerFnError> {
-    use crate::server::db::{admin_requests, cases, channel_notifications, volunteers};
+    use crate::server::db::{
+        admin_requests, cases, channel_notifications, volunteer_applicants, volunteers,
+    };
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
@@ -82,11 +84,16 @@ pub async fn load_app_badges() -> Result<AppBadges, ServerFnError> {
         0
     };
 
-    // Every admin can inspect the queue; only site admins may decide it.
+    // Every admin can inspect the queue; only site admins may decide it. Both
+    // kinds of application count: one from an existing account, one from the
+    // public volunteer signup.
     let volunteer_requests_pending = if user.role.has_operations_admin_permissions() {
         volunteers::pending_count()
             .await
             .map_err(ServerFnError::new)?
+            + volunteer_applicants::pending_count()
+                .await
+                .map_err(ServerFnError::new)?
     } else {
         0
     };
@@ -292,28 +299,6 @@ impl AppState {
             .map_err(err_text)?;
         self.current_user_summary.set(Some(user.into()));
         self.refresh_badges();
-        Ok(())
-    }
-
-    /// Begin a self-service registration. This does **not** create the account
-    /// or sign the user in; it emails a verification code and starts the
-    /// email-OTP challenge. The client should route to the verification screen
-    /// and call [`verify_registration`](Self::verify_registration).
-    pub async fn register(
-        self,
-        first_name: &str,
-        last_name: &str,
-        email: &str,
-        password: &str,
-    ) -> Result<(), String> {
-        auth::register(
-            first_name.trim().to_string(),
-            last_name.trim().to_string(),
-            email.trim().to_string(),
-            password.to_string(),
-        )
-        .await
-        .map_err(err_text)?;
         Ok(())
     }
 

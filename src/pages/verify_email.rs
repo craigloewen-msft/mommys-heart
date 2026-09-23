@@ -6,22 +6,15 @@ use leptos_router::hooks::use_navigate;
 use crate::server_fns::{auth, err_text};
 use crate::state::AppState;
 
-/// Standalone email-verification screen shown right after the sign-up form: the
-/// user enters the one-time code emailed to confirm their address. The account
-/// is only created once the code is verified. Reached via a redirect from the
-/// register page after [`crate::server_fns::auth::register`] succeeds.
-#[component]
-pub fn VerifyEmailPage() -> impl IntoView {
-    verification_screen(false)
-}
-
-/// Verification screen for a pending client account plus case signup.
+/// Standalone email-verification screen for a client case signup: the visitor
+/// enters the one-time code emailed to confirm their address. The account and
+/// the case are only created once the code is verified.
+///
+/// This is the only verification screen left. There used to be a second for
+/// general self-service registration; that door is closed, so every pending
+/// registration reaching here is a case signup.
 #[component]
 pub fn CaseSignupVerifyPage() -> impl IntoView {
-    verification_screen(true)
-}
-
-fn verification_screen(creates_case: bool) -> impl IntoView {
     let state = expect_context::<AppState>();
     let navigate = use_navigate();
 
@@ -72,11 +65,7 @@ fn verification_screen(creates_case: bool) -> impl IntoView {
                 <div class="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl shadow-black/30">
                     <h1 class="text-lg font-semibold">"Verify your email"</h1>
                     <p class="mt-1 text-sm text-slate-400">
-                        {if creates_case {
-                            "We emailed you a 6-digit code. Enter it below to create your account and case."
-                        } else {
-                            "We emailed you a 6-digit code. Enter it below to finish creating your account."
-                        }}
+                        "We emailed you a 6-digit code. Enter it below to create your account and case."
                     </p>
 
                     <form
@@ -116,11 +105,7 @@ fn verification_screen(creates_case: bool) -> impl IntoView {
                             r#type="submit"
                             class="w-full rounded-lg bg-primary-500 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-600"
                         >
-                            {if creates_case {
-                                "Verify and create account and case"
-                            } else {
-                                "Verify and create account"
-                            }}
+                            "Verify and create account and case"
                         </button>
                     </form>
 
@@ -137,7 +122,7 @@ fn verification_screen(creates_case: bool) -> impl IntoView {
 
                     <p class="mt-5 text-center text-sm text-slate-400">
                         <A
-                            href=if creates_case { "/case-signup" } else { "/register" }
+                            href="/case-signup"
                             attr:class="font-medium text-primary-400 hover:text-primary-300"
                         >
                             "Back to sign up"

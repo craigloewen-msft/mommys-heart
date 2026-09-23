@@ -7,8 +7,11 @@ use leptos::task::spawn_local;
 use crate::components::profile_link::ProfileLink;
 use crate::server_fns::err_text;
 use crate::server_fns::users::{list_volunteers_page, VolunteerListItem};
+use crate::server_fns::volunteer_applicants::{
+    decide_volunteer_applicant, list_volunteer_applicants,
+};
 use crate::server_fns::volunteers::{
-    decide_volunteer_application, list_pending_volunteer_applications, Volunteer,
+    decide_volunteer_application, list_pending_volunteer_applications,
 };
 use crate::state::AppState;
 
@@ -168,7 +171,7 @@ pub fn PendingApplications(
     #[prop(optional, default = false)] show_empty: bool,
 ) -> impl IntoView {
     let state = expect_context::<AppState>();
-    let items = RwSignal::new(Vec::<Volunteer>::new());
+    let items = RwSignal::new(Vec::<QueueItem>::new());
     let load_error = RwSignal::new(None::<String>);
     let loading = RwSignal::new(false);
     let request_generation = RwSignal::new(0u64);
@@ -185,18 +188,45 @@ pub fn PendingApplications(
         request_generation.update(|generation| *generation += 1);
         let generation = request_generation.get_untracked();
         spawn_local(async move {
-            let response = list_pending_volunteer_applications().await;
+            // Both queues, side by side: one from accounts that already exist,
+            // one from the public volunteer signup.
+            let accounts = list_pending_volunteer_applications().await;
+            let applicants = list_volunteer_applicants().await;
             if request_generation.get_untracked() != generation {
                 return;
             }
-            match response {
-                Ok(list) => {
-                    // Keep the badge honest against what is on screen.
-                    state.volunteer_requests_pending.set(list.len() as i64);
-                    items.set(list);
+            match (accounts, applicants) {
+                (Ok(accounts), Ok(applicants)) => {
+                    let mut merged: Vec<QueueItem> = accounts
+                        .into_iter()
+                        .map(|volunteer| QueueItem {
+                            source: Source::Account,
+                            name: volunteer.full_name(),
+                            id: volunteer.id,
+                            email: volunteer.email,
+                            skills_focus: volunteer.skills_focus,
+                            agreed_at: volunteer.agreed_at,
+                            pending: true,
+                        })
+                        .collect();
+                    merged.extend(applicants.into_iter().map(|applicant| QueueItem {
+                        source: Source::Applicant,
+                        pending: applicant.is_pending(),
+                        name: applicant.full_name(),
+                        id: applicant.id,
+                        email: applicant.email,
+                        skills_focus: applicant.details.skills_focus,
+                        agreed_at: applicant.agreed_at,
+                    }));
+                    // Keep the badge honest against what is on screen. Only
+                    // undecided rows count, matching what the server counts.
+                    state
+                        .volunteer_requests_pending
+                        .set(merged.iter().filter(|item| item.pending).count() as i64);
+                    items.set(merged);
                     load_error.set(None);
                 }
-                Err(e) => load_error.set(Some(err_text(e))),
+                (Err(e), _) | (_, Err(e)) => load_error.set(Some(err_text(e))),
             }
             loading.set(false);
         });
@@ -229,9 +259,9 @@ pub fn PendingApplications(
         } else {
             let cards = pending
                 .into_iter()
-                .map(|volunteer| {
+                .map(|item| {
                     view! {
-                        <ApplicationCard volunteer=volunteer reload=reload is_site_admin=is_site_admin />
+                        <ApplicationCard item=item reload=reload is_site_admin=is_site_admin />
                     }
                     .into_any()
                 })
@@ -261,35 +291,60 @@ pub fn PendingApplications(
     }
 }
 
+/// Which queue an application came from, and so which server function decides
+/// it. The two are near-identical to review but not to act on: an applicant has
+/// no account yet, so approving them sends a setup link rather than granting a
+/// role on the spot.
+#[derive(Clone, Copy, PartialEq)]
+enum Source {
+    /// An existing account that accepted the agreement.
+    Account,
+    /// A public volunteer signup, with no account behind it.
+    Applicant,
+}
+
+/// One row of the review queue, whichever queue it came from.
+#[derive(Clone)]
+struct QueueItem {
+    source: Source,
+    /// The user id for [`Source::Account`], the applicant id otherwise.
+    id: String,
+    name: String,
+    email: String,
+    skills_focus: String,
+    agreed_at: String,
+    /// False for an approved applicant who has not yet followed their setup
+    /// link: there is nothing left to decide, but they are worth showing.
+    pending: bool,
+}
+
 /// One pending application, with its approve/deny controls.
 #[component]
 fn ApplicationCard(
-    volunteer: Volunteer,
+    item: QueueItem,
     reload: RwSignal<u32>,
     is_site_admin: bool,
 ) -> impl IntoView {
     let state = expect_context::<AppState>();
-    let user_id = StoredValue::new(volunteer.id.clone());
-    let name = volunteer.full_name();
-    let email = volunteer.email.clone();
-    let skills_focus = volunteer.skills_focus.clone();
-    let agreed_at = volunteer.agreed_at.clone();
+    let target_id = StoredValue::new(item.id.clone());
+    let source = item.source;
+    let is_pending = item.pending;
+    let name = item.name.clone();
+    let email = item.email.clone();
+    let skills_focus = item.skills_focus.clone();
+    let agreed_at = item.agreed_at.clone();
     let note = RwSignal::new(String::new());
     let change_email = RwSignal::new(false);
     let new_email = RwSignal::new(String::new());
     let confirm_email = RwSignal::new(String::new());
     let deciding = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
-    let note_id = StoredValue::new(format!("volunteer-application-note-{}", volunteer.id));
-    let change_email_id = StoredValue::new(format!(
-        "volunteer-application-change-email-{}",
-        volunteer.id
-    ));
-    let new_email_id = StoredValue::new(format!("volunteer-application-email-{}", volunteer.id));
-    let confirm_email_id = StoredValue::new(format!(
-        "volunteer-application-email-confirm-{}",
-        volunteer.id
-    ));
+    let note_id = StoredValue::new(format!("volunteer-application-note-{}", item.id));
+    let change_email_id =
+        StoredValue::new(format!("volunteer-application-change-email-{}", item.id));
+    let new_email_id = StoredValue::new(format!("volunteer-application-email-{}", item.id));
+    let confirm_email_id =
+        StoredValue::new(format!("volunteer-application-email-confirm-{}", item.id));
     let contact_href = format!("mailto:{email}");
 
     let decide = move |approve: bool| {
@@ -311,18 +366,34 @@ fn ApplicationCard(
         }
         deciding.set(true);
         error.set(None);
-        let target = user_id.get_value();
+        let target = target_id.get_value();
         let decision_note = note.get_untracked();
         spawn_local(async move {
-            match decide_volunteer_application(
-                target,
-                approve,
-                decision_note,
-                wanted_email,
-                wanted_confirm,
-            )
-            .await
-            {
+            // The same decision, but an applicant has no account to act on: it
+            // sends them a setup link instead of granting a role.
+            let outcome = match source {
+                Source::Account => {
+                    decide_volunteer_application(
+                        target,
+                        approve,
+                        decision_note,
+                        wanted_email,
+                        wanted_confirm,
+                    )
+                    .await
+                }
+                Source::Applicant => {
+                    decide_volunteer_applicant(
+                        target,
+                        approve,
+                        decision_note,
+                        wanted_email,
+                        wanted_confirm,
+                    )
+                    .await
+                }
+            };
+            match outcome {
                 Ok(()) => {
                     reload.update(|value| *value += 1);
                     // The decided row leaves the queue, so keep the badge in step.
@@ -338,7 +409,19 @@ fn ApplicationCard(
         <div class="rounded-lg border border-slate-800 bg-slate-950 p-4">
             <div class="flex flex-wrap items-start justify-between gap-3">
                 <div class="min-w-0">
-                    <ProfileLink user_id=volunteer.id name=name />
+                    // An applicant has no account yet, so there is no profile to
+                    // link to \u{2014} their name is just their name.
+                    {match source {
+                        Source::Account => {
+                            view! { <ProfileLink user_id=item.id name=name /> }.into_any()
+                        }
+                        Source::Applicant => {
+                            view! {
+                                <p class="truncate text-sm font-semibold text-slate-100">{name}</p>
+                            }
+                                .into_any()
+                        }
+                    }}
                     <a
                         href=contact_href
                         class="mt-1 inline-flex max-w-full truncate text-xs font-medium text-primary-300 underline decoration-dotted underline-offset-2 hover:text-primary-200 hover:decoration-solid"
@@ -346,10 +429,27 @@ fn ApplicationCard(
                         {email.clone()}
                     </a>
                     <p class="mt-1 text-xs text-slate-500">"Agreement accepted " {agreed_at}</p>
+                    <Show when=move || source == Source::Applicant>
+                        <p class="mt-1 text-xs text-slate-500">
+                            "New volunteer signup \u{2014} no account yet"
+                        </p>
+                    </Show>
                 </div>
-                <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/30">
-                    "Pending review"
-                </span>
+                {if is_pending {
+                    view! {
+                        <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/30">
+                            "Pending review"
+                        </span>
+                    }
+                        .into_any()
+                } else {
+                    view! {
+                        <span class="inline-flex items-center rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-300 ring-1 ring-sky-500/30">
+                            "Approved \u{2014} waiting on account setup"
+                        </span>
+                    }
+                        .into_any()
+                }}
             </div>
 
             <Show when=move || error.get().is_some()>
@@ -377,12 +477,25 @@ fn ApplicationCard(
                     }
                 })}
 
+            // An approved applicant has already been decided; all that is left
+            // is for them to follow their setup link.
+            <Show when=move || !is_pending>
+                <p class="mt-3 text-xs text-slate-500">
+                    "They have been emailed a link to choose a password and finish setting up their account."
+                </p>
+            </Show>
+
             <Show
-                when=move || is_site_admin
-                fallback=|| view! {
-                    <p class="mt-3 text-xs text-slate-500">
-                        "Only site admins can approve or deny volunteer applications."
-                    </p>
+                when=move || is_site_admin && is_pending
+                fallback=move || {
+                    (is_pending && !is_site_admin)
+                        .then(|| {
+                            view! {
+                                <p class="mt-3 text-xs text-slate-500">
+                                    "Only site admins can approve or deny volunteer applications."
+                                </p>
+                            }
+                        })
                 }
             >
                 <div class="mt-3 space-y-3">

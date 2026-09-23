@@ -58,12 +58,12 @@ pub mod pages {
     pub mod organizations;
     pub mod people;
     pub mod profile;
-    pub mod register;
     pub mod reports;
     pub mod reset_password;
     pub mod settings;
     pub mod verify_email;
     pub mod volunteer_agreement;
+    pub mod volunteer_setup;
 }
 
 #[cfg(feature = "ssr")]
