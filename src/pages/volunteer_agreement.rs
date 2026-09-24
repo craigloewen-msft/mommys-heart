@@ -129,7 +129,7 @@ fn agreement_page(public: bool) -> AnyView {
                 return;
             }
             let mut submitted = details.get_untracked();
-            // The tick box is the consent; date and time are generated server-side.
+            // The consent box is the consent; date and time are generated server-side.
             submitted.electronic_consent = accepted.get_untracked();
             submitted.signer_is_guardian = dates::is_minor(&submitted.date_of_birth);
             let submitted = submitted.normalized();
@@ -150,7 +150,8 @@ fn agreement_page(public: bool) -> AnyView {
             );
             if public && (first.is_empty() || last.is_empty() || !address.contains('@')) {
                 error.set(
-                    "Please give your first name, last name, and a valid email address.".to_string(),
+                    "Please give your first name, last name, and a valid email address."
+                        .to_string(),
                 );
                 return;
             }
@@ -217,7 +218,7 @@ fn agreement_page(public: bool) -> AnyView {
                                     "Read and accept the volunteer agreement"
                                 </h2>
                                 <p class="mt-1 text-sm text-slate-400">
-                                    "Please read all the way to the end. Accepting submits an application to volunteer \u{2014} an administrator will review it and you'll hear back by email."
+                                    "Please read through the entire agreement before proceeding. By clicking \u{201c}Accept,\u{201d} you will submit an application to volunteer. An administrator will review your application and contact you by email."
                                 </p>
                             </div>
 
@@ -287,7 +288,7 @@ fn agreement_page(public: bool) -> AnyView {
 
                             <Show when=move || read_to_end.get() && !accepted.get()>
                                 <p class="mt-3 text-xs text-slate-400">
-                                    "Tick the box above to continue."
+                                    "Click the box above to continue."
                                 </p>
                             </Show>
                         </section>
@@ -574,7 +575,9 @@ fn agreement_page(public: bool) -> AnyView {
                                     />
                                 </div>
                                 <div>
-                                    <label class=LABEL_CLASS>"Volunteer role"</label>
+                                    <label class=LABEL_CLASS>
+                                        "Volunteer role " <Required />
+                                    </label>
                                     <input
                                         class=INPUT_CLASS
                                         prop:disabled=move || !unlocked()

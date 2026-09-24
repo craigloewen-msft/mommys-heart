@@ -17,6 +17,7 @@ pub mod case_properties;
 pub mod cases;
 pub mod channel_notifications;
 pub mod channels;
+pub mod client_agreements;
 pub mod clients;
 pub mod contact_directory;
 pub mod contact_mail;
@@ -83,7 +84,9 @@ pub async fn init() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             return Err("DATABASE_URL is not set (see .env / .env.example)".into())
         }
         _ => {
-            tracing::info!("DATABASE_URL unset; using the shared dev database at {DEV_DATABASE_URL}");
+            tracing::info!(
+                "DATABASE_URL unset; using the shared dev database at {DEV_DATABASE_URL}"
+            );
             DEV_DATABASE_URL.to_string()
         }
     };

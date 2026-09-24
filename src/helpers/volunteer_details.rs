@@ -56,7 +56,7 @@ pub struct VolunteerDetails {
     pub guardian_relationship: String,
     #[serde(default)]
     pub guardian_email: String,
-    /// Whether the electronic consent box was ticked.
+    /// Whether the electronic consent box was clicked.
     #[serde(default)]
     pub electronic_consent: bool,
 }
@@ -93,6 +93,9 @@ impl VolunteerDetails {
         if self.skills_focus.trim().is_empty() {
             return Err("Please describe your skills and area of focus.".to_string());
         }
+        if self.volunteer_role.trim().is_empty() {
+            return Err("Please give the role you are volunteering for.".to_string());
+        }
         validate_date_of_birth(self.date_of_birth.trim())?;
         self.validate_ssn(ssn_on_file)?;
         if format_phone(&self.phone).is_none() {
@@ -123,7 +126,7 @@ impl VolunteerDetails {
     pub fn validate_signature(&self) -> Result<(), String> {
         if !self.electronic_consent {
             return Err(
-                "Tick the acknowledgment box to adopt your typed name as your electronic signature."
+                "Click the acknowledgment box to adopt your typed name as your electronic signature."
                     .to_string(),
             );
         }

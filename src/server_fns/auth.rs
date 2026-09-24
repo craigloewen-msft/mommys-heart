@@ -347,6 +347,10 @@ pub(crate) fn validate_account_lengths(
 /// which belongs with the team's intake record.
 pub const SIGNUP_SUMMARY_KEY: &str = "What the client asked for at signup";
 
+/// The property the services a client ticked at signup are stored under, beside
+/// [`SIGNUP_SUMMARY_KEY`], so staff see the request without a new screen.
+pub const SIGNUP_SERVICES_KEY: &str = "Services requested at signup";
+
 /// Cap on that answer. The public form is deliberately a few sentences, not an
 /// intake: the full questionnaire is completed with a volunteer afterwards.
 pub const SIGNUP_SUMMARY_MAX_CHARS: usize = 2000;
@@ -370,6 +374,7 @@ pub async fn register_case_signup(
     password_confirmation: String,
     intake_json: String,
     terms_version: String,
+    agreement_details: crate::helpers::client_details::ClientAgreementDetails,
 ) -> Result<(), ServerFnError> {
     use crate::server::auth::{
         build_register_cookie, generate_code, generate_token, hash_password, REGISTER_COOKIE_NAME,
@@ -402,6 +407,13 @@ pub async fn register_case_signup(
         ));
     }
     let terms_version = terms_version.trim().to_string();
+
+    // The signature block is normalized first so what is validated is exactly
+    // what gets stored, and checked here as well as in the browser.
+    let agreement_details = agreement_details.normalized();
+    agreement_details.validate().map_err(ServerFnError::new)?;
+    let agreement_details_json =
+        serde_json::to_string(&agreement_details).map_err(ServerFnError::new)?;
 
     // The public form asks only what the client needs help with; a volunteer
     // completes the full intake questionnaire with them afterwards.
@@ -451,6 +463,7 @@ pub async fn register_case_signup(
         case_name: format!("{} case", account.full_name()),
         intake_json,
         terms_version,
+        agreement_details: agreement_details_json,
     };
     let challenge = generate_token();
     let code = generate_code();
@@ -482,7 +495,7 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
     use crate::server::auth::{build_session_cookie, clear_register_cookie, REGISTER_COOKIE_NAME};
     use crate::server::db::pending_registrations::{self, Verify};
     use crate::server::db::{
-        case_contacts, cases, clients, contacts, pool, sessions, throttle, users,
+        case_contacts, cases, client_agreements, clients, contacts, pool, sessions, throttle, users,
     };
     use crate::server_fns::case_contacts::CaseContactRole;
     use crate::server_fns::contacts::{ContactInput, ContactType};
@@ -586,14 +599,25 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
     .map_err(ServerFnError::new)?;
 
     if let Some(signup) = pending.case_signup {
-        // Volunteer-only: the client's own words about why they came, kept with
-        // the team's intake record rather than shown back on the shared list.
-        let summary = vec![crate::server_fns::case_properties::CaseProperty {
-            key: SIGNUP_SUMMARY_KEY.to_string(),
-            value: signup.intake_json.clone(),
-            section: crate::helpers::sections::INTAKE.to_string(),
-            visibility: crate::helpers::visibility::Visibility::VolunteerOnly,
-        }];
+        // Staged as JSON on the pending row; a row written before this agreement
+        // version simply has none, so it falls back to an empty block.
+        let agreement: crate::helpers::client_details::ClientAgreementDetails =
+            serde_json::from_str(&signup.agreement_details).unwrap_or_default();
+
+        // Volunteer-only: the client's own words about why they came, and the
+        // services they asked for, kept with the team's intake record rather
+        // than shown back on the shared list.
+        let volunteer_only =
+            |key: &str, value: String| crate::server_fns::case_properties::CaseProperty {
+                key: key.to_string(),
+                value,
+                section: crate::helpers::sections::INTAKE.to_string(),
+                visibility: crate::helpers::visibility::Visibility::VolunteerOnly,
+            };
+        let summary = vec![
+            volunteer_only(SIGNUP_SUMMARY_KEY, signup.intake_json.clone()),
+            volunteer_only(SIGNUP_SERVICES_KEY, agreement.services_line()),
+        ];
         cases::create_from_signup_in(
             &mut tx,
             &signup.case_id,
@@ -602,6 +626,17 @@ pub async fn verify_registration(code: String) -> Result<User, ServerFnError> {
             &signup.case_name,
             summary,
             &signup.terms_version,
+        )
+        .await
+        .map_err(ServerFnError::new)?;
+        // The signature that agreement was given under, filed with the case it
+        // was given for.
+        client_agreements::insert_in(
+            &mut tx,
+            &id,
+            Some(&signup.case_id),
+            &signup.terms_version,
+            &agreement,
         )
         .await
         .map_err(ServerFnError::new)?;

@@ -214,7 +214,7 @@ pub fn VolunteerDetailsPanel(
                 </div>
 
                 <div>
-                    <label class=LABEL_CLASS>"Volunteer role"</label>
+                    <label class=LABEL_CLASS>"Volunteer role " <span class="text-rose-400" aria-hidden="true">"*"</span></label>
                     <input
                         class=INPUT_CLASS
                         prop:value=move || draft.get().volunteer_role

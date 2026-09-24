@@ -1,8 +1,8 @@
 //! Cases, sub properties of case_properties are their own files
 
 use crate::server::db::{
-    audit, capabilities, case_documents, case_notes, case_properties, channels, ids, now_stamp,
-    pool, terms_acceptances, users,
+    audit, capabilities, case_documents, case_notes, case_properties, channels, client_agreements,
+    ids, now_stamp, pool, terms_acceptances, users,
 };
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
@@ -269,10 +269,7 @@ pub async fn get_summaries_for_user(
 
 /// One admin directory summary by primary key, including the viewer's
 /// capabilities. This avoids resolving detail routes through fuzzy search.
-pub async fn admin_summary(
-    case_id: &str,
-    user: &User,
-) -> Result<Option<CaseSummary>, sqlx::Error> {
+pub async fn admin_summary(case_id: &str, user: &User) -> Result<Option<CaseSummary>, sqlx::Error> {
     let row =
         sqlx::query_as::<_, SummaryRow>(&format!("{} WHERE c.id = $1", summary_select("true")))
             .bind(case_id)
@@ -431,15 +428,21 @@ pub async fn get(
     // the documents panel, so opening a case never waits on the library.
     let documents = case_documents::folder_ref(id).await?;
     let properties = case_properties::get_case_properties(id, has_volunteer_access).await?;
+    let signer = client_agreements::signer_for_case(id).await?;
     let terms_accepted = terms_acceptances::for_case(id).await?.map(|acceptance| {
-        format!(
+        let when = format!(
             "{} (version {})",
             acceptance
                 .accepted_at
                 .with_timezone(&chrono::Local)
                 .format("%Y-%m-%d %H:%M"),
             acceptance.terms_version
-        )
+        );
+        // Who signed it electronically, when the agreement recorded a signature.
+        match signer {
+            Some(name) => format!("{when}, signed by {name}"),
+            None => when,
+        }
     });
 
     let status = CaseStatus::from_slug(&row.status).unwrap_or(CaseStatus::Open);

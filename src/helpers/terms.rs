@@ -10,7 +10,7 @@
 
 /// The version of the terms currently in force. Stored verbatim on every
 /// acceptance; bump it whenever [`TERMS_SECTIONS`] changes in substance.
-pub const TERMS_VERSION: &str = "2026-01-01";
+pub const TERMS_VERSION: &str = "2026-02-01";
 
 /// One numbered section of the terms: an optional heading and its paragraphs.
 pub struct TermsSection {
@@ -70,7 +70,7 @@ pub const TERMS_SECTIONS: &[TermsSection] = &[
     TermsSection {
         heading: "More information",
         paragraphs: &[
-            "For more information regarding the Foundation's Terms of Service and Privacy Policy, please visit www.mommysheartfoundation.com.",
+            "For more information regarding the Foundation\u{2019}s Terms of Service and Privacy Policy, please visit www.mommysheartinc.org",
         ],
     },
 ];
@@ -78,11 +78,28 @@ pub const TERMS_SECTIONS: &[TermsSection] = &[
 /// The sentence shown immediately above the acceptance control. Kept separate
 /// from [`TERMS_SECTIONS`] because it is what the checkbox attests to, not part
 /// of the terms it attests about.
-pub const TERMS_ATTESTATION: &str = "Recipient of Services acknowledges, affirms, and certifies that they have read and reviewed, and now and hereby agree to, all of the above-stated paragraphs. By accepting below, Recipient of Services certifies that they understand the terms and conditions set forth above are a binding contract with the Foundation.";
+pub const TERMS_ATTESTATION: &str = "Recipient of Services acknowledges, affirms, and certifies that they have read and reviewed, and now and hereby agree to all above-stated six paragraphs.  By affixing their signature, together with the Foundation President, Recipient of Services certifies that they understand the terms and conditions set forth above are a binding contract with the Foundation.";
 
 /// Shown beneath the acceptance control: minors cannot bind themselves, and the
 /// signed-paperwork version of this agreement said so explicitly.
 pub const TERMS_MINOR_NOTICE: &str = "If the Recipient of Services is under the age of 18, a parent or legal guardian must accept these terms on their behalf.";
+
+/// The heading above the electronic consent provision.
+pub const ELECTRONIC_CONSENT_HEADING: &str = "ELECTRONIC CONSENT AND SIGNATURE";
+
+/// The electronic consent provision the acknowledgment box below it adopts.
+pub const ELECTRONIC_CONSENT: &str = "By checking the acknowledgment box below and typing my full legal name in the electronic-signature field, I represent and certify that I am the Recipient of Services identified in this Agreement or, if signing for a minor, that I am the minor\u{2019}s parent or legal guardian and have full legal authority to enter into this Agreement on the minor\u{2019}s behalf; that the information I have provided is true, accurate, and complete; that I have received, carefully read, understand, and voluntarily accept this entire Agreement, including all provisions and documents incorporated by reference; that I have had sufficient time and opportunity to ask questions and seek independent legal advice before signing; that I am signing knowingly and voluntarily, without coercion or undue influence; that I consent to conducting this transaction and receiving, signing, and retaining this Agreement electronically; and that I specifically intend to adopt the full legal name typed below as my electronic signature. I understand and agree that my typed electronic signature identifies me, authenticates this Agreement, evidences my intent to be legally bound by all of its terms, and has the same legal validity, force, and effect as my handwritten signature. I further consent to Mommy\u{2019}s Heart, Inc. retaining the electronically signed Agreement and related authentication records, including the date and time of submission, form version, account or email information, and other reasonable audit-trail information, and I agree that accurate electronic copies and records may be used as evidence of my acceptance to the same extent as an original paper document. I confirm that I have the ability to access, download, print, and retain a complete copy of this Agreement and understand that I may request a paper copy by contacting Mommy\u{2019}s Heart, Inc. at info@mommysheartinc.org.";
+
+/// The wording of the acknowledgment box itself.
+pub const CONSENT_CHECKBOX_LABEL: &str = "I have read, understand, and agree to the Electronic Consent and Signature provision above; I voluntarily accept all terms of this Service Agreement; and I adopt the full legal name typed below as my electronic signature.";
+
+/// The counterparts clause shown beneath the signature blocks.
+pub const ELECTRONIC_EXECUTION_HEADING: &str = "Electronic Execution and Counterparts";
+pub const ELECTRONIC_EXECUTION: &str = "This Agreement may be executed electronically and in counterparts. Each electronically signed counterpart will be deemed an original, and all counterparts together will constitute one agreement. The Parties agree that electronic signatures and electronic records used in connection with this Agreement will have the same validity, force, and effect as handwritten signatures and original paper records to the fullest extent permitted by applicable law.";
+
+/// Who countersigns for the Foundation, shown read-only in the acceptance block.
+pub const FOUNDATION_SIGNATORY: &str = "Julianne Michelle Reeves Stroh";
+pub const FOUNDATION_SIGNATORY_TITLE: &str = "President and Executive Director";
 
 /// Whether `version` is a terms version this build knows how to honour. Only the
 /// current wording may be accepted — an older tab holding a stale version must
