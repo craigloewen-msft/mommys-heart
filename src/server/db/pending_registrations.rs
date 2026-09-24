@@ -36,6 +36,10 @@ pub struct PendingCaseSignup {
     /// filling in the case form. Recorded against the user and case once the
     /// email code verifies.
     pub terms_version: String,
+    /// The signature, contact and services block the client signed the Service
+    /// Agreement with, as JSON of
+    /// [`ClientAgreementDetails`](crate::helpers::client_details::ClientAgreementDetails).
+    pub agreement_details: String,
 }
 
 /// Everything needed to materialize a verified registration.
@@ -59,6 +63,7 @@ struct PendingRow {
     case_name: String,
     intake_json: String,
     terms_version: String,
+    agreement_details: String,
 }
 
 impl PendingAccount {
@@ -110,8 +115,8 @@ pub async fn create_case_signup(
     sqlx::query(
         "INSERT INTO pending_registrations
              (challenge_hash, first_name, last_name, email, password_hash, code_hash, expires_at,
-              create_case, case_id, case_name, intake_json, terms_version)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11)",
+              create_case, case_id, case_name, intake_json, terms_version, agreement_details)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11, $12)",
     )
     .bind(hash(challenge_token))
     .bind(&account.first_name)
@@ -124,6 +129,7 @@ pub async fn create_case_signup(
     .bind(&signup.case_name)
     .bind(&signup.intake_json)
     .bind(&signup.terms_version)
+    .bind(&signup.agreement_details)
     .execute(pool())
     .await?;
     Ok(())
@@ -177,7 +183,7 @@ pub async fn verify_in(
     let row = sqlx::query_as::<_, PendingRow>(
         "SELECT first_name, last_name, email, password_hash, code_hash, attempts,
                 expires_at > now() AS is_live, create_case, case_id, case_name, intake_json,
-                terms_version
+                terms_version, agreement_details
          FROM pending_registrations
          WHERE challenge_hash = $1
          FOR UPDATE",
@@ -208,6 +214,7 @@ pub async fn verify_in(
             case_name: row.case_name,
             intake_json: row.intake_json,
             terms_version: row.terms_version,
+            agreement_details: row.agreement_details,
         });
         return Ok(Verify::Ok(PendingRegistration {
             account: PendingAccount {
