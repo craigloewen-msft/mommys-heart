@@ -20,6 +20,7 @@ use crate::server::config::Brand;
 use crate::server::email::palette;
 use crate::server_fns::admin_activity::{AdminActivityCategory, AdminActivityEvent};
 use crate::server_fns::admin_requests::{AdminRequest, AdminRequestStatus};
+use crate::server_fns::email_failures::EmailFailure;
 use crate::server_fns::settings::NotificationKind;
 
 /// A fully rendered email: the subject line and both body representations ACS
@@ -790,8 +791,10 @@ pub fn contact_mail(brand: &Brand, subject: &str, body: &str) -> RenderedEmail {
 }
 
 /// Build the periodic admin activity digest: everything recorded since the last
-/// one, grouped by category. `extra` is how many further events did not fit in
-/// this batch (0 when none), so the email never understates the period.
+/// one, grouped by category, preceded by any outbound email delivery failures
+/// recorded in the same window. `extra` and `failures_extra` are how many
+/// further events / failures did not fit in this batch (0 when none), so the
+/// email never understates the period.
 ///
 /// Content-free by construction: it lists who did what kind of thing to which
 /// record, never note, message, or document contents.
@@ -799,20 +802,82 @@ pub fn admin_activity_digest(
     brand: &Brand,
     events: &[AdminActivityEvent],
     extra: i64,
+    failures: &[EmailFailure],
+    failures_extra: i64,
 ) -> RenderedEmail {
     let theme = theme(NotificationKind::AdminActivity);
     let count = events.len();
-    let subject = format!(
+    let failure_count = failures.len() as i64 + failures_extra.max(0);
+    let mut subject = format!(
         "[{}] Site activity: {} update{}",
         brand.name,
         count,
         if count == 1 { "" } else { "s" }
     );
+    if failure_count > 0 {
+        subject.push_str(&format!(
+            " \u{2014} {} delivery failure{}",
+            failure_count,
+            if failure_count == 1 { "" } else { "s" }
+        ));
+    }
 
     // Group by category, preserving the order the categories are declared in so
     // the same headings always appear in the same sequence.
     let mut callout = String::new();
     let mut lines = Vec::new();
+
+    // Failures come first and are highlighted: they are the part that needs
+    // acting on. The heading and marker carry the signal too, so it survives
+    // plain text and clients that strip color.
+    if failure_count > 0 {
+        let danger = palette::color("rose-400");
+        callout.push_str(&format!(
+            "<div style=\"margin-bottom:18px;padding:12px 14px;border-left:4px solid {danger};\
+             background:{bg};\">\
+             <div style=\"font-size:13px;font-weight:700;text-transform:uppercase;\
+             letter-spacing:0.08em;color:{danger};\">\u{26A0} Delivery failures ({n})</div>",
+            danger = danger,
+            bg = palette::callout_bg(),
+            n = failure_count,
+        ));
+        lines.push(format!(
+            "!! DELIVERY FAILURES ({failure_count}) \u{2014} these emails did not send:"
+        ));
+        for failure in failures {
+            callout.push_str(&format!(
+                "<div style=\"margin-top:8px;font-size:14px;color:{text};\">\
+                 <strong>{subject}</strong> \u{2014} {recipient}\
+                 <div style=\"font-size:13px;color:{danger};\">{error}</div>\
+                 <span style=\"font-size:12px;color:{muted};\">{context} \u{00B7} {at}</span></div>",
+                text = palette::text(),
+                danger = danger,
+                muted = palette::muted(),
+                subject = escape(&failure.subject),
+                recipient = escape(&failure.recipient),
+                error = escape(&failure.error),
+                context = escape(&failure.context),
+                at = escape(&failure.at),
+            ));
+            lines.push(format!(
+                "  ! {} \u{2014} {} \u{2014} {} ({} \u{00B7} {})",
+                failure.subject, failure.recipient, failure.error, failure.context, failure.at,
+            ));
+        }
+        if failures_extra > 0 {
+            callout.push_str(&format!(
+                "<div style=\"margin-top:8px;font-size:13px;color:{muted};\">\
+                 and {failures_extra} more \u{2014} see the email failure log in the app.</div>",
+                muted = palette::muted(),
+            ));
+            lines.push(format!(
+                "  and {failures_extra} more \u{2014} see the email failure log in the app."
+            ));
+        }
+        callout.push_str("</div>");
+        lines.push(String::new());
+    }
+
     for category in AdminActivityCategory::ALL.iter().copied() {
         let grouped: Vec<&AdminActivityEvent> =
             events.iter().filter(|e| e.category == category).collect();
@@ -866,18 +931,39 @@ pub fn admin_activity_digest(
 
     let cta_href = cta_url(brand, "/admin/activity");
     let footer = notification_footer(brand);
+    // A failure count belongs in the preview line and the heading, so the alarm
+    // is visible before the email is even opened.
+    let failure_suffix = if failure_count > 0 {
+        format!(" {failure_count} email delivery failure(s) need attention.")
+    } else {
+        String::new()
+    };
+    let heading = if failure_count > 0 {
+        "Recent activity \u{2014} and delivery failures"
+    } else {
+        "Recent activity on the site"
+    };
     let html = layout(
         brand,
         &theme,
         &LayoutParts {
-            preheader: &format!("{count} update(s) across cases, notes, files, and contacts."),
+            preheader: &format!(
+                "{count} update(s) across cases, notes, files, and contacts.{failure_suffix}"
+            ),
             eyebrow: "Admin activity alert",
-            heading: "Recent activity on the site",
+            heading,
             callout_html: &callout,
-            cta: cta_href.as_deref().map(|url| (url, "Open the activity feed")),
+            cta: cta_href
+                .as_deref()
+                .map(|url| (url, "Open the activity feed")),
             body_note: &format!(
-                "Sign in to {} to see the full activity feed and open any record.",
-                brand.name
+                "Sign in to {} to see the full activity feed and open any record.{}",
+                brand.name,
+                if failure_count > 0 {
+                    " Delivery failures are listed in full under Admin \u{2192} Email failures."
+                } else {
+                    ""
+                }
             ),
             footer_html: &footer,
         },
@@ -886,10 +972,7 @@ pub fn admin_activity_digest(
     let action = if brand.app_url.is_empty() {
         format!("Sign in to {} to see the full activity feed.", brand.name)
     } else {
-        format!(
-            "Open the activity feed: {}/admin/activity",
-            brand.app_url
-        )
+        format!("Open the activity feed: {}/admin/activity", brand.app_url)
     };
     let settings = if brand.app_url.is_empty() {
         "your Settings page".to_string()
@@ -897,10 +980,12 @@ pub fn admin_activity_digest(
         format!("{}/settings", brand.app_url)
     };
     let plain_text = format!(
-        "Recent activity on the site \u{2014} {count} update(s).\n\n{body}\n\n{action}\n\n\
+        "Recent activity on the site \u{2014} {count} update(s).{failure_suffix}\n\n\
+         {body}\n\n{action}\n\n\
          You're receiving this because of your notification settings. \
          Change what {brand} emails you about on {settings}",
         count = count,
+        failure_suffix = failure_suffix,
         body = lines.join("\n"),
         action = action,
         brand = brand.name,
@@ -1329,7 +1414,18 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
     samples.push(Sample {
         key: "admin_activity_digest".to_string(),
         label: "Admin activity alert \u{2014} daily digest".to_string(),
-        email: admin_activity_digest(brand, &sample_activity(case, actor), 12),
+        email: admin_activity_digest(brand, &sample_activity(case, actor), 12, &[], 0),
+    });
+    samples.push(Sample {
+        key: "admin_activity_digest_failures".to_string(),
+        label: "Admin activity alert \u{2014} with delivery failures".to_string(),
+        email: admin_activity_digest(
+            brand,
+            &sample_activity(case, actor),
+            12,
+            &sample_failures(),
+            2,
+        ),
     });
 
     samples.push(Sample {
@@ -1369,12 +1465,34 @@ pub fn samples(brand: &Brand) -> Vec<Sample> {
     samples
 }
 
+/// A believable batch of delivery failures for the digest preview sample.
+fn sample_failures() -> Vec<EmailFailure> {
+    vec![
+        EmailFailure {
+            id: "ef-9001".to_string(),
+            recipient: "intake@example.org".to_string(),
+            subject: "[Mommy's Heart] New case signup".to_string(),
+            context: "Case signup notification".to_string(),
+            error: "550 5.1.1 recipient address rejected: user unknown".to_string(),
+            at: "2025-03-04 08:41".to_string(),
+        },
+        EmailFailure {
+            id: "ef-9002".to_string(),
+            recipient: "volunteer@example.com".to_string(),
+            subject: "[Mommy's Heart] Sign-in code".to_string(),
+            context: "Authentication email".to_string(),
+            error: "connection timed out talking to the mail service".to_string(),
+            at: "2025-03-04 10:07".to_string(),
+        },
+    ]
+}
+
 /// A believable batch of recorded activity for the digest preview sample.
 fn sample_activity(case: &str, actor: &str) -> Vec<AdminActivityEvent> {
     use crate::server_fns::admin_activity::AdminActivitySubject;
 
-    let event = |category, summary: &str, subject, id: &str, name: &str, at: &str| {
-        AdminActivityEvent {
+    let event =
+        |category, summary: &str, subject, id: &str, name: &str, at: &str| AdminActivityEvent {
             id: format!("aa-{id}"),
             category,
             actor: actor.to_string(),
@@ -1383,8 +1501,7 @@ fn sample_activity(case: &str, actor: &str) -> Vec<AdminActivityEvent> {
             subject_id: id.to_string(),
             subject_name: name.to_string(),
             at: at.to_string(),
-        }
-    };
+        };
     vec![
         event(
             AdminActivityCategory::CaseCreated,
