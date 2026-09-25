@@ -27,6 +27,10 @@ use crate::server_fns::settings::NotificationKind;
 /// a count and remain visible in the Admin activity feed.
 const MAX_DIGEST_EVENTS: i64 = 200;
 
+/// The most delivery failures one digest email will list. Any beyond this are
+/// reported as a count and remain visible in the admin email-failure log.
+const MAX_DIGEST_FAILURES: i64 = 50;
+
 /// How often the admin-activity digest is mailed — once a day. A constant
 /// rather than configuration, like the retention schedules in
 /// [`crate::server::db::audit`]: it is a product decision, not a deployment knob.
@@ -494,14 +498,33 @@ async fn send_admin_activity_digest() {
             return;
         }
     };
-    let (events, overflow, next) = match audit::activity_since(watermark, MAX_DIGEST_EVENTS).await {
-        Ok(result) => result,
+    let (events, overflow, mut next) =
+        match audit::activity_since(watermark, MAX_DIGEST_EVENTS).await {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::warn!("admin activity digest: activity lookup failed: {error}");
+                return;
+            }
+        };
+
+    // Delivery failures come from their own log. A lookup error costs the
+    // failure section, not the whole digest.
+    let (failures, failures_extra) = match crate::server::db::email_failures::since(
+        watermark.last_failure_seq,
+        MAX_DIGEST_FAILURES,
+    )
+    .await
+    {
+        Ok((failures, extra, next_failure_seq)) => {
+            next.last_failure_seq = next_failure_seq;
+            (failures, extra)
+        }
         Err(error) => {
-            tracing::warn!("admin activity digest: activity lookup failed: {error}");
-            return;
+            tracing::warn!("admin activity digest: failure lookup failed: {error}");
+            (Vec::new(), 0)
         }
     };
-    if events.is_empty() {
+    if events.is_empty() && failures.is_empty() {
         // Still advance: the window may have held only unclassified rows, and
         // rescanning them every day would grow without bound.
         if let Err(error) = audit::set_activity_watermark(next).await {
@@ -510,7 +533,13 @@ async fn send_admin_activity_digest() {
         return;
     }
 
-    let email = templates::admin_activity_digest(&Brand::from_env(), &events, overflow);
+    let email = templates::admin_activity_digest(
+        &Brand::from_env(),
+        &events,
+        overflow,
+        &failures,
+        failures_extra,
+    );
     dispatch(&cfg, recipients, &email, "Admin activity digest").await;
     if let Err(error) = audit::set_activity_watermark(next).await {
         tracing::warn!("admin activity digest: watermark update failed: {error}");

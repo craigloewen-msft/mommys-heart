@@ -65,6 +65,47 @@ pub async fn page(offset: i64, limit: i64) -> Result<Page<EmailFailure>, sqlx::E
     })
 }
 
+/// Everything recorded since `last_seq`, oldest first, for the admin activity
+/// digest. Returns at most `limit` failures, a count of how many further ones
+/// were left for the next run, and the new watermark to store once sent.
+pub async fn since(
+    last_seq: i64,
+    limit: i64,
+) -> Result<(Vec<EmailFailure>, i64, i64), sqlx::Error> {
+    let pool = pool();
+
+    let rows = sqlx::query_as::<_, FailureRow>(
+        "SELECT id, recipient, subject, context, error, at
+         FROM email_failures
+         WHERE seq > $1
+         ORDER BY seq
+         LIMIT $2",
+    )
+    .bind(last_seq)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    // The watermark advances only over what is actually reported, so a capped
+    // batch leaves the remainder for the next run.
+    let next: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(max(seq), $1) FROM (
+             SELECT seq FROM email_failures WHERE seq > $1 ORDER BY seq LIMIT $2
+         ) reported",
+    )
+    .bind(last_seq)
+    .bind(limit)
+    .fetch_one(pool)
+    .await?;
+
+    let extra: i64 = sqlx::query_scalar("SELECT count(*) FROM email_failures WHERE seq > $1")
+        .bind(next)
+        .fetch_one(pool)
+        .await?;
+
+    Ok((rows.into_iter().map(Into::into).collect(), extra, next))
+}
+
 /// Append one failure. Best-effort and self-contained: this is called from
 /// already-failing, best-effort paths, so it never returns an error — if the
 /// insert itself fails it is logged and swallowed rather than masking the

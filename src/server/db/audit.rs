@@ -427,6 +427,8 @@ pub fn start_retention_task() {
 pub struct DigestWatermark {
     pub last_audit_seq: i64,
     pub last_note_seq: i64,
+    /// How far the digest has mailed through `email_failures`.
+    pub last_failure_seq: i64,
 }
 
 /// A row from either log, before classification. `entity`/`field` come from
@@ -583,15 +585,17 @@ pub async fn activity_page(
 /// `mommys-heart-app seed` does); without the clamp the digest would sit past
 /// every row and silently report nothing forever.
 pub async fn activity_watermark() -> Result<DigestWatermark, sqlx::Error> {
-    let stored: Option<(i64, i64)> =
-        sqlx::query_as("SELECT last_audit_seq, last_note_seq FROM admin_activity_digest_state")
-            .fetch_optional(pool())
-            .await?;
-    let (last_audit_seq, last_note_seq) = stored.unwrap_or((0, 0));
+    let stored: Option<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT last_audit_seq, last_note_seq, last_failure_seq FROM admin_activity_digest_state",
+    )
+    .fetch_optional(pool())
+    .await?;
+    let (last_audit_seq, last_note_seq, last_failure_seq) = stored.unwrap_or((0, 0, 0));
 
-    let (audit_max, note_max): (i64, i64) = sqlx::query_as(
+    let (audit_max, note_max, failure_max): (i64, i64, i64) = sqlx::query_as(
         "SELECT COALESCE((SELECT max(seq) FROM audit_log), 0),
-                COALESCE((SELECT max(seq) FROM case_note_audit_log), 0)",
+                COALESCE((SELECT max(seq) FROM case_note_audit_log), 0),
+                COALESCE((SELECT max(seq) FROM email_failures), 0)",
     )
     .fetch_one(pool())
     .await?;
@@ -599,6 +603,7 @@ pub async fn activity_watermark() -> Result<DigestWatermark, sqlx::Error> {
     Ok(DigestWatermark {
         last_audit_seq: last_audit_seq.min(audit_max),
         last_note_seq: last_note_seq.min(note_max),
+        last_failure_seq: last_failure_seq.min(failure_max),
     })
 }
 
@@ -631,6 +636,8 @@ pub async fn activity_since(
             .map(|row| row.seq)
             .max()
             .unwrap_or(watermark.last_note_seq),
+        // Failures are fetched separately; carried through unchanged.
+        last_failure_seq: watermark.last_failure_seq,
     };
 
     let mut events: Vec<AdminActivityEvent> = audit_rows
@@ -650,15 +657,17 @@ pub async fn activity_since(
 pub async fn set_activity_watermark(next: DigestWatermark) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO admin_activity_digest_state
-             (id, last_audit_seq, last_note_seq, last_sent_at)
-         VALUES (true, $1, $2, now())
+             (id, last_audit_seq, last_note_seq, last_failure_seq, last_sent_at)
+         VALUES (true, $1, $2, $3, now())
          ON CONFLICT (id) DO UPDATE SET
-             last_audit_seq = EXCLUDED.last_audit_seq,
-             last_note_seq  = EXCLUDED.last_note_seq,
-             last_sent_at   = EXCLUDED.last_sent_at",
+             last_audit_seq   = EXCLUDED.last_audit_seq,
+             last_note_seq    = EXCLUDED.last_note_seq,
+             last_failure_seq = EXCLUDED.last_failure_seq,
+             last_sent_at     = EXCLUDED.last_sent_at",
     )
     .bind(next.last_audit_seq)
     .bind(next.last_note_seq)
+    .bind(next.last_failure_seq)
     .execute(pool())
     .await?;
     Ok(())
