@@ -217,6 +217,37 @@ impl GraphStore {
         json_or_error(response).await
     }
 
+    async fn resolve_item_in_drive(
+        &self,
+        drive: &str,
+        root_id: &str,
+        path: &str,
+    ) -> Result<Option<FolderRef>, String> {
+        let url = if path.is_empty() {
+            format!("{drive}/items/{root_id}")
+        } else {
+            let encoded = path
+                .split('/')
+                .map(encode_path_segment)
+                .collect::<Vec<_>>()
+                .join("/");
+            format!("{drive}/items/{root_id}:/{encoded}")
+        };
+        let token = self.token().await?;
+        let response = self
+            .http
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| format!("request failed: {e}"))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let item = json_or_error(response).await?;
+        Ok(item["id"].as_str().map(|_| folder_ref(&item)))
+    }
+
     /// A folder's children, or `None` when the folder itself is missing.
     async fn child_named(
         &self,
@@ -310,29 +341,9 @@ impl DocumentStore for GraphStore {
         Ok(entries)
     }
 
-    async fn resolve_path(&self, root_id: &str, path: &str) -> Result<Option<String>, String> {
-        if path.is_empty() {
-            return Ok(Some(root_id.to_string()));
-        }
-        let encoded = path
-            .split('/')
-            .map(encode_path_segment)
-            .collect::<Vec<_>>()
-            .join("/");
-        let url = format!("{}/items/{root_id}:/{encoded}", self.drive());
-        let token = self.token().await?;
-        let response = self
-            .http
-            .get(&url)
-            .bearer_auth(token)
-            .send()
+    async fn resolve_item(&self, root_id: &str, path: &str) -> Result<Option<FolderRef>, String> {
+        self.resolve_item_in_drive(&self.drive(), root_id, path)
             .await
-            .map_err(|e| format!("request failed: {e}"))?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        let item = json_or_error(response).await?;
-        Ok(item["id"].as_str().map(str::to_string))
     }
 
     async fn upload(

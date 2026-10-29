@@ -160,10 +160,7 @@ impl DocumentStore for LocalStore {
         Ok(entries)
     }
 
-    async fn resolve_path(&self, root_id: &str, path: &str) -> Result<Option<String>, String> {
-        if path.is_empty() {
-            return Ok(Some(root_id.to_string()));
-        }
+    async fn resolve_item(&self, root_id: &str, path: &str) -> Result<Option<FolderRef>, String> {
         let root = self.resolve(root_id)?;
         let mut current = root;
         // Walk a segment at a time so a crafted segment cannot jump upwards.
@@ -173,11 +170,19 @@ impl DocumentStore for LocalStore {
             }
             current = current.join(segment);
         }
-        if current.exists() {
-            Ok(Some(self.id_of(&current)))
-        } else {
-            Ok(None)
+        if !path.is_empty() && !current.exists() {
+            return Ok(None);
         }
+        let item_id = if path.is_empty() {
+            root_id.to_string()
+        } else {
+            self.id_of(&current)
+        };
+        let resolved = self.resolve(&item_id)?;
+        Ok(Some(FolderRef {
+            item_id,
+            web_url: format!("file://{}", resolved.display()),
+        }))
     }
 
     async fn upload(
