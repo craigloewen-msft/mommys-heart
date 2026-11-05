@@ -5,6 +5,7 @@ use leptos_router::hooks::use_navigate;
 
 use crate::components::case_contacts::CaseContactsPanel;
 use crate::components::case_questionnaires::CaseIntakeTaskSummary;
+use crate::components::case_tabs::{CaseTab, CaseTabBar};
 use crate::components::change_log::ChangeLog;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
@@ -196,6 +197,8 @@ pub fn CaseHomePage() -> impl IntoView {
     // relative to the case folder. Kept here so it survives the reload every
     // case mutation triggers.
     let open_folder = RwSignal::new(String::new());
+    // Kept here so the open tab survives CaseDetail remounting on reload.
+    let tab = RwSignal::new(CaseTab::Overview);
 
     // The fetched window of case summaries plus the total match count. `query`
     // is bound to the input for instant feedback; `debounced_query` drives the
@@ -286,6 +289,7 @@ pub fn CaseHomePage() -> impl IntoView {
                         move |_| {
                             selected.set(Some(case_id.clone()));
                             open_folder.set(String::new());
+                            tab.set(CaseTab::Overview);
                         }
                     };
                     view! {
@@ -356,6 +360,7 @@ pub fn CaseHomePage() -> impl IntoView {
                         summary=c
                         reload=reload
                         open_folder=open_folder
+                        tab=tab
                         on_withdrawn=Callback::new(move |_| {
                             selected.set(None);
                             notice.set("Case withdrawn. An administrator can restore it if you need it back.".to_string());
@@ -420,7 +425,7 @@ pub fn CaseHomePage() -> impl IntoView {
                     <div class="space-y-3">{cases_list}</div>
                     {footer}
                 </div>
-                <div class="lg:block" class:hidden=move || selected.get().is_none()>
+                <div class="min-w-0 lg:block" class:hidden=move || selected.get().is_none()>
                     <Show when=move || selected.get().is_some()>
                         <button
                             on:click=move |_| selected.set(None)
@@ -560,6 +565,7 @@ pub fn CaseDetail(
     summary: CaseSummary,
     reload: RwSignal<u32>,
     open_folder: RwSignal<String>,
+    tab: RwSignal<CaseTab>,
     /// Called after the owner withdraws the case, so a list view can drop the
     /// selection instead of showing "Case not found" when the case leaves the
     /// list. Admin surfaces keep showing the case, so they pass nothing.
@@ -2024,6 +2030,145 @@ pub fn CaseDetail(
         .into_any()
     };
 
+    let intake_tasks = move || {
+        if state.is_volunteer_or_admin() && can_read_case_material {
+            view! {
+                {move || {
+                    let properties = live_case()
+                        .map(|case| case.properties)
+                        .unwrap_or_default();
+                    view! {
+                        <CaseIntakeTaskSummary
+                            case_id=case_sv.get_value()
+                            properties=properties
+                        />
+                    }
+                }}
+            }
+                .into_any()
+        } else {
+            ().into_any()
+        }
+    };
+
+    // People on the case: staff-only, like Case Notes.
+    let people_panel = move || {
+        if is_client || !has_information_management_access {
+            ().into_any()
+        } else {
+            view! {
+                <CaseContactsPanel
+                    case_id=case_sv.get_value()
+                    can_edit=can_edit && has_information_management_access
+                />
+            }
+            .into_any()
+        }
+    };
+
+    let change_log_panel = move || {
+        if has_operations_admin_permissions {
+            view! {
+                <div class=panel>
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
+                        <button
+                            type="button"
+                            on:click=move |_| log_open.update(|o| *o = !*o)
+                            aria-expanded=move || log_open.get().to_string()
+                            aria-controls=log_region_id.get_value()
+                            class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                        >
+                            {move || if log_open.get() { "Hide" } else { "Open change log" }}
+                        </button>
+                    </div>
+                    <div id=log_region_id.get_value() class="mt-3 space-y-1.5">{audit_view}</div>
+                </div>
+            }
+                .into_any()
+        } else {
+            ().into_any()
+        }
+    };
+
+    let tab_note = move |text: &'static str| {
+        view! { <p class="px-1 text-sm text-slate-400">{text}</p> }
+    };
+
+    let sections = if is_client {
+        view! {
+            {documents_panel}
+            {case_information}
+            // Notes: clients retain only legacy shared notes.
+            <div class=panel>
+                <h3 class="text-sm font-semibold text-slate-200">"Notes"</h3>
+                <div class="mt-3 space-y-2">{notes_view}</div>
+            </div>
+        }
+        .into_any()
+    } else {
+        let tabs: Vec<CaseTab> = CaseTab::ALL
+            .into_iter()
+            .filter(|t| *t != CaseTab::Activity || has_operations_admin_permissions)
+            .collect();
+        let select_tab = Callback::new(move |t: CaseTab| {
+            tab.set(t);
+            if let Some(folder) = t.folder() {
+                open_folder.set(folder.to_string());
+            }
+        });
+        let tab_content = move || match tab.get() {
+            CaseTab::Overview => view! { {intake_tasks()} {people_panel()} }.into_any(),
+            CaseTab::Intake => view! { {case_information()} {documents_panel()} }.into_any(),
+            CaseTab::Legal => view! {
+                {tab_note("Legal work isn't tracked here yet. Court orders filed on this case are below.")}
+                {documents_panel()}
+            }
+            .into_any(),
+            CaseTab::ClientCommunications => view! {
+                <p class="px-1 text-sm text-slate-400">
+                    "Messages with the client happen in "
+                    <A href="/inbox" attr:class="text-primary-300 hover:text-primary-200">"Case Chat"</A>
+                    ". Saved emails and texts are below."
+                </p>
+                {documents_panel()}
+            }
+            .into_any(),
+            CaseTab::SocialServices => view! {
+                {tab_note("Social services work isn't tracked here yet. Its documents are below.")}
+                {documents_panel()}
+            }
+            .into_any(),
+            CaseTab::CareerBuilding => {
+                tab_note("Career building work isn't tracked here yet.").into_any()
+            }
+            CaseTab::CaseNotes => view! {
+                <CaseNotesPanel case_id=case_sv.get_value() can_add=can_note />
+                {documents_panel()}
+            }
+            .into_any(),
+            CaseTab::OtherDocuments => documents_panel().into_any(),
+            CaseTab::Activity => change_log_panel(),
+            CaseTab::Closing => view! {
+                {tab_note("Closing work isn't tracked here yet. Closing documents are below.")}
+                {documents_panel()}
+            }
+            .into_any(),
+        };
+        view! {
+            <CaseTabBar tabs=tabs active=tab on_select=select_tab />
+            <div
+                role="tabpanel"
+                id=CaseTab::panel_id()
+                aria-labelledby=move || tab.get().tab_id()
+                class="space-y-6"
+            >
+                {tab_content}
+            </div>
+        }
+        .into_any()
+    };
+
     view! {
         <div>
             // While the full case is loading, show only a loading indicator and
@@ -2037,79 +2182,7 @@ pub fn CaseDetail(
                 if detail_loading.get() { "hidden".to_string() } else { "space-y-6".to_string() }
             }>
             {details_section}
-
-            {if state.is_volunteer_or_admin() && can_read_case_material {
-                view! {
-                    {move || {
-                        let properties = live_case()
-                            .map(|case| case.properties)
-                            .unwrap_or_default();
-                        view! {
-                            <CaseIntakeTaskSummary
-                                case_id=case_sv.get_value()
-                                properties=properties
-                            />
-                        }
-                    }}
-                }
-                    .into_any()
-            } else {
-                ().into_any()
-            }}
-
-            {documents_panel}
-
-            {case_information}
-
-            // People on the case: staff-only, like Case Notes.
-            {if is_client || !has_information_management_access {
-                ().into_any()
-            } else {
-                view! {
-                    <CaseContactsPanel
-                        case_id=case_sv.get_value()
-                        can_edit=can_edit && has_information_management_access
-                    />
-                }
-                .into_any()
-            }}
-
-            // Notes: clients retain only legacy shared notes; staff get structured Case Notes.
-            {if is_client {
-                view! {
-                    <div class=panel>
-                        <h3 class="text-sm font-semibold text-slate-200">"Notes"</h3>
-                        <div class="mt-3 space-y-2">{notes_view}</div>
-                    </div>
-                }
-                    .into_any()
-            } else {
-                view! { <CaseNotesPanel case_id=case_sv.get_value() can_add=can_note /> }.into_any()
-            }}
-
-            // Audit log
-            {if has_operations_admin_permissions {
-                view! {
-                    <div class=panel>
-                        <div class="flex items-center justify-between">
-                            <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
-                            <button
-                                type="button"
-                                on:click=move |_| log_open.update(|o| *o = !*o)
-                                aria-expanded=move || log_open.get().to_string()
-                                aria-controls=log_region_id.get_value()
-                                class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
-                            >
-                                {move || if log_open.get() { "Hide" } else { "Open change log" }}
-                            </button>
-                        </div>
-                        <div id=log_region_id.get_value() class="mt-3 space-y-1.5">{audit_view}</div>
-                    </div>
-                }
-                    .into_any()
-            } else {
-                view! {}.into_any()
-            }}
+            {sections}
             </div>
         </div>
     }
