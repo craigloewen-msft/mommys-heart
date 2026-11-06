@@ -3,8 +3,9 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 
-use crate::components::case_contacts::CaseContactsPanel;
-use crate::components::case_questionnaires::CaseIntakeTaskSummary;
+use crate::components::case_overview::CaseOverview;
+use crate::components::case_questionnaires::{intake_status, CaseIntakeTaskSummary};
+use crate::components::case_tabs::{CaseTab, CaseTabBar};
 use crate::components::change_log::ChangeLog;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
@@ -153,8 +154,31 @@ async fn upload_document_file(
         .map_err(crate::server_fns::err_text)
 }
 
-fn badge(classes: &str) -> String {
-    format!("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {classes}")
+fn status_pill(status: CaseStatus) -> impl IntoView {
+    let icon = match status {
+        CaseStatus::Open => view! {
+            <svg viewBox="0 0 16 16" class="h-2 w-2" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"></circle></svg>
+        }
+        .into_any(),
+        CaseStatus::Closed => view! {
+            <svg viewBox="0 0 24 24" class="h-2.5 w-2.5" fill="none" stroke="currentColor" stroke-width="3.5" aria-hidden="true"><path d="M5 12l5 5L20 7"></path></svg>
+        }
+        .into_any(),
+        CaseStatus::Declined | CaseStatus::Withdrawn => view! {
+            <svg viewBox="0 0 24 24" class="h-2.5 w-2.5" fill="none" stroke="currentColor" stroke-width="3.5" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+        }
+        .into_any(),
+        CaseStatus::PendingReview | CaseStatus::Monitor => view! {
+            <svg viewBox="0 0 24 24" class="h-2.5 w-2.5" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>
+        }
+        .into_any(),
+    };
+    view! {
+        <span class=format!("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {}", status.badge_classes())>
+            {icon}
+            {status.label()}
+        </span>
+    }
 }
 
 /// A short label summarizing a user's access to a case from their capabilities.
@@ -196,6 +220,8 @@ pub fn CaseHomePage() -> impl IntoView {
     // relative to the case folder. Kept here so it survives the reload every
     // case mutation triggers.
     let open_folder = RwSignal::new(String::new());
+    // Kept here so the open tab survives CaseDetail remounting on reload.
+    let tab = RwSignal::new(CaseTab::Overview);
 
     // The fetched window of case summaries plus the total match count. `query`
     // is bound to the input for instant feedback; `debounced_query` drives the
@@ -259,56 +285,46 @@ pub fn CaseHomePage() -> impl IntoView {
                     let case_id = c.id.clone();
                     let is_selected = {
                         let case_id = case_id.clone();
-                        move || selected.get().as_deref() == Some(case_id.as_str())
+                        Memo::new(move |_| selected.get().as_deref() == Some(case_id.as_str()))
                     };
-                    let caps = c.capabilities.clone();
-                    let access_badge = access_label(&caps)
-                        .map(|(label, classes)| {
-                            view! { <span class=badge(classes)>{label}</span> }.into_any()
-                        })
-                        .unwrap_or_else(|| ().into_any());
-                    let inactive_badge = c
-                        .inactive
-                        .then(|| {
-                            view! {
-                                <span class=badge("bg-amber-500/15 text-amber-300 ring-1 ring-inset ring-amber-500/30")>
-                                    "\u{26a0} No activity in 30+ days"
-                                </span>
-                            }
-                            .into_any()
-                        })
-                        .unwrap_or_else(|| ().into_any());
+                    let owner = c.owner_full_name();
+                    let owner_title = owner.clone();
+                    let inactive = c.inactive;
                     let status = c.status;
                     let name = c.name.clone();
-                    let owner = c.owner_full_name();
                     let select = {
                         let case_id = case_id.clone();
                         move |_| {
                             selected.set(Some(case_id.clone()));
                             open_folder.set(String::new());
+                            tab.set(CaseTab::Overview);
                         }
                     };
                     view! {
                     <button
                         on:click=select
+                        aria-current=move || is_selected.get().then_some("true")
                         class=move || {
-                            let base = "w-full rounded-xl border p-4 text-left transition-colors";
-                            if is_selected() {
-                                format!("{base} border-primary-500/50 bg-slate-800")
+                            let base = "w-full rounded-2xl border px-4 py-3.5 text-left transition-colors";
+                            if is_selected.get() {
+                                format!("{base} border-slate-800 bg-slate-900 pl-5 shadow-[inset_4px_0_0_var(--color-primary-600),0_4px_14px_rgba(80,60,30,0.06)]")
                             } else {
-                                format!("{base} border-slate-800 bg-slate-900 hover:bg-slate-800")
+                                format!("{base} border-transparent hover:bg-slate-900")
                             }
                         }
                     >
-                        <div class="flex items-center justify-between gap-2">
-                            <span class="min-w-0 truncate font-medium">{name}</span>
-                            <span class=badge(status.badge_classes())>{status.label()}</span>
-                        </div>
-                        <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                            <span>"Owner: " {owner}</span>
-                            {access_badge}
-                            {inactive_badge}
-                        </div>
+                        <span class=move || {
+                            if is_selected.get() { "block truncate font-bold" } else { "block truncate font-semibold" }
+                        }>{name}</span>
+                        <span class="mt-1.5 flex items-center gap-2">
+                            {status_pill(status)}
+                            <span class="min-w-0 truncate text-sm text-slate-500" title=owner_title>{owner}</span>
+                        </span>
+                        {inactive.then(|| view! {
+                            <span class="mt-1.5 flex items-center gap-1.5 text-sm font-semibold text-rose-200">
+                                "\u{26a0} No activity 30+ days"
+                            </span>
+                        })}
                     </button>
                 }
                 .into_any()
@@ -331,7 +347,7 @@ pub fn CaseHomePage() -> impl IntoView {
                     <button
                         on:click=move |_| window.update(|w| *w += PAGE_SIZE)
                         prop:disabled=move || loading.get()
-                        class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                        class="rounded-full border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
                     >
                         {move || if loading.get() { "Loading\u{2026}" } else { "Load more" }}
                     </button>
@@ -356,6 +372,7 @@ pub fn CaseHomePage() -> impl IntoView {
                         summary=c
                         reload=reload
                         open_folder=open_folder
+                        tab=tab
                         on_withdrawn=Callback::new(move |_| {
                             selected.set(None);
                             notice.set("Case withdrawn. An administrator can restore it if you need it back.".to_string());
@@ -372,7 +389,6 @@ pub fn CaseHomePage() -> impl IntoView {
     }
         };
 
-        let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
 
         // Debounce the search: update the visible input immediately, but wait 1s of
         // idle typing before firing the fetch (and resetting the window).
@@ -390,7 +406,7 @@ pub fn CaseHomePage() -> impl IntoView {
                 >
                     <A
                         href="/cases/new"
-                        attr:class="flex items-center justify-center rounded-xl border border-primary-500/40 bg-primary-500/10 px-4 py-3 text-sm font-semibold text-primary-200 hover:bg-primary-500/20"
+                        attr:class="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-950"
                     >
                         "+ New case"
                     </A>
@@ -408,7 +424,9 @@ pub fn CaseHomePage() -> impl IntoView {
                         </div>
                     </Show>
                     <input
-                        class=input_class
+                        type="search"
+                        aria-label="Search cases by name"
+                        class="w-full rounded-full border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40"
                         placeholder="Search cases by name"
                         prop:value=move || query.get()
                         on:input=move |ev| {
@@ -417,14 +435,14 @@ pub fn CaseHomePage() -> impl IntoView {
                             on_search(val);
                         }
                     />
-                    <div class="space-y-3">{cases_list}</div>
+                    <div class="space-y-1.5">{cases_list}</div>
                     {footer}
                 </div>
-                <div class="lg:block" class:hidden=move || selected.get().is_none()>
+                <div class="min-w-0 lg:block" class:hidden=move || selected.get().is_none()>
                     <Show when=move || selected.get().is_some()>
                         <button
                             on:click=move |_| selected.set(None)
-                            class="mb-4 inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800 lg:hidden"
+                            class="mb-4 inline-flex items-center gap-1.5 rounded-full border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800 lg:hidden"
                         >
                             "\u{2190} Back to cases"
                         </button>
@@ -449,7 +467,7 @@ pub fn NewCasePage() -> impl IntoView {
     let status = RwSignal::new(CaseStatus::Open.slug().to_string());
     let error = RwSignal::new(String::new());
 
-    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+    let input_class = "w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
     let label_class = "block text-xs font-medium text-slate-400";
 
     require_login(state, move || {
@@ -477,7 +495,7 @@ pub fn NewCasePage() -> impl IntoView {
         view! {
         <Layout title="New case".to_string()>
             <div class="mx-auto max-w-2xl space-y-6">
-                <div class="rounded-xl border border-slate-800 bg-slate-900 p-6 space-y-5">
+                <div class="rounded-card border border-slate-800 bg-slate-900 shadow-card p-6 space-y-5">
                     <div>
                         <label class=label_class>
                             "Case name "
@@ -533,13 +551,13 @@ pub fn NewCasePage() -> impl IntoView {
                     <div class="flex gap-3">
                         <button
                             on:click=submit
-                            class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600"
+                            class="rounded-full bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600"
                         >
                             "Create case"
                         </button>
                         <A
                             href="/cases"
-                            attr:class="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800"
+                            attr:class="rounded-full border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800"
                         >
                             "Cancel"
                         </A>
@@ -560,6 +578,7 @@ pub fn CaseDetail(
     summary: CaseSummary,
     reload: RwSignal<u32>,
     open_folder: RwSignal<String>,
+    tab: RwSignal<CaseTab>,
     /// Called after the owner withdraws the case, so a list view can drop the
     /// selection instead of showing "Case not found" when the case leaves the
     /// list. Admin surfaces keep showing the case, so they pass nothing.
@@ -626,6 +645,7 @@ pub fn CaseDetail(
     }
 
     let owner_name = StoredValue::new(summary.owner_full_name());
+    let client_first_name = StoredValue::new(summary.owner_first_name.clone());
 
     // Owner picker (edit mode only)
     let owner_query = RwSignal::new(String::new());
@@ -660,10 +680,10 @@ pub fn CaseDetail(
 
     let live_case = move || detail.get();
 
-    let input_class = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
+    let input_class = "w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40";
     // The card styling shared by every panel on the page. Named `panel` rather
     // than `section` so it is never confused with a case information *section*.
-    let panel = "rounded-xl border border-slate-800 bg-slate-900 p-4";
+    let panel = "rounded-card border border-slate-800 bg-slate-900 shadow-card p-4";
 
     // --- global edit mode ---
     let editing = RwSignal::new(false);
@@ -930,7 +950,7 @@ pub fn CaseDetail(
                                                 rows.retain(|entry| entry.id != row.id)
                                             })
                                         }
-                                        class="shrink-0 rounded-lg border border-rose-500/40 px-3 py-2 text-sm font-medium text-rose-300 hover:bg-rose-500/10"
+                                        class="shrink-0 rounded-full border border-rose-500/40 px-3 py-2 text-sm font-medium text-rose-300 hover:bg-rose-500/10"
                                     >
                                         "Remove"
                                     </button>
@@ -946,7 +966,7 @@ pub fn CaseDetail(
                                     );
                                     edit_props.update(|rows| rows.push(row));
                                 }
-                                class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                                class="rounded-full border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
                             >
                                 "+ Add property"
                             </button>
@@ -1039,7 +1059,7 @@ pub fn CaseDetail(
                     ),
                     Visibility::Shared => (
                         "Shared with volunteers and client",
-                        "overflow-hidden rounded-xl border border-slate-800 bg-slate-900",
+                        "overflow-hidden rounded-card border border-slate-800 bg-slate-900 shadow-card",
                         "border-b border-slate-800 bg-slate-800/40 px-4 py-4",
                     ),
                 };
@@ -1343,7 +1363,7 @@ pub fn CaseDetail(
                         <a
                             href=download_url
                             download=entry.name.clone()
-                            class="rounded-lg border border-primary-500/40 px-2 py-1 font-medium text-primary-300 hover:bg-primary-500/10"
+                            class="rounded-full border border-primary-500/40 px-2 py-1 font-medium text-primary-300 hover:bg-primary-500/10"
                         >
                             "Download"
                         </a>
@@ -1385,7 +1405,7 @@ pub fn CaseDetail(
                     view! {
                         <button
                             on:click=provision_documents
-                            class="mt-3 rounded-lg border border-primary-500/40 px-3 py-1.5 text-sm font-medium text-primary-300 hover:bg-primary-500/10"
+                            class="mt-3 rounded-full border border-primary-500/40 px-3 py-1.5 text-sm font-medium text-primary-300 hover:bg-primary-500/10"
                         >
                             "Set up documents folder"
                         </button>
@@ -1499,7 +1519,7 @@ pub fn CaseDetail(
                             />
                             <button
                                 on:click=add_folder
-                                class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                                class="shrink-0 rounded-full border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
                             >
                                 "+ New folder"
                             </button>
@@ -1514,7 +1534,7 @@ pub fn CaseDetail(
                             <button
                                 on:click=upload_here
                                 prop:disabled=move || upload_busy.get()
-                                class="shrink-0 rounded-lg bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-60"
+                                class="shrink-0 rounded-full bg-primary-500 px-3 py-2 text-sm font-semibold text-white hover:bg-primary-600 disabled:opacity-60"
                             >
                                 {move || {
                                     if upload_busy.get() { "Uploading\u{2026}" } else { "Upload" }
@@ -1616,13 +1636,13 @@ pub fn CaseDetail(
                     <div class="flex shrink-0 items-center gap-2">
                         <button
                             on:click=save_edit
-                            class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600"
+                            class="rounded-full bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700"
                         >
                             "Save"
                         </button>
                         <button
                             on:click=cancel_edit
-                            class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800"
+                            class="rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-950"
                         >
                             "Cancel"
                         </button>
@@ -1630,13 +1650,20 @@ pub fn CaseDetail(
                 }
                 .into_any()
             } else if can_manage_case_information {
+                let header_button = "shrink-0 rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-950";
                 view! {
-                    <button
-                        on:click=begin_edit
-                        class="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-800"
-                    >
-                        "Edit"
-                    </button>
+                    <div class="flex flex-wrap gap-2">
+                        {has_operations_admin_permissions.then(|| view! {
+                            <A href="/admin/users" attr:class=header_button>"Case access"</A>
+                        })}
+                        {is_site_admin.then(|| view! {
+                            <button on:click=begin_edit class=header_button>"Reassign"</button>
+                        })}
+                        <button on:click=begin_edit class=format!("inline-flex items-center gap-2 {header_button}")>
+                            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path></svg>
+                            "Edit case"
+                        </button>
+                    </div>
                 }
                 .into_any()
             } else {
@@ -1661,7 +1688,7 @@ pub fn CaseDetail(
                             <p class="mt-1 text-xs text-slate-400">"Reason given: " {w.reason}</p>
                         });
                     view! {
-                        <div class="mt-3 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">
+                        <div class="mt-3 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2">
                             <p class="text-xs text-slate-300">
                                 "Withdrawn by " {who} {when}
                                 ". Nothing was deleted \u{2014} the case is frozen and can be restored by an administrator."
@@ -1687,7 +1714,7 @@ pub fn CaseDetail(
                                     type="button"
                                     on:click=restore
                                     prop:disabled=move || withdraw_saving.get()
-                                    class="mt-3 rounded-lg border border-emerald-500/40 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+                                    class="mt-3 rounded-full border border-emerald-500/40 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
                                 >
                                     {move || if withdraw_saving.get() { "Restoring\u{2026}" } else { "Restore case" }}
                                 </button>
@@ -1701,7 +1728,7 @@ pub fn CaseDetail(
                                                 withdrawing.set(true);
                                                 withdraw_error.set(String::new());
                                             }
-                                            class="mt-3 rounded-lg border border-rose-500/40 px-3 py-1.5 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
+                                            class="mt-3 rounded-full border border-rose-500/40 px-3 py-1.5 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
                                         >
                                             "Withdraw this case"
                                         </button>
@@ -1724,7 +1751,7 @@ pub fn CaseDetail(
                                                 id=withdraw_reason_id.get_value()
                                                 rows="2"
                                                 maxlength="1000"
-                                                class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+                                                class="mt-1 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
                                                 placeholder="e.g. I filed this by mistake."
                                                 prop:disabled=move || withdraw_saving.get()
                                                 prop:value=move || withdraw_reason.get()
@@ -1735,7 +1762,7 @@ pub fn CaseDetail(
                                                     type="button"
                                                     on:click=confirm_withdraw
                                                     prop:disabled=move || withdraw_saving.get()
-                                                    class="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-50"
+                                                    class="rounded-full bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-50"
                                                 >
                                                     {move || if withdraw_saving.get() { "Withdrawing\u{2026}" } else { "Confirm withdrawal" }}
                                                 </button>
@@ -1746,7 +1773,7 @@ pub fn CaseDetail(
                                                         withdraw_error.set(String::new());
                                                     }
                                                     prop:disabled=move || withdraw_saving.get()
-                                                    class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                                                    class="rounded-full border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
                                                 >
                                                     "Keep the case"
                                                 </button>
@@ -1761,25 +1788,35 @@ pub fn CaseDetail(
                 }
             };
 
+            let access = access_label(&caps)
+                .filter(|_| !is_client)
+                .map(|(label, _)| format!(" \u{b7} {label}"));
+            let court = c
+                .properties
+                .iter()
+                .find(|p| p.key == "Court" && !p.value.trim().is_empty())
+                .map(|p| p.value.clone());
             return view! {
-                <div class=panel>
-                    <div class="flex items-start justify-between gap-3">
+                <section>
+                    <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
                         <div class="min-w-0">
-                            <h2 class="text-lg font-semibold">{c.name.clone()}</h2>
-                            <p class="mt-1 text-sm text-slate-400">
-                                "Filed by "
-                                <ProfileLink user_id=c.owner_id.clone() name=owner_name />
+                            <p class="flex flex-wrap items-center gap-2">
+                                {status_pill(status)}
+                                <span class="text-sm text-slate-500">
+                                    "Filed by "
+                                    <ProfileLink user_id=c.owner_id.clone() name=owner_name />
+                                    {access}
+                                </span>
                             </p>
+                            <h2 class="mt-2.5 text-4xl leading-tight font-semibold">{c.name.clone()}</h2>
+                            {court.map(|court| view! { <p class="mt-1.5 text-slate-500">{court}</p> })}
                             {terms_accepted.map(|accepted| view! {
                                 <p class="mt-1 text-xs text-slate-500">
                                     "Terms accepted " {accepted}
                                 </p>
                             })}
                         </div>
-                        <div class="flex shrink-0 items-center gap-2">
-                            <span class=badge(status.badge_classes())>{status.label()}</span>
-                            {edit_controls}
-                        </div>
+                        {edit_controls}
                     </div>
                     {client_banner}
                     {withdraw_panel}
@@ -1788,7 +1825,7 @@ pub fn CaseDetail(
                             "You have view-only access to this case."
                         </p>
                     </Show>
-                </div>
+                </section>
             }
             .into_any();
         }
@@ -1805,7 +1842,7 @@ pub fn CaseDetail(
                     <div
                         id=owner_results_id.get_value()
                         role="listbox"
-                        class="absolute z-10 mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-500"
+                        class="absolute z-10 mt-1 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-500"
                     >
                         "No matching users."
                     </div>
@@ -1850,7 +1887,7 @@ pub fn CaseDetail(
                 <div
                     id=owner_results_id.get_value()
                     role="listbox"
-                    class="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-lg border border-slate-700 bg-slate-950"
+                    class="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-xl border border-slate-700 bg-slate-900"
                 >
                     {rows}
                 </div>
@@ -1864,13 +1901,13 @@ pub fn CaseDetail(
                     <div class="flex items-center gap-2">
                         <button
                             on:click=save_edit
-                            class="shrink-0 rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600"
+                            class="shrink-0 rounded-full bg-primary-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-primary-600"
                         >
                             "Save"
                         </button>
                         <button
                             on:click=cancel_edit
-                            class="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800"
+                            class="shrink-0 rounded-full border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800"
                         >
                             "Cancel"
                         </button>
@@ -2024,6 +2061,158 @@ pub fn CaseDetail(
         .into_any()
     };
 
+    let intake_tasks = move || {
+        if state.is_volunteer_or_admin() && can_read_case_material {
+            view! {
+                {move || {
+                    let properties = live_case()
+                        .map(|case| case.properties)
+                        .unwrap_or_default();
+                    view! {
+                        <CaseIntakeTaskSummary
+                            case_id=case_sv.get_value()
+                            properties=properties
+                        />
+                    }
+                }}
+            }
+                .into_any()
+        } else {
+            ().into_any()
+        }
+    };
+
+    let change_log_panel = move || {
+        if has_operations_admin_permissions {
+            view! {
+                <div class=panel>
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
+                        <button
+                            type="button"
+                            on:click=move |_| log_open.update(|o| *o = !*o)
+                            aria-expanded=move || log_open.get().to_string()
+                            aria-controls=log_region_id.get_value()
+                            class="rounded-full border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                        >
+                            {move || if log_open.get() { "Hide" } else { "Open change log" }}
+                        </button>
+                    </div>
+                    <div id=log_region_id.get_value() class="mt-3 space-y-1.5">{audit_view}</div>
+                </div>
+            }
+                .into_any()
+        } else {
+            ().into_any()
+        }
+    };
+
+    let tab_note = move |text: &'static str| {
+        view! { <p class="px-1 text-sm text-slate-400">{text}</p> }
+    };
+
+    let sections = if is_client {
+        view! {
+            {documents_panel}
+            {case_information}
+            // Notes: clients retain only legacy shared notes.
+            <div class=panel>
+                <h3 class="text-sm font-semibold text-slate-200">"Notes"</h3>
+                <div class="mt-3 space-y-2">{notes_view}</div>
+            </div>
+        }
+        .into_any()
+    } else {
+        let tabs: Vec<CaseTab> = CaseTab::ALL
+            .into_iter()
+            .filter(|t| *t != CaseTab::Activity || has_operations_admin_permissions)
+            .collect();
+        let select_tab = Callback::new(move |t: CaseTab| {
+            tab.set(t);
+            if let Some(folder) = t.folder() {
+                open_folder.set(folder.to_string());
+            }
+        });
+        let tab_content = move || match tab.get() {
+            CaseTab::Overview => {
+                let properties = live_case().map(|case| case.properties).unwrap_or_default();
+                view! {
+                    <CaseOverview
+                        case_id=case_sv.get_value()
+                        properties=properties
+                        client_first_name=client_first_name.get_value()
+                        show_intake=state.is_volunteer_or_admin() && can_read_case_material
+                        show_people=has_information_management_access
+                        can_edit_people=can_edit && has_information_management_access
+                        on_open_intake=Callback::new(move |_| select_tab.run(CaseTab::Intake))
+                        on_open_notes=Callback::new(move |_| select_tab.run(CaseTab::CaseNotes))
+                    />
+                }
+                .into_any()
+            }
+            CaseTab::Intake => {
+                view! { {intake_tasks()} {case_information()} {documents_panel()} }.into_any()
+            }
+            CaseTab::Legal => view! {
+                {tab_note("Legal work isn't tracked here yet. Court orders filed on this case are below.")}
+                {documents_panel()}
+            }
+            .into_any(),
+            CaseTab::ClientCommunications => view! {
+                <p class="px-1 text-sm text-slate-400">
+                    "Messages with the client happen in "
+                    <A href="/inbox" attr:class="text-primary-300 hover:text-primary-200">"Case Chat"</A>
+                    ". Saved emails and texts are below."
+                </p>
+                {documents_panel()}
+            }
+            .into_any(),
+            CaseTab::SocialServices => view! {
+                {tab_note("Social services work isn't tracked here yet. Its documents are below.")}
+                {documents_panel()}
+            }
+            .into_any(),
+            CaseTab::CareerBuilding => {
+                tab_note("Career building work isn't tracked here yet.").into_any()
+            }
+            CaseTab::CaseNotes => view! {
+                <CaseNotesPanel case_id=case_sv.get_value() can_add=can_note />
+                {documents_panel()}
+            }
+            .into_any(),
+            CaseTab::OtherDocuments => documents_panel().into_any(),
+            CaseTab::Activity => change_log_panel(),
+            CaseTab::Closing => view! {
+                {tab_note("Closing work isn't tracked here yet. Closing documents are below.")}
+                {documents_panel()}
+            }
+            .into_any(),
+        };
+        view! {
+            <CaseTabBar
+                tabs=tabs
+                active=tab
+                on_select=select_tab
+                badges=Signal::derive(move || {
+                    if !(state.is_volunteer_or_admin() && can_read_case_material) {
+                        return Vec::new();
+                    }
+                    let properties = live_case().map(|case| case.properties).unwrap_or_default();
+                    vec![(CaseTab::Intake, intake_status(&properties).0)]
+                })
+            />
+            <div
+                role="tabpanel"
+                id=CaseTab::panel_id()
+                aria-labelledby=move || tab.get().tab_id()
+                class="space-y-6"
+            >
+                {tab_content}
+            </div>
+        }
+        .into_any()
+    };
+
     view! {
         <div>
             // While the full case is loading, show only a loading indicator and
@@ -2037,79 +2226,7 @@ pub fn CaseDetail(
                 if detail_loading.get() { "hidden".to_string() } else { "space-y-6".to_string() }
             }>
             {details_section}
-
-            {if state.is_volunteer_or_admin() && can_read_case_material {
-                view! {
-                    {move || {
-                        let properties = live_case()
-                            .map(|case| case.properties)
-                            .unwrap_or_default();
-                        view! {
-                            <CaseIntakeTaskSummary
-                                case_id=case_sv.get_value()
-                                properties=properties
-                            />
-                        }
-                    }}
-                }
-                    .into_any()
-            } else {
-                ().into_any()
-            }}
-
-            {documents_panel}
-
-            {case_information}
-
-            // People on the case: staff-only, like Case Notes.
-            {if is_client || !has_information_management_access {
-                ().into_any()
-            } else {
-                view! {
-                    <CaseContactsPanel
-                        case_id=case_sv.get_value()
-                        can_edit=can_edit && has_information_management_access
-                    />
-                }
-                .into_any()
-            }}
-
-            // Notes: clients retain only legacy shared notes; staff get structured Case Notes.
-            {if is_client {
-                view! {
-                    <div class=panel>
-                        <h3 class="text-sm font-semibold text-slate-200">"Notes"</h3>
-                        <div class="mt-3 space-y-2">{notes_view}</div>
-                    </div>
-                }
-                    .into_any()
-            } else {
-                view! { <CaseNotesPanel case_id=case_sv.get_value() can_add=can_note /> }.into_any()
-            }}
-
-            // Audit log
-            {if has_operations_admin_permissions {
-                view! {
-                    <div class=panel>
-                        <div class="flex items-center justify-between">
-                            <h3 class="text-sm font-semibold text-slate-200">"Change log"</h3>
-                            <button
-                                type="button"
-                                on:click=move |_| log_open.update(|o| *o = !*o)
-                                aria-expanded=move || log_open.get().to_string()
-                                aria-controls=log_region_id.get_value()
-                                class="rounded-lg border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
-                            >
-                                {move || if log_open.get() { "Hide" } else { "Open change log" }}
-                            </button>
-                        </div>
-                        <div id=log_region_id.get_value() class="mt-3 space-y-1.5">{audit_view}</div>
-                    </div>
-                }
-                    .into_any()
-            } else {
-                view! {}.into_any()
-            }}
+            {sections}
             </div>
         </div>
     }
