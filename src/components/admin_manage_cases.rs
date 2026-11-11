@@ -7,6 +7,7 @@ use leptos_router::hooks::use_query_map;
 
 use crate::components::admin_cases::CaseRequests;
 use crate::components::admin_requests::AdminRequestCenter;
+use crate::components::case_tabs::CaseTab;
 use crate::components::loading::Loading;
 use crate::pages::cases::CaseDetail;
 use crate::server_fns::admin_requests::AdminRequestKind;
@@ -136,6 +137,7 @@ pub fn ManageCases(
     let detail_loading = RwSignal::new(selected_case_id.get_value().is_some());
     let detail_error = RwSignal::new(None::<String>);
     let open_folder = RwSignal::new(String::new());
+    let tab = RwSignal::new(CaseTab::Overview);
     let detail_generation = RwSignal::new(0u64);
 
     Effect::new(move |_| {
@@ -237,6 +239,7 @@ pub fn ManageCases(
                         summary=summary
                         reload=reload
                         open_folder=open_folder
+                        tab=tab
                     />
                 </div>
             }

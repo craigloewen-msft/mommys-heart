@@ -168,16 +168,13 @@ pub fn CaseQuestionnaires(
     }
 }
 
-#[component]
-pub fn CaseIntakeTaskSummary(case_id: String, properties: Vec<CaseProperty>) -> impl IntoView {
-    let general_complete = is_complete(&properties, &GENERAL_QUESTIONNAIRE);
-    let followups = required_followups(&properties);
-    let active_followups = followups
-        .iter()
-        .filter(|required| !is_complete(&properties, required.questionnaire))
-        .count();
+pub fn intake_status(properties: &[CaseProperty]) -> (usize, String) {
+    let general_complete = is_complete(properties, &GENERAL_QUESTIONNAIRE);
     let active_count = if general_complete {
-        active_followups
+        required_followups(properties)
+            .iter()
+            .filter(|required| !is_complete(properties, required.questionnaire))
+            .count()
     } else {
         1
     };
@@ -190,6 +187,12 @@ pub fn CaseIntakeTaskSummary(case_id: String, properties: Vec<CaseProperty>) -> 
     } else {
         format!("{active_count} follow-up questionnaires need attention.")
     };
+    (active_count, summary)
+}
+
+#[component]
+pub fn CaseIntakeTaskSummary(case_id: String, properties: Vec<CaseProperty>) -> impl IntoView {
+    let (active_count, summary) = intake_status(&properties);
     let href = format!("/cases/{case_id}/intake");
 
     view! {
