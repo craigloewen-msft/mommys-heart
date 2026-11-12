@@ -499,6 +499,48 @@ pub async fn provision_case_documents(case_id: String) -> Result<(), ServerFnErr
     Ok(())
 }
 
+#[server(prefix = "/api")]
+pub async fn case_folder_choices() -> Result<Vec<String>, ServerFnError> {
+    use crate::server::permissions::{require_operations_admin, require_user};
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+
+    let store = crate::server::sharepoint::store().map_err(ServerFnError::new)?;
+    let root = store.ensure_root().await.map_err(ServerFnError::new)?;
+    let entries = store
+        .list_children(&root.item_id)
+        .await
+        .map_err(ServerFnError::new)?;
+    Ok(entries
+        .into_iter()
+        .filter(|entry| entry.is_folder)
+        .map(|entry| entry.name)
+        .collect())
+}
+
+#[server(prefix = "/api")]
+pub async fn link_case_documents_folder(
+    case_id: String,
+    folder_name: String,
+) -> Result<(), ServerFnError> {
+    use crate::server::db::case_documents;
+    use crate::server::permissions::{require_operations_admin, require_user};
+    use crate::server::sharepoint::sync;
+
+    let user = require_user().await?;
+    require_operations_admin(&user)?;
+
+    let before = case_documents::folder_ref(&case_id)
+        .await
+        .map_err(|e| ServerFnError::new(format!("database error: {e}")))?;
+    let after = sync::link_case_folder(&case_id, &folder_name)
+        .await
+        .map_err(|e| ServerFnError::new(format!("Could not link the folder: {e}")))?;
+    audit_document(&case_id, &user, "documents folder", &before.web_url, &after.web_url).await;
+    Ok(())
+}
+
 /// Record a document change in the case's history, so the Change Log and the
 /// admin activity feed see it exactly as they saw evidence changes before.
 #[cfg(feature = "ssr")]

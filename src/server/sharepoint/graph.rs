@@ -306,6 +306,9 @@ impl DocumentStore for GraphStore {
             .get_json(&format!("{}/root", self.drive()))
             .await
             .map_err(|e| format!("could not read the library root: {e}"))?;
+        if name.is_empty() {
+            return Ok(folder_ref(&library_root));
+        }
         let root_id = library_root["id"]
             .as_str()
             .ok_or_else(|| "library root had no id".to_string())?;

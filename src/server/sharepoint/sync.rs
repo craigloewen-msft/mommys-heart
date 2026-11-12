@@ -85,6 +85,71 @@ pub async fn ensure_case_folder(case_id: &str) -> Result<db::CaseFolderRef, Stri
     })
 }
 
+pub async fn link_case_folder(
+    case_id: &str,
+    folder_name: &str,
+) -> Result<db::CaseFolderRef, String> {
+    let store = store()?;
+    let segments = super::clean_relative_path(folder_name)?;
+    let [name] = segments.as_slice() else {
+        return Err("choose a folder directly inside the client library".to_string());
+    };
+
+    {
+        let case_lock = lock_for(case_id).await;
+        let _guard = case_lock.lock().await;
+
+        cases::name(case_id)
+            .await
+            .map_err(|e| format!("database error: {e}"))?
+            .ok_or_else(|| "that case no longer exists".to_string())?;
+
+        let root = store.ensure_root().await?;
+        let target = store
+            .list_children(&root.item_id)
+            .await?
+            .into_iter()
+            .find(|entry| entry.is_folder && entry.name == *name)
+            .ok_or_else(|| format!("there is no folder named '{name}'"))?;
+        let item_id = store
+            .resolve_path(&root.item_id, name)
+            .await?
+            .ok_or_else(|| format!("there is no folder named '{name}'"))?;
+
+        let owner = db::case_using_folder(&item_id)
+            .await
+            .map_err(|e| format!("database error: {e}"))?;
+        if let Some(other) = owner.filter(|other| other != case_id) {
+            return Err(format!("that folder is already linked to case {other}"));
+        }
+
+        let old = db::folder_ref(case_id)
+            .await
+            .map_err(|e| format!("database error: {e}"))?;
+        if old.is_ready() && old.item_id != item_id {
+            let recorded = db::recorded_grants(case_id)
+                .await
+                .map_err(|e| format!("database error: {e}"))?;
+            for grant in &recorded {
+                if let Some(id) = top_folder_id(store, &old.item_id, &grant.folder_name).await? {
+                    store.revoke(&id, &grant.permission_id).await?;
+                }
+                db::forget_grant(case_id, &grant.user_id, &grant.folder_name)
+                    .await
+                    .map_err(|e| format!("database error: {e}"))?;
+            }
+        }
+
+        db::set_folder_ref(case_id, &item_id, &target.web_url)
+            .await
+            .map_err(|e| format!("database error: {e}"))?;
+    }
+
+    let folder = ensure_case_folder(case_id).await?;
+    reconcile(case_id).await?;
+    Ok(folder)
+}
+
 /// The case's folder, creating it if the case does not have one yet.
 ///
 /// This is what every document request resolves through, so a case that predates

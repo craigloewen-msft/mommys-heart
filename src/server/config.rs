@@ -116,7 +116,9 @@ impl SharePointConfig {
                 .trim_end_matches('/')
                 .to_string(),
             library: env("SHAREPOINT_LIBRARY", "Documents"),
-            root_folder: env("SHAREPOINT_ROOT_FOLDER", "Cases"),
+            root_folder: env("SHAREPOINT_ROOT_FOLDER", "Cases")
+                .trim_matches('/')
+                .to_string(),
             volunteer_root_folder: env("SHAREPOINT_VOLUNTEER_ROOT_FOLDER", "Volunteers"),
             backend: env("SHAREPOINT_BACKEND", "graph").to_ascii_lowercase(),
         }
