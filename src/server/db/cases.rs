@@ -7,6 +7,7 @@ use crate::server::db::{
 use crate::server_fns::capabilities::CaseCapability;
 use crate::server_fns::case_properties::CaseProperty;
 use crate::server_fns::cases::{Case, CaseStatus, CaseSummary, CaseWithdrawal};
+use crate::server_fns::case_notes::CaseNoteAuditAction;
 use crate::server_fns::channels::ChannelKind;
 use crate::server_fns::pagination::Page;
 use crate::server_fns::users::{AccountRole, User};
@@ -77,6 +78,8 @@ fn inactivity_threshold() -> String {
 /// client); a viewer-scoped query passes a role test so a client's case list
 /// does not even leak *how many* private staff messages exist. It is always an
 /// internal constant or a bind-parameter reference, never user input.
+const CLIENT_VISIBLE_CASE_EVENTS: &str = "('case', 'status', 'name', 'owner')";
+
 fn summary_select(message_count_scope: &str) -> String {
     format!(
         "SELECT c.id, c.name, c.status, c.review_reason, c.owner_id,
@@ -86,13 +89,23 @@ fn summary_select(message_count_scope: &str) -> String {
           JOIN case_channels ch ON ch.id = m.channel_id
           WHERE m.case_id = c.id
             AND (({message_count_scope}) OR ch.kind <> '{restricted}')) AS message_count,
-        (SELECT MAX(m.sent_at) FROM messages m
-          JOIN case_channels ch ON ch.id = m.channel_id
-          WHERE m.case_id = c.id
-            AND (({message_count_scope}) OR ch.kind <> '{restricted}')) AS last_activity
+        GREATEST(
+          (SELECT MAX(m.sent_at) FROM messages m
+            JOIN case_channels ch ON ch.id = m.channel_id
+            WHERE m.case_id = c.id
+              AND (({message_count_scope}) OR ch.kind <> '{restricted}')),
+          (SELECT MAX(a.at) FROM audit_log a
+            WHERE a.entity_type = 'case' AND a.entity_id = c.id
+              AND (({message_count_scope}) OR a.field IN {CLIENT_VISIBLE_CASE_EVENTS})),
+          (SELECT MAX(n.at) FROM case_note_audit_log n
+            WHERE n.case_id = c.id AND ({message_count_scope})
+              AND n.action IN ('{finalize}', '{addendum}'))
+        ) AS last_activity
  FROM cases c
  LEFT JOIN users u ON u.id = c.owner_id",
-        restricted = ChannelKind::VolunteerOnly.slug()
+        restricted = ChannelKind::VolunteerOnly.slug(),
+        finalize = CaseNoteAuditAction::FinalizeNote.slug(),
+        addendum = CaseNoteAuditAction::AddAddendum.slug(),
     )
 }
 
@@ -192,8 +205,9 @@ pub async fn get_summaries_for_user(
     limit: i64,
     search: &str,
     user: &User,
+    all_cases: bool,
 ) -> Result<Page<CaseSummary>, sqlx::Error> {
-    let limit = limit.clamp(1, 100);
+    let limit = limit.clamp(1, 1_000);
     let offset = offset.max(0);
 
     // Escaped `%term%` pattern (or `None` for "no filter"), so user input is
@@ -207,11 +221,15 @@ pub async fn get_summaries_for_user(
     // The capability slug is an internal constant (never user input), so
     // interpolating it into the SQL is safe.
     const SEARCH: &str = "($1::text IS NULL OR c.id ILIKE $1 OR c.name ILIKE $1)";
-    let scope = format!(
-        "EXISTS (SELECT 1 FROM case_assignments a \
-         WHERE a.case_id = c.id AND a.user_id = $VIEWER AND a.capability = '{}')",
-        CaseCapability::ViewCase.slug()
-    );
+    let scope = if all_cases && user.role.has_full_case_access() {
+        "TRUE".to_string()
+    } else {
+        format!(
+            "EXISTS (SELECT 1 FROM case_assignments a \
+             WHERE a.case_id = c.id AND a.user_id = $VIEWER AND a.capability = '{}')",
+            CaseCapability::ViewCase.slug()
+        )
+    };
     // Drops withdrawn cases out of both this list and the Inbox, which share this
     // query. The status slug is an internal constant, never user input.
     let withdrawn = format!(" AND c.status <> '{}'", CaseStatus::Withdrawn.slug());
@@ -225,7 +243,7 @@ pub async fn get_summaries_for_user(
     let page_sql = format!(
         "{}
          WHERE {SEARCH} AND {}{withdrawn}
-         ORDER BY c.id LIMIT $2 OFFSET $3",
+         ORDER BY last_activity DESC NULLS LAST, c.id LIMIT $2 OFFSET $3",
         summary_select(&format!(
             "(SELECT v.role FROM users v WHERE v.id = $4) IN {}",
             AccountRole::STAFF_ROLES_SQL

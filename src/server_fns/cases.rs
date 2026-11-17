@@ -261,12 +261,13 @@ pub async fn load_case_summaries_for_user(
     offset: i64,
     limit: i64,
     search: String,
+    all_cases: bool,
 ) -> Result<Page<CaseSummary>, ServerFnError> {
     use crate::server::db::cases;
     use crate::server::permissions::require_user;
 
     let user = require_user().await?;
-    cases::get_summaries_for_user(offset, limit, &search, &user)
+    cases::get_summaries_for_user(offset, limit, &search, &user, all_cases)
         .await
         .map_err(ServerFnError::new)
 }

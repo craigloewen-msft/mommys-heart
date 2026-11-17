@@ -229,6 +229,7 @@ pub fn CaseHomePage() -> impl IntoView {
     let cases = RwSignal::new(Vec::<CaseSummary>::new());
     let total = RwSignal::new(0i64);
     let query = RwSignal::new(String::new());
+    let all_cases = RwSignal::new(false);
     let debounced_query = RwSignal::new(String::new());
     // How many rows the current window requests; grows on "Load more".
     let window = RwSignal::new(PAGE_SIZE);
@@ -239,25 +240,35 @@ pub fn CaseHomePage() -> impl IntoView {
     // Shown after a withdrawal, since the case itself disappears from the list
     // and would otherwise vanish with no acknowledgement.
     let notice = RwSignal::new(String::new());
+    let request_generation = RwSignal::new(0u64);
 
     Effect::new(move |_| {
         let count = window.get();
         let q = debounced_query.get();
+        let all = all_cases.get();
         reload.track();
         if !state.is_authenticated() {
             return;
         }
+        request_generation.update(|generation| *generation += 1);
+        let generation = request_generation.get_untracked();
         loading.set(true);
         spawn_local(async move {
-            match cases::load_case_summaries_for_user(0, count, q).await {
-                Ok(page) => {
-                    cases.set(page.items);
-                    total.set(page.total);
-                    load_error.set(None);
-                }
-                Err(e) => load_error.set(Some(err_text(e))),
+            let result = cases::load_case_summaries_for_user(0, count, q, all).await;
+            if request_generation.try_get_untracked() != Some(generation) {
+                return;
             }
-            loading.set(false);
+            match result {
+                Ok(page) => {
+                    let _ = cases.try_set(page.items);
+                    let _ = total.try_set(page.total);
+                    let _ = load_error.try_set(None);
+                }
+                Err(e) => {
+                    let _ = load_error.try_set(Some(err_text(e)));
+                }
+            }
+            let _ = loading.try_set(false);
         });
     });
 
@@ -420,6 +431,27 @@ pub fn CaseHomePage() -> impl IntoView {
                             >
                                 "\u{2715}"
                             </button>
+                        </div>
+                    </Show>
+                    <Show when=move || state.is_site_admin()>
+                        <div role="group" aria-label="Which cases to show" class="flex gap-1 rounded-full border border-slate-700 bg-slate-900 p-1 text-sm">
+                            {[(false, "My cases"), (true, "All cases")].map(|(value, label)| view! {
+                                <button
+                                    type="button"
+                                    aria-pressed=move || (all_cases.get() == value).to_string()
+                                    on:click=move |_| {
+                                        if all_cases.get_untracked() == value {
+                                            return;
+                                        }
+                                        selected.set(None);
+                                        window.set(PAGE_SIZE);
+                                        all_cases.set(value);
+                                    }
+                                    class="flex-1 rounded-full px-3 py-1.5 font-semibold text-slate-400 aria-pressed:bg-primary-500/15 aria-pressed:text-primary-300"
+                                >
+                                    {label}
+                                </button>
+                            })}
                         </div>
                     </Show>
                     <input

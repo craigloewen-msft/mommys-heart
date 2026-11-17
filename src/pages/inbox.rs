@@ -62,7 +62,7 @@ pub fn InboxPage() -> impl IntoView {
         }
         loading.set(true);
         spawn_local(async move {
-            match load_case_summaries_for_user(0, count, q).await {
+            match load_case_summaries_for_user(0, count, q, false).await {
                 Ok(page) => {
                     cases.set(page.items);
                     total.set(page.total);
