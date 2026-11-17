@@ -1251,6 +1251,59 @@ pub fn CaseDetail(
         });
     };
 
+    let link_open = RwSignal::new(false);
+    let link_choices = RwSignal::new(Vec::<String>::new());
+    let link_name = RwSignal::new(String::new());
+    let link_busy = RwSignal::new(false);
+    let link_choices_loading = RwSignal::new(false);
+    let link_error = RwSignal::new(String::new());
+
+    let open_link = move |_| {
+        link_open.set(true);
+        link_error.set(String::new());
+        link_choices_loading.set(true);
+        spawn_local(async move {
+            match documents::case_folder_choices().await {
+                Ok(names) => {
+                    let _ = link_choices.try_set(names);
+                }
+                Err(e) => {
+                    let _ = link_error.try_set(err_text(e));
+                }
+            }
+            let _ = link_choices_loading.try_set(false);
+        });
+    };
+
+    let link_folder = move |_| {
+        if link_busy.get_untracked() {
+            return;
+        }
+        let name = link_name.get_untracked().trim().to_string();
+        if name.is_empty() {
+            link_error.set("Choose a folder to link.".to_string());
+            return;
+        }
+        let case_id = case_sv.get_value();
+        link_busy.set(true);
+        link_error.set(String::new());
+        spawn_local(async move {
+            match documents::link_case_documents_folder(case_id, name).await {
+                Ok(()) => {
+                    let _ = link_open.try_set(false);
+                    let _ = link_name.try_set(String::new());
+                    let _ = open_folder.try_set(String::new());
+                    refresh_documents();
+                }
+                Err(e) => {
+                    let _ = link_error.try_set(err_text(e));
+                    refresh_documents();
+                }
+            }
+            let _ = link_busy.try_set(false);
+        });
+    };
+
     // One row: a folder you can open, or a file you can download.
     let document_row = move |entry: CaseDocument, can_delete: bool, restricted: bool| {
         let path = entry.path.clone();
@@ -1609,6 +1662,72 @@ pub fn CaseDetail(
             .into_any()
         };
 
+        let link_controls = move || {
+            if !(has_operations_admin_permissions && can_upload_evidence) {
+                return ().into_any();
+            }
+            if !link_open.get() {
+                return view! {
+                    <button
+                        on:click=open_link
+                        class="mt-4 text-xs font-medium text-primary-400 hover:text-primary-300"
+                    >
+                        "Link an existing SharePoint folder"
+                    </button>
+                }
+                .into_any();
+            }
+            view! {
+                <div class="mt-4 space-y-2 border-t border-slate-800 pt-4">
+                    <p class="text-xs text-slate-500">
+                        "Use a client folder that already exists in SharePoint. Missing standard folders are added to it, and the case team's access moves to it."
+                    </p>
+                    <div class="flex flex-col gap-2 sm:flex-row">
+                        <input
+                            class=input_class
+                            list="case-folder-choices"
+                            placeholder="Folder name"
+                            prop:value=move || link_name.get()
+                            on:input=move |ev| link_name.set(event_target_value(&ev))
+                        />
+                        <datalist id="case-folder-choices">
+                            {move || {
+                                link_choices
+                                    .get()
+                                    .into_iter()
+                                    .map(|name| view! { <option value=name></option> })
+                                    .collect_view()
+                            }}
+                        </datalist>
+                        <button
+                            on:click=link_folder
+                            prop:disabled=move || link_busy.get()
+                            class="shrink-0 rounded-lg border border-primary-500/40 px-3 py-2 text-sm font-medium text-primary-300 hover:bg-primary-500/10 disabled:opacity-60"
+                        >
+                            {move || if link_busy.get() { "Linking\u{2026}" } else { "Link folder" }}
+                        </button>
+                        <button
+                            on:click=move |_| {
+                                link_open.set(false);
+                                link_error.set(String::new());
+                            }
+                            prop:disabled=move || link_busy.get()
+                            class="shrink-0 rounded-lg px-3 py-2 text-sm font-medium text-slate-400 hover:text-slate-200 disabled:opacity-60"
+                        >
+                            "Cancel"
+                        </button>
+                    </div>
+                    <Show when=move || link_choices_loading.get()>
+                        <p class="text-xs text-slate-500">"Loading folders\u{2026}"</p>
+                    </Show>
+                    <Show when=move || !link_error.get().is_empty()>
+                        <p class="text-xs text-rose-300" role="alert">{move || link_error.get()}</p>
+                    </Show>
+                </div>
+            }
+            .into_any()
+        };
+
         view! {
             <div>
                 <div class="mb-3">
@@ -1617,6 +1736,7 @@ pub fn CaseDetail(
                 </div>
                 <div class=panel>
                     {body}
+                    {link_controls}
                     <Show when=move || !docs_error.get().is_empty()>
                         <p class="mt-3 text-sm text-rose-400">{move || docs_error.get()}</p>
                     </Show>
