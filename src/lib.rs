@@ -19,6 +19,7 @@ pub mod components {
     pub mod admin_requests;
     pub mod admin_user_card;
     pub mod admin_volunteers;
+    pub mod autosave;
     pub mod case_contacts;
     pub mod case_overview;
     pub mod case_plan;
@@ -30,6 +31,7 @@ pub mod components {
     pub mod contact_cases;
     pub mod contact_form;
     pub mod contact_properties;
+    pub mod design;
     pub mod email_failures;
     pub mod guard;
     pub mod layout;
