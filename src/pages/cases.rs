@@ -11,7 +11,7 @@ use crate::components::guard::require_login;
 use crate::components::layout::Layout;
 use crate::components::loading::Loading;
 use crate::components::profile_link::ProfileLink;
-use crate::helpers::format::{encode_query, human_size};
+use crate::helpers::format::{access_label, encode_query, human_size};
 use crate::helpers::sections;
 use crate::helpers::visibility::Visibility;
 use crate::pages::case_notes::CaseNotesPanel;
@@ -178,37 +178,6 @@ fn status_pill(status: CaseStatus) -> impl IntoView {
             {icon}
             {status.label()}
         </span>
-    }
-}
-
-/// A short label summarizing a user's access to a case from their capabilities.
-fn access_label(caps: &[CaseCapability]) -> Option<(&'static str, &'static str)> {
-    if caps.is_empty() {
-        return None;
-    }
-    if caps.len() == CaseCapability::ALL.len() {
-        Some((
-            "Full access",
-            "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/30",
-        ))
-    } else if caps.contains(&CaseCapability::EditCase) {
-        Some((
-            "Manager",
-            "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/30",
-        ))
-    } else if caps.contains(&CaseCapability::UploadEvidence)
-        || caps.contains(&CaseCapability::AddNotes)
-        || caps.contains(&CaseCapability::SendMessages)
-    {
-        Some((
-            "Contributor",
-            "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30",
-        ))
-    } else {
-        Some((
-            "Viewer",
-            "bg-slate-500/15 text-slate-300 ring-1 ring-slate-500/30",
-        ))
     }
 }
 
@@ -604,7 +573,6 @@ pub fn CaseDetail(
         role.is_some_and(|role| role.has_operations_admin_permissions());
     let has_information_management_access = state.has_information_management_access();
     let is_site_admin = role.is_some_and(|role| role.is_site_admin());
-    // The admin's own user page, where case capabilities are granted.
     let access_href = StoredValue::new(
         state
             .current_user_summary
@@ -775,8 +743,6 @@ pub fn CaseDetail(
 
     let begin_edit = move |_| {
         if let Some(c) = live_case() {
-            // Clients keep the single-page layout, and the Intake folder is
-            // volunteer-only, so only staff who can see it are moved there.
             if !is_client && can_read_case_material {
                 tab.set(CaseTab::Intake);
                 open_folder.set(CaseTab::Intake.folder().unwrap_or_default().to_string());
@@ -2185,8 +2151,6 @@ pub fn CaseDetail(
                 open_folder.set(folder.to_string());
             }
         });
-        // Every section stays mounted and is hidden off its tab, so switching
-        // tabs keeps filters and half-typed input and does not refetch.
         let overview_properties =
             Memo::new(move |_| live_case().map(|case| case.properties).unwrap_or_default());
         let overview = move || {
@@ -2198,6 +2162,7 @@ pub fn CaseDetail(
                     show_intake=state.is_volunteer_or_admin() && can_read_case_material
                     show_case_info=can_read_case_material
                     show_people=has_information_management_access
+                    show_team=state.is_volunteer_or_admin()
                     can_edit_people=can_edit && has_information_management_access
                     show_plan=state.is_volunteer_or_admin()
                     can_edit_plan=can_edit
