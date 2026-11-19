@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
-use leptos_router::hooks::use_navigate;
+use leptos_router::hooks::{use_navigate, use_query_map};
 
 use crate::components::case_overview::CaseOverview;
 use crate::components::case_questionnaires::{intake_status, CaseIntakeTaskSummary};
@@ -14,6 +14,7 @@ use crate::components::profile_link::ProfileLink;
 use crate::helpers::format::{encode_query, human_size};
 use crate::helpers::sections;
 use crate::helpers::visibility::Visibility;
+use crate::components::legal_memos::LegalTab;
 use crate::pages::case_notes::CaseNotesPanel;
 use crate::server_fns::audit::AuditScope;
 use crate::server_fns::capabilities::CaseCapability;
@@ -215,13 +216,23 @@ fn access_label(caps: &[CaseCapability]) -> Option<(&'static str, &'static str)>
 #[component]
 pub fn CaseHomePage() -> impl IntoView {
     let state = expect_context::<AppState>();
-    let selected = RwSignal::new(None::<String>);
+    let linked = use_query_map();
+    let selected = RwSignal::new(linked.read_untracked().get("case"));
     // The folder open in the selected case's document browser, as a path
     // relative to the case folder. Kept here so it survives the reload every
     // case mutation triggers.
     let open_folder = RwSignal::new(String::new());
     // Kept here so the open tab survives CaseDetail remounting on reload.
-    let tab = RwSignal::new(CaseTab::Overview);
+    let tab = RwSignal::new(
+        linked
+            .read_untracked()
+            .get("tab")
+            .and_then(|slug| CaseTab::from_slug(&slug))
+            .unwrap_or(CaseTab::Overview),
+    );
+    if let Some(folder) = tab.get_untracked().folder() {
+        open_folder.set(folder.to_string());
+    }
 
     // The fetched window of case summaries plus the total match count. `query`
     // is bound to the input for instant feedback; `debounced_query` drives the
@@ -628,6 +639,7 @@ pub fn CaseDetail(
     // The full case behind the summary — the heavy sub-resources are pulled on
     // demand only for the open case, keeping the list load lightweight.
     let case_sv = StoredValue::new(case_id.clone());
+    let summary_name = StoredValue::new(summary.name.clone());
     let detail = RwSignal::new(None::<Case>);
     let detail_generation = RwSignal::new(0u64);
     // Tracks the in-flight fetch of the full case so the view can show a loading
@@ -2179,6 +2191,10 @@ pub fn CaseDetail(
                     )
             })
             .collect();
+        if !tabs.contains(&tab.get_untracked()) {
+            tab.set(CaseTab::Overview);
+            open_folder.set(String::new());
+        }
         let select_tab = Callback::new(move |t: CaseTab| {
             tab.set(t);
             if let Some(folder) = t.folder() {
@@ -2218,10 +2234,6 @@ pub fn CaseDetail(
         };
         let tab_note_view = move || {
             match tab.get() {
-            CaseTab::Legal => tab_note(
-                "Legal work isn't tracked here yet. Court orders filed on this case are below.",
-            )
-            .into_any(),
             CaseTab::SocialServices => {
                 tab_note("Social services work isn't tracked here yet. Its documents are below.")
                     .into_any()
@@ -2269,6 +2281,19 @@ pub fn CaseDetail(
                     <CaseNotesPanel case_id=case_sv.get_value() can_add=can_note />
                 </div>
                 <div class=shown_on(&[CaseTab::Activity])>{change_log_panel}</div>
+                <div class=shown_on(&[CaseTab::Legal])>
+                    <LegalTab
+                        case_id=case_sv.get_value()
+                        case_name=summary_name.get_value()
+                        client_first_name=client_first_name.get_value()
+                        properties=Signal::from(overview_properties)
+                        can_create=can_note
+                        show_contacts=has_information_management_access
+                        on_open_strategy=Callback::new(move |_| open_folder.set("Strategy Notes".to_string()))
+                        on_edit_fields=Callback::new(move |_| select_tab.run(CaseTab::Intake))
+                        on_manage_people=Callback::new(move |_| select_tab.run(CaseTab::Overview))
+                    />
+                </div>
                 {tab_note_view}
                 <div class=move || if tab.get().folder().is_some() { "" } else { "hidden" }>
                     {documents_panel}

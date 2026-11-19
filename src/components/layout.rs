@@ -79,7 +79,11 @@ fn NavLink(
 /// App shell: a dark top navbar plus the page content. Redirects to `/login`
 /// when there is no signed-in user.
 #[component]
-pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView {
+pub fn Layout(
+    #[prop(into)] title: String,
+    #[prop(optional)] hide_heading: bool,
+    children: Children,
+) -> impl IntoView {
     let state = expect_context::<AppState>();
     let navigate = use_navigate();
 
@@ -232,7 +236,9 @@ pub fn Layout(#[prop(into)] title: String, children: Children) -> impl IntoView 
             </header>
 
             <main class="mx-auto max-w-7xl px-4 sm:px-6 py-8">
-                <h1 class="text-2xl font-semibold tracking-tight mb-6">{title}</h1>
+                {(!hide_heading).then(|| view! {
+                    <h1 class="text-2xl font-semibold tracking-tight mb-6">{title}</h1>
+                })}
                 {children()}
             </main>
 
