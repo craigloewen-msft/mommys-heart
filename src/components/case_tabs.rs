@@ -43,7 +43,19 @@ impl CaseTab {
         }
     }
 
-    fn slug(self) -> &'static str {
+    pub fn href(self, case_id: &str) -> String {
+        format!(
+            "/cases?case={}&tab={}",
+            crate::helpers::format::encode_query(case_id),
+            self.slug()
+        )
+    }
+
+    pub fn from_slug(slug: &str) -> Option<CaseTab> {
+        CaseTab::ALL.into_iter().find(|tab| tab.slug() == slug)
+    }
+
+    pub fn slug(self) -> &'static str {
         match self {
             CaseTab::Overview => "overview",
             CaseTab::Intake => "intake",
