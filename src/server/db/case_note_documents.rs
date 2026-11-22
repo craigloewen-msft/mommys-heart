@@ -47,22 +47,13 @@ struct DocumentRow {
 
 impl From<DocumentRow> for NoteDocumentRef {
     fn from(row: DocumentRow) -> Self {
-        use chrono::TimeZone;
-
         NoteDocumentRef {
             note_id: row.note_id,
             case_id: row.case_id,
             file_name: row.file_name,
             web_url: row.web_url,
             addenda_included: row.addenda_included,
-            // Formatted here rather than in SQL so it reads in the server's
-            // local time, matching `now_stamp` and every other stamp the app
-            // displays. Postgres would render it in the session's zone (UTC),
-            // which would show a note filed at 16:53 as 20:53.
-            filed_at: chrono::Local
-                .from_utc_datetime(&row.filed_at.naive_utc())
-                .format("%Y-%m-%d %H:%M")
-                .to_string(),
+            filed_at: crate::server::db::local_stamp(row.filed_at),
         }
     }
 }

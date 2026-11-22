@@ -79,6 +79,7 @@ async fn main() {
     // finalized while the library was unreachable, and notes that predate the
     // filing of note records at all.
     mommys_heart_app::server::case_note_records::start_filing_backfill();
+    mommys_heart_app::server::case_records::start_filing_backfill();
 
     // Kick off document ingestion in the background so the server starts
     // serving immediately; the RAG store fills in once embeddings complete.

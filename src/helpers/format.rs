@@ -54,3 +54,17 @@ pub fn human_size(bytes: i64) -> String {
         format!("{bytes:.0} B")
     }
 }
+
+pub const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+pub fn date_parts(stamp: &str) -> Option<(&'static str, u32, &str)> {
+    let month = stamp
+        .get(5..7)?
+        .parse::<usize>()
+        .ok()
+        .filter(|m| (1..=12).contains(m))?;
+    let day = stamp.get(8..10)?.parse::<u32>().ok()?;
+    Some((MONTHS[month - 1], day, stamp.get(..4)?))
+}

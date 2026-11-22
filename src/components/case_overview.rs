@@ -401,18 +401,13 @@ fn short_date(raw: &str) -> String {
 }
 
 pub(crate) fn month_day(raw: &str) -> String {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let month = raw.get(5..7).and_then(|m| m.parse::<usize>().ok());
-    let day = raw.get(8..10).and_then(|d| d.parse::<u32>().ok());
-    match (month, day) {
-        (Some(m @ 1..=12), Some(d)) => format!("{} {d}", MONTHS[m - 1]),
-        _ => short_date(raw),
+    match crate::helpers::format::date_parts(raw) {
+        Some((month, day, _)) => format!("{month} {day}"),
+        None => short_date(raw),
     }
 }
 
-fn avatar_classes(role: CaseContactRole) -> &'static str {
+pub(crate) fn avatar_classes(role: CaseContactRole) -> &'static str {
     match role {
         CaseContactRole::Client => "bg-[#e3f5ec] text-[#11633f]",
         CaseContactRole::Attorney => "bg-[#e3effa] text-[#1a5d99]",
