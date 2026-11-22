@@ -20,6 +20,7 @@ use crate::pages::{
     forgot_password::ForgotPasswordPage,
     funding::FundingPage,
     inbox::InboxPage,
+    legal_memo::LegalMemoPage,
     login::LoginPage,
     mfa::MfaVerifyPage,
     organizations::OrganizationsPage,
@@ -142,6 +143,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/cases/:case_id/intake") view=CaseIntakePage />
                 <Route path=path!("/cases/:case_id/notes/new") view=NewCaseNotePage />
                 <Route path=path!("/cases/:case_id/notes/:note_id") view=CaseNoteDetailPage />
+                <Route path=path!("/cases/:case_id/legal-memos/:memo_id") view=LegalMemoPage />
                 <Route path=path!("/contacts") view=ContactsPage />
                 <Route path=path!("/contacts/mail") view=ContactMailPage />
                 // Declared before `/contacts/:id`, which would otherwise match
