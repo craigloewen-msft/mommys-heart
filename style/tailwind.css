@@ -82,6 +82,36 @@
   --color-slate-800: #efe6d8;
   --color-slate-900: #ffffff;
   --color-slate-950: #f6f7f9;
+
+  --color-ink-600: #4a4038;
+  --color-sand-50: #fdfaf5;
+  --color-sand-100: #fdf8f0;
+  --color-sand-200: #f8f4ee;
+  --color-sand-300: #f3ece1;
+  --color-sand-500: #9a8b77;
+  --color-peach-50: #fffaf3;
+  --color-peach-100: #fdf0e1;
+  --color-peach-200: #f5cfa3;
+  --color-peach-300: #e9a866;
+  --color-peach-900: #7c2d12;
+  --color-ok-25: #f7fcf9;
+  --color-ok-50: #e3f5ec;
+  --color-ok-200: #a7dcc0;
+  --color-ok-700: #11633f;
+  --color-ok-800: #0d4f32;
+  --color-danger-50: #fffafa;
+  --color-danger-100: #fbe4e1;
+  --color-danger-600: #b42318;
+  --color-danger-700: #9b2c22;
+  --color-info-25: #eef6fd;
+  --color-info-50: #e3effa;
+  --color-info-200: #cfe3f5;
+  --color-info-600: #1a66a8;
+  --color-info-700: #1a5d99;
+  --color-caution-50: #fffdf5;
+  --color-caution-300: #fcd34d;
+  --color-caution-700: #5b3a05;
+  --color-caution-800: #7a4a06;
 }
 
 /* Light theme base: keep the whole viewport light, even outside components. */
