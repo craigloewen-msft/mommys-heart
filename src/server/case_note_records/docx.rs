@@ -3,51 +3,18 @@
 //! Pure: a [`CaseNoteDetail`] in, bytes out. No database, no library, no clock —
 //! everything the document says comes from the note it was given, so the same
 //! note always renders the same document.
-//!
-//! # Why the XML is written by hand
-//!
-//! A `.docx` is a zip of XML parts, and the app already carries both halves of
-//! that: `zip` with deflate, and `quick-xml` (which
-//! [`crate::server::docs`] uses to *read* WordprocessingML). Writing the four
-//! parts a text document needs is about a page of markup, against a new
-//! dependency and a font story for the alternative. What is emitted here is
-//! deliberately the minimum a conforming reader needs: no styles part, no
-//! theme, no settings — formatting is direct run and paragraph properties,
-//! which Word, Word Online, LibreOffice and SharePoint's own preview all honor.
 
-use std::io::{Cursor, Write};
-
-use zip::write::SimpleFileOptions;
-
+use crate::server::docx::{placeholder, Block};
 use crate::server_fns::case_notes::{CaseNoteDetail, CaseNoteState};
 
-/// The MIME type of what [`render`] produces.
-pub const DOCX_MIME: &str =
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-
-/// One line of the document: how it is laid out.
-enum Block {
-    /// The document's title.
-    Title(String),
-    /// A section heading.
-    Heading(String),
-    /// A labelled value, rendered as "Label: value" with the label in bold.
-    Field(String, String),
-    /// A run of body text, which may contain newlines.
-    Body(String),
-    /// Small grey text, for the footer and provenance lines.
-    Note(String),
-    /// Vertical space.
-    Spacer,
-}
+pub use crate::server::docx::DOCX_MIME;
 
 /// Render a note as a `.docx`, including every addendum attached to it.
 ///
 /// `case_name` is passed in rather than looked up so this stays pure; the
 /// caller has it already.
 pub fn render(detail: &CaseNoteDetail, case_name: &str) -> Result<Vec<u8>, String> {
-    let blocks = blocks_for(detail, case_name);
-    package(&document_xml(&blocks))
+    crate::server::docx::render(&blocks_for(detail, case_name))
 }
 
 /// The file name a note's document is filed under.
@@ -305,14 +272,6 @@ fn role_line(detail: &CaseNoteDetail) -> String {
     }
 }
 
-fn placeholder(value: &str) -> String {
-    if value.trim().is_empty() {
-        "Not recorded".to_string()
-    } else {
-        value.to_string()
-    }
-}
-
 fn optional_label(label: Option<&str>) -> String {
     label.unwrap_or("Not recorded").to_string()
 }
@@ -336,145 +295,3 @@ fn duration_label(minutes: Option<i32>) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// OOXML
-// ---------------------------------------------------------------------------
-
-/// Half-points, which is how OOXML sizes text: 24 = 12pt.
-const BODY_SIZE: u32 = 22;
-const TITLE_SIZE: u32 = 36;
-const HEADING_SIZE: u32 = 26;
-const NOTE_SIZE: u32 = 18;
-
-/// Turn the blocks into the body of `word/document.xml`.
-fn document_xml(blocks: &[Block]) -> String {
-    let mut body = String::new();
-    for block in blocks {
-        match block {
-            Block::Title(text) => body.push_str(&paragraph(
-                &[run(text, TITLE_SIZE, true, None)],
-                "240",
-            )),
-            Block::Heading(text) => body.push_str(&paragraph(
-                &[run(text, HEADING_SIZE, true, None)],
-                "180",
-            )),
-            Block::Field(label, value) => {
-                let mut runs = vec![run(&format!("{label}: "), BODY_SIZE, true, None)];
-                runs.extend(multiline_runs(value, BODY_SIZE, false, None));
-                body.push_str(&paragraph(&runs, "60"));
-            }
-            Block::Body(text) => {
-                body.push_str(&paragraph(
-                    &multiline_runs(text, BODY_SIZE, false, None),
-                    "60",
-                ));
-            }
-            Block::Note(text) => body.push_str(&paragraph(
-                &multiline_runs(text, NOTE_SIZE, false, Some("595959")),
-                "60",
-            )),
-            Block::Spacer => body.push_str(&paragraph(&[], "0")),
-        }
-    }
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body></w:document>"#
-    )
-}
-
-/// One paragraph, with space after it in twentieths of a point.
-fn paragraph(runs: &[String], space_after: &str) -> String {
-    format!(
-        "<w:p><w:pPr><w:spacing w:after=\"{space_after}\"/></w:pPr>{}</w:p>",
-        runs.concat()
-    )
-}
-
-/// One run of text. `xml:space="preserve"` keeps the trailing space after a
-/// field label from being dropped.
-fn run(text: &str, size: u32, bold: bool, color: Option<&str>) -> String {
-    let mut props = String::new();
-    if bold {
-        props.push_str("<w:b/>");
-    }
-    if let Some(color) = color {
-        props.push_str(&format!("<w:color w:val=\"{color}\"/>"));
-    }
-    props.push_str(&format!(
-        "<w:sz w:val=\"{size}\"/><w:szCs w:val=\"{size}\"/>"
-    ));
-    format!(
-        "<w:r><w:rPr>{props}</w:rPr><w:t xml:space=\"preserve\">{}</w:t></w:r>",
-        escape(text)
-    )
-}
-
-/// Runs for text that may contain newlines, which OOXML expresses as an explicit
-/// break rather than as a literal character.
-fn multiline_runs(text: &str, size: u32, bold: bool, color: Option<&str>) -> Vec<String> {
-    let mut out = Vec::new();
-    for (index, line) in text.split('\n').enumerate() {
-        if index > 0 {
-            out.push("<w:r><w:br/></w:r>".to_string());
-        }
-        out.push(run(line, size, bold, color));
-    }
-    out
-}
-
-/// XML text escaping. Control characters are dropped rather than escaped:
-/// XML 1.0 cannot represent most of them at all, and a stray one would make the
-/// whole document unreadable.
-fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            '\t' => out.push(' '),
-            c if c.is_control() => {}
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#;
-
-const PACKAGE_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
-
-const DOCUMENT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"#;
-
-/// Zip the four parts into the `.docx` package.
-///
-/// Part order matters more than it looks: content sniffers (including the
-/// `infer` check every upload in this app goes through) identify an OOXML file
-/// by finding `[Content_Types].xml` at the head of the archive.
-fn package(document: &str) -> Result<Vec<u8>, String> {
-    let mut buffer = Cursor::new(Vec::new());
-    {
-        let mut zip = zip::ZipWriter::new(&mut buffer);
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        for (name, contents) in [
-            ("[Content_Types].xml", CONTENT_TYPES),
-            ("_rels/.rels", PACKAGE_RELS),
-            ("word/_rels/document.xml.rels", DOCUMENT_RELS),
-            ("word/document.xml", document),
-        ] {
-            zip.start_file(name, options)
-                .map_err(|e| format!("could not start '{name}' in the document: {e}"))?;
-            zip.write_all(contents.as_bytes())
-                .map_err(|e| format!("could not write '{name}' in the document: {e}"))?;
-        }
-        zip.finish()
-            .map_err(|e| format!("could not finish the document: {e}"))?;
-    }
-    Ok(buffer.into_inner())
-}
