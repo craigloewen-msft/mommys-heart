@@ -330,6 +330,21 @@ pub async fn upload_case_document(data: MultipartData) -> Result<String, ServerF
     let filename = sanitize_filename(&filename);
     let size_bytes = bytes.len();
 
+    let target = segments
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(filename.as_str()))
+        .collect::<Vec<_>>()
+        .join("/");
+    if crate::server::db::case_record_files::is_filed_path(&case_id, &target)
+        .await
+        .map_err(ServerFnError::new)?
+    {
+        return Err(ServerFnError::new(
+            "A filed case record already has this name. Rename your file and upload it again.",
+        ));
+    }
+
     let store = sharepoint::store().map_err(ServerFnError::new)?;
     store
         .upload(&item_id, &filename, bytes, content_type)
@@ -417,7 +432,15 @@ pub async fn delete_case_document(case_id: String, path: String) -> Result<(), S
             "The case folder itself cannot be deleted.",
         ));
     };
-    if segments.len() == 1 && sharepoint::visibility_of(&segments).is_some() {
+    let standing_child = segments.len() == 2
+        && crate::helpers::new_case_folders::NEW_CASE_FOLDERS.iter().any(|folder| {
+            folder.name.eq_ignore_ascii_case(&segments[0])
+                && folder
+                    .children
+                    .iter()
+                    .any(|child| child.eq_ignore_ascii_case(&segments[1]))
+        });
+    if (segments.len() == 1 && sharepoint::visibility_of(&segments).is_some()) || standing_child {
         return Err(ServerFnError::new(
             "The standing folders are part of every case and cannot be deleted.",
         ));
@@ -431,11 +454,20 @@ pub async fn delete_case_document(case_id: String, path: String) -> Result<(), S
         && segments[0].eq_ignore_ascii_case(sharepoint::CASE_NOTES_FOLDER)
         && crate::server::db::case_note_documents::is_filed_record(&case_id, &name)
             .await
-            .unwrap_or(false)
+            .map_err(ServerFnError::new)?
     {
         return Err(ServerFnError::new(
             "This is a case note's filed record and cannot be deleted. \
              Correct a note by adding an addendum to it.",
+        ));
+    }
+
+    if crate::server::db::case_record_files::is_filed_path(&case_id, &segments.join("/"))
+        .await
+        .map_err(ServerFnError::new)?
+    {
+        return Err(ServerFnError::new(
+            "This holds a filed case record and cannot be deleted.",
         ));
     }
 

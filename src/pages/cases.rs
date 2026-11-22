@@ -9,9 +9,11 @@ use crate::components::case_tabs::{CaseTab, CaseTabBar};
 use crate::components::change_log::ChangeLog;
 use crate::components::guard::require_login;
 use crate::components::layout::Layout;
+use crate::components::legal_memos::LegalTab;
 use crate::components::loading::Loading;
 use crate::components::profile_link::ProfileLink;
 use crate::helpers::format::{encode_query, human_size};
+use crate::helpers::new_case_folders::STRATEGY_NOTES;
 use crate::helpers::sections;
 use crate::helpers::visibility::Visibility;
 use crate::pages::case_notes::CaseNotesPanel;
@@ -2179,6 +2181,8 @@ pub fn CaseDetail(
                     )
             })
             .collect();
+        let shows_legal = tabs.contains(&CaseTab::Legal);
+        let documents_ref = NodeRef::<leptos::html::Div>::new();
         let select_tab = Callback::new(move |t: CaseTab| {
             tab.set(t);
             if let Some(folder) = t.folder() {
@@ -2218,10 +2222,6 @@ pub fn CaseDetail(
         };
         let tab_note_view = move || {
             match tab.get() {
-            CaseTab::Legal => tab_note(
-                "Legal work isn't tracked here yet. Court orders filed on this case are below.",
-            )
-            .into_any(),
             CaseTab::SocialServices => {
                 tab_note("Social services work isn't tracked here yet. Its documents are below.")
                     .into_any()
@@ -2269,8 +2269,27 @@ pub fn CaseDetail(
                     <CaseNotesPanel case_id=case_sv.get_value() can_add=can_note />
                 </div>
                 <div class=shown_on(&[CaseTab::Activity])>{change_log_panel}</div>
+                {shows_legal.then(|| view! {
+                    <div class=shown_on(&[CaseTab::Legal])>
+                        <LegalTab
+                            case_id=case_sv.get_value()
+                            client_first_name=client_first_name.get_value()
+                            properties=Signal::from(overview_properties)
+                            show_contacts=has_information_management_access
+                            can_edit_people=can_edit && has_information_management_access
+                            on_open_strategy=Callback::new(move |_| {
+                                open_folder.set(STRATEGY_NOTES.to_string());
+                                if let Some(panel) = documents_ref.get() {
+                                    panel.scroll_into_view();
+                                }
+                            })
+                            on_edit_fields=Callback::new(move |_| select_tab.run(CaseTab::Intake))
+                            on_manage_people=Callback::new(move |_| select_tab.run(CaseTab::Overview))
+                        />
+                    </div>
+                })}
                 {tab_note_view}
-                <div class=move || if tab.get().folder().is_some() { "" } else { "hidden" }>
+                <div node_ref=documents_ref class=move || if tab.get().folder().is_some() { "" } else { "hidden" }>
                     {documents_panel}
                 </div>
             </div>

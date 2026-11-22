@@ -20,6 +20,8 @@ pub struct NewCaseFolder {
     pub children: &'static [&'static str],
 }
 
+pub const STRATEGY_NOTES: &str = "Strategy Notes";
+
 /// The folders every new case is created with, in display order.
 pub const NEW_CASE_FOLDERS: &[NewCaseFolder] = &[
     NewCaseFolder {
@@ -54,7 +56,7 @@ pub const NEW_CASE_FOLDERS: &[NewCaseFolder] = &[
         children: &[],
     },
     NewCaseFolder {
-        name: "Strategy Notes",
+        name: STRATEGY_NOTES,
         visibility: Visibility::Shared,
         children: &[],
     },
