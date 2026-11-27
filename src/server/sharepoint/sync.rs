@@ -85,6 +85,111 @@ pub async fn ensure_case_folder(case_id: &str) -> Result<db::CaseFolderRef, Stri
     })
 }
 
+pub async fn link_case_folder(case_id: &str, folder_name: &str) -> Result<String, String> {
+    let store = store()?;
+    let segments = super::clean_relative_path(folder_name)?;
+    let [name] = segments.as_slice() else {
+        return Err("choose a folder directly inside the client library".to_string());
+    };
+    if is_volunteer_root(name) {
+        return Err("the volunteers folder cannot be linked to a case".to_string());
+    }
+
+    let _link_guard = LINK_LOCK.lock().await;
+    let (revoke_failure, web_url) = {
+        let case_lock = lock_for(case_id).await;
+        let _guard = case_lock.lock().await;
+
+        cases::name(case_id)
+            .await
+            .map_err(|e| format!("database error: {e}"))?
+            .ok_or_else(|| "that case no longer exists".to_string())?;
+
+        let root = store.ensure_root().await?;
+        let target = store
+            .list_children(&root.item_id)
+            .await?
+            .into_iter()
+            .find(|entry| entry.is_folder && entry.name == *name)
+            .ok_or_else(|| format!("there is no folder named '{name}'"))?;
+        let item_id = store
+            .resolve_path(&root.item_id, name)
+            .await?
+            .ok_or_else(|| format!("there is no folder named '{name}'"))?;
+
+        let owner = db::case_using_folder(&item_id)
+            .await
+            .map_err(|e| format!("database error: {e}"))?;
+        if let Some(other) = owner.filter(|other| other != case_id) {
+            return Err(format!("that folder is already linked to case {other}"));
+        }
+
+        let old = db::folder_ref(case_id)
+            .await
+            .map_err(|e| format!("database error: {e}"))?;
+        let mut revoke_failure = None;
+        if old.is_ready() && old.item_id != item_id {
+            let recorded = db::recorded_grants(case_id)
+                .await
+                .map_err(|e| format!("database error: {e}"))?;
+            for grant in &recorded {
+                if let Err(e) = revoke_grant(store, case_id, &old.item_id, grant).await {
+                    revoke_failure = Some(e);
+                    break;
+                }
+            }
+        }
+
+        if revoke_failure.is_none() {
+            db::set_folder_ref(case_id, &item_id, &target.web_url)
+                .await
+                .map_err(|e| format!("database error: {e}"))?;
+        }
+        (revoke_failure, target.web_url)
+    };
+
+    if let Some(e) = revoke_failure {
+        if let Err(restore) = reconcile(case_id).await {
+            tracing::warn!("could not restore document access for case {case_id}: {restore}");
+        }
+        return Err(e);
+    }
+    Ok(web_url)
+}
+
+pub fn is_volunteer_root(folder_name: &str) -> bool {
+    let cfg = crate::server::config::SharePointConfig::from_env();
+    let volunteers = cfg.volunteer_root_folder.trim_matches('/');
+    let under_case_root = if cfg.root_folder.is_empty() {
+        Some(volunteers)
+    } else {
+        volunteers.strip_prefix(&format!("{}/", cfg.root_folder))
+    };
+    under_case_root
+        .and_then(|path| path.split('/').next())
+        .is_some_and(|top| top.eq_ignore_ascii_case(folder_name))
+}
+
+pub async fn finish_linked_case_folder(case_id: &str) -> Result<db::CaseFolderRef, String> {
+    let folder = ensure_case_folder(case_id).await?;
+    reconcile(case_id).await?;
+    Ok(folder)
+}
+
+async fn revoke_grant(
+    store: &dyn super::DocumentStore,
+    case_id: &str,
+    old_folder_id: &str,
+    grant: &db::RecordedGrant,
+) -> Result<(), String> {
+    if let Some(id) = top_folder_id(store, old_folder_id, &grant.folder_name).await? {
+        store.revoke(&id, &grant.permission_id).await?;
+    }
+    db::forget_grant(case_id, &grant.user_id, &grant.folder_name)
+        .await
+        .map_err(|e| format!("database error: {e}"))
+}
+
 /// The case's folder, creating it if the case does not have one yet.
 ///
 /// This is what every document request resolves through, so a case that predates
@@ -135,6 +240,7 @@ pub fn sync_case_access(case_id: String) {
 /// spawns one task per case, two admins can edit the same case), so the overlap
 /// is ordinary rather than exotic.
 static CASE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+static LINK_LOCK: Mutex<()> = Mutex::const_new(());
 
 async fn lock_for(case_id: &str) -> Arc<Mutex<()>> {
     let locks = CASE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));

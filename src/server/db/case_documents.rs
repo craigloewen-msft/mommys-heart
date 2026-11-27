@@ -80,6 +80,13 @@ pub async fn set_folder_ref(
     Ok(())
 }
 
+pub async fn case_using_folder(item_id: &str) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT id FROM cases WHERE drive_item_id = $1 LIMIT 1")
+        .bind(item_id)
+        .fetch_optional(pool())
+        .await
+}
+
 /// Every case that still has no documents folder.
 ///
 /// Used by the startup reconciler to finish provisioning that a Graph outage
