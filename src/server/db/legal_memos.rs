@@ -2,8 +2,9 @@ use crate::helpers::visibility::Visibility;
 use crate::server::db::{audit, ids, local_stamp, pool};
 use crate::server_fns::cases::CaseStatus;
 use crate::server_fns::legal_memos::{
-    LegalMemo, LegalMemoContent, LegalMemoSummary, MemoAttorney, MemoEvent, MemoStatus,
-    VersionEvent, DOCKET_KEYS, STALE_MEMO_ERROR,
+    LegalMemo, LegalMemoContent, LegalMemoSummary, MemoAttorney, MemoEvent, MemoReview, MemoStatus,
+    MemoVersionEntry, MemoVersionSnapshot, ReviewCheck, ReviewMark, VersionEvent, DOCKET_KEYS,
+    STALE_MEMO_ERROR,
 };
 use crate::server_fns::users::AccountRole;
 
@@ -18,6 +19,26 @@ struct Locked {
     attorney_id: String,
     attorney_name: String,
     revision: String,
+    review: MemoReview,
+}
+
+pub struct ApprovedSnapshot {
+    pub case_id: String,
+    pub docket: String,
+    pub title: String,
+    pub content: LegalMemoContent,
+    pub review: MemoReview,
+    pub author_name: String,
+    pub attorney_name: String,
+    pub approved_by_name: String,
+    pub approved_at: String,
+    pub approval_comment: String,
+}
+
+fn parse_review(raw: &str) -> Result<MemoReview, sqlx::Error> {
+    serde_json::from_str(raw).map_err(|_| {
+        sqlx::Error::Protocol("This memo's review checks couldn't be read.".to_string())
+    })
 }
 
 fn parse_content(raw: &str) -> Result<LegalMemoContent, sqlx::Error> {
@@ -90,10 +111,13 @@ struct MemoRow {
     author_id: String,
     author_name: String,
     content: String,
+    review: String,
     approved_by_name: String,
     approved_at: Option<chrono::DateTime<chrono::Utc>>,
     revision: String,
 }
+
+const FILING_WINDOW: chrono::TimeDelta = chrono::TimeDelta::minutes(2);
 
 pub async fn get(memo_id: &str) -> Result<Option<LegalMemo>, sqlx::Error> {
     let row = sqlx::query_as::<_, MemoRow>(
@@ -103,7 +127,8 @@ pub async fn get(memo_id: &str) -> Result<Option<LegalMemo>, sqlx::Error> {
                           ORDER BY array_position($2, p.key), p.ord LIMIT 1), '') AS docket,
                 m.title, m.status, m.version,
                 m.attorney_user_id, m.attorney_name, m.author_id, m.author_name,
-                m.content::text AS content, m.approved_by_name, m.approved_at,
+                m.content::text AS content, m.review::text AS review,
+                m.approved_by_name, m.approved_at,
                 m.updated_at::text AS revision
          FROM legal_memos m JOIN cases c ON c.id = m.case_id
          WHERE m.id = $1",
@@ -131,12 +156,18 @@ pub async fn get(memo_id: &str) -> Result<Option<LegalMemo>, sqlx::Error> {
         author_id: r.author_id,
         author_name: r.author_name,
         content: parse_content(&r.content)?,
+        review: parse_review(&r.review)?,
         approved_by_name: r.approved_by_name,
+        filing_may_be_running: r
+            .approved_at
+            .is_some_and(|at| chrono::Utc::now() - at < FILING_WINDOW),
         approved_at: r.approved_at.map(local_stamp).unwrap_or_default(),
         revision: r.revision,
         can_edit: false,
         can_review: false,
         can_withdraw: false,
+        can_start_new: false,
+        can_file: false,
     }))
 }
 
@@ -259,7 +290,8 @@ pub async fn send_for_review(
     require_editable(&locked)?;
     write_draft(&mut tx, memo_id, title, Some(attorney), content).await?;
     sqlx::query(
-        "UPDATE legal_memos SET status = 'in_review', updated_at = clock_timestamp() WHERE id = $1",
+        "UPDATE legal_memos SET status = 'in_review', review = '{}'::jsonb, updated_at = clock_timestamp()
+         WHERE id = $1",
     )
     .bind(memo_id)
     .execute(&mut *tx)
@@ -271,6 +303,7 @@ pub async fn send_for_review(
         VersionEvent::Sent,
         title,
         &to_json(content)?,
+        "{}",
         &attorney.name,
         actor_id,
         actor,
@@ -313,6 +346,7 @@ pub async fn request_revisions(
         VersionEvent::RevisionsRequested,
         &locked.title,
         &locked.content,
+        &to_json(&locked.review)?,
         &locked.attorney_name,
         actor_id,
         actor,
@@ -347,12 +381,23 @@ pub async fn approve(
     actor_id: &str,
     actor: &str,
     comment: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<i32, sqlx::Error> {
     let mut tx = pool().begin().await?;
     audit::set_actor_in_transaction(&mut tx, actor_id).await?;
     let locked = lock(&mut tx, memo_id).await?;
     require_in_review(&locked, version)?;
     require_reviewer(&locked, actor_id)?;
+    let missing: Vec<&str> = ReviewCheck::REQUIRED_FOR_APPROVAL
+        .iter()
+        .filter(|check| !locked.review.has(**check))
+        .map(|check| check.label())
+        .collect();
+    if !missing.is_empty() {
+        return Err(sqlx::Error::Protocol(format!(
+            "Check these before approving: {}.",
+            missing.join(", ")
+        )));
+    }
     add_version(
         &mut tx,
         memo_id,
@@ -360,6 +405,7 @@ pub async fn approve(
         VersionEvent::Approved,
         &locked.title,
         &locked.content,
+        &to_json(&locked.review)?,
         &locked.attorney_name,
         actor_id,
         actor,
@@ -384,7 +430,265 @@ pub async fn approve(
         &format!("approved version {}", locked.version),
     )
     .await?;
+    tx.commit().await?;
+    Ok(locked.version)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn set_review_check(
+    memo_id: &str,
+    case_id: &str,
+    version: i32,
+    check: ReviewCheck,
+    checked: bool,
+    actor_id: &str,
+    actor: &str,
+) -> Result<MemoReview, sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_id).await?;
+    let mut locked = lock(&mut tx, memo_id).await?;
+    require_in_review(&locked, version)?;
+    require_reviewer(&locked, actor_id)?;
+    locked.review.marks.retain(|m| m.check != check);
+    if checked {
+        locked.review.marks.push(ReviewMark {
+            check,
+            by_user_id: actor_id.to_string(),
+            by_name: actor.to_string(),
+            at: crate::server::db::now_stamp(),
+        });
+    }
+    sqlx::query("UPDATE legal_memos SET review = $2::jsonb, updated_at = now() WHERE id = $1")
+        .bind(memo_id)
+        .bind(to_json(&locked.review)?)
+        .execute(&mut *tx)
+        .await?;
+    record(
+        &mut tx,
+        case_id,
+        memo_id,
+        actor,
+        "",
+        &format!(
+            "{} \"{}\" on version {}",
+            if checked { "checked" } else { "unchecked" },
+            check.label(),
+            locked.version
+        ),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(locked.review)
+}
+
+pub async fn start_new_version(
+    memo_id: &str,
+    case_id: &str,
+    actor_id: &str,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool().begin().await?;
+    audit::set_actor_in_transaction(&mut tx, actor_id).await?;
+    let locked = lock(&mut tx, memo_id).await?;
+    require_author(&locked, actor_id)?;
+    if locked.status != MemoStatus::Approved {
+        return Err(sqlx::Error::Protocol(
+            "Only an approved memo starts a new version.".into(),
+        ));
+    }
+    sqlx::query(
+        "UPDATE legal_memos
+         SET status = 'draft', version = version + 1, review = '{}'::jsonb,
+             approved_by_name = '', approved_at = NULL, updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(memo_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE legal_memos
+         SET content = jsonb_set(content, '{memo_date}', to_jsonb(''::text))
+         WHERE id = $1",
+    )
+    .bind(memo_id)
+    .execute(&mut *tx)
+    .await?;
+    let content: String = sqlx::query_scalar("SELECT content::text FROM legal_memos WHERE id = $1")
+        .bind(memo_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    add_version(
+        &mut tx,
+        memo_id,
+        locked.version + 1,
+        VersionEvent::Started,
+        &locked.title,
+        &content,
+        "{}",
+        &locked.attorney_name,
+        actor_id,
+        actor,
+        "",
+    )
+    .await?;
+    record(
+        &mut tx,
+        case_id,
+        memo_id,
+        actor,
+        locked.status.label(),
+        &format!("started version {}", locked.version + 1),
+    )
+    .await?;
     tx.commit().await
+}
+
+#[derive(sqlx::FromRow)]
+struct VersionRow {
+    id: String,
+    version: i32,
+    event: String,
+    title: String,
+    content: String,
+    review: String,
+    attorney_name: String,
+    actor_name: String,
+    comment: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub async fn versions(memo_id: &str) -> Result<Vec<MemoVersionEntry>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, VersionRow>(
+        "SELECT id, version, event, title, '' AS content, '' AS review, attorney_name,
+                actor_name, comment, created_at
+         FROM legal_memo_versions WHERE memo_id = $1 ORDER BY seq DESC",
+    )
+    .bind(memo_id)
+    .fetch_all(pool())
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| {
+            Some(MemoVersionEntry {
+                id: r.id,
+                version: r.version,
+                event: VersionEvent::from_slug(&r.event)?,
+                actor_name: r.actor_name,
+                comment: r.comment,
+                at: local_stamp(r.created_at),
+            })
+        })
+        .collect())
+}
+
+pub async fn version_snapshot(
+    memo_id: &str,
+    version_id: &str,
+) -> Result<Option<MemoVersionSnapshot>, sqlx::Error> {
+    let row = sqlx::query_as::<_, VersionRow>(
+        "SELECT id, version, event, title, content::text AS content, review::text AS review,
+                attorney_name, actor_name, comment, created_at
+         FROM legal_memo_versions WHERE memo_id = $1 AND id = $2",
+    )
+    .bind(memo_id)
+    .bind(version_id)
+    .fetch_optional(pool())
+    .await?;
+    let Some(r) = row else {
+        return Ok(None);
+    };
+    let Some(event) = VersionEvent::from_slug(&r.event) else {
+        return Ok(None);
+    };
+    Ok(Some(MemoVersionSnapshot {
+        version: r.version,
+        event,
+        title: r.title,
+        content: parse_content(&r.content)?,
+        review: parse_review(&r.review)?,
+        attorney_name: r.attorney_name,
+        actor_name: r.actor_name,
+        at: local_stamp(r.created_at),
+    }))
+}
+
+pub async fn latest_approved_version(memo_id: &str) -> Result<Option<i32>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT max(version) FROM legal_memo_versions WHERE memo_id = $1 AND event = 'approved'",
+    )
+    .bind(memo_id)
+    .fetch_one(pool())
+    .await
+}
+
+pub async fn approved_snapshot(
+    memo_id: &str,
+    version: i32,
+) -> Result<Option<ApprovedSnapshot>, sqlx::Error> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        case_id: String,
+        docket: String,
+        title: String,
+        content: String,
+        review: String,
+        author_name: String,
+        attorney_name: String,
+        actor_name: String,
+        comment: String,
+        created_at: chrono::DateTime<chrono::Utc>,
+    }
+    let row = sqlx::query_as::<_, Row>(
+        "SELECT m.case_id,
+                COALESCE((SELECT btrim(p.value) FROM case_properties p
+                          WHERE p.case_id = m.case_id AND p.key = ANY($3) AND btrim(p.value) <> ''
+                          ORDER BY array_position($3, p.key), p.ord LIMIT 1), '') AS docket,
+                v.title, v.content::text AS content, v.review::text AS review,
+                m.author_name, v.attorney_name, v.actor_name, v.comment, v.created_at
+         FROM legal_memo_versions v JOIN legal_memos m ON m.id = v.memo_id
+         WHERE v.memo_id = $1 AND v.version = $2 AND v.event = 'approved'",
+    )
+    .bind(memo_id)
+    .bind(version)
+    .bind(&DOCKET_KEYS[..])
+    .fetch_optional(pool())
+    .await?;
+    let Some(r) = row else {
+        return Ok(None);
+    };
+    Ok(Some(ApprovedSnapshot {
+        case_id: r.case_id,
+        docket: r.docket,
+        title: r.title,
+        content: parse_content(&r.content)?,
+        review: parse_review(&r.review)?,
+        author_name: r.author_name,
+        attorney_name: r.attorney_name,
+        approved_by_name: r.actor_name,
+        approved_at: local_stamp(r.created_at),
+        approval_comment: r.comment,
+    }))
+}
+
+pub async fn needing_filing(
+    kind: &str,
+    after_seq: i64,
+    limit: i64,
+) -> Result<Vec<(i64, String, i32)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT v.seq, v.memo_id, v.version
+         FROM legal_memo_versions v
+         LEFT JOIN case_record_files f
+           ON f.kind = $1 AND f.record_id = v.memo_id AND f.version = v.version
+         WHERE v.event = 'approved' AND f.record_id IS NULL AND v.seq > $2
+         ORDER BY v.seq
+         LIMIT $3",
+    )
+    .bind(kind)
+    .bind(after_seq)
+    .bind(limit)
+    .fetch_all(pool())
+    .await
 }
 
 pub async fn withdraw_from_review(
@@ -409,6 +713,7 @@ pub async fn withdraw_from_review(
         VersionEvent::Withdrawn,
         &locked.title,
         &locked.content,
+        &to_json(&locked.review)?,
         &locked.attorney_name,
         actor_id,
         actor,
@@ -481,12 +786,13 @@ async fn lock(tx: &mut Tx<'_>, memo_id: &str) -> Result<Locked, sqlx::Error> {
         attorney_user_id: Option<String>,
         attorney_name: String,
         revision: String,
+        review: String,
         case_status: String,
     }
     let row = sqlx::query_as::<_, Row>(
         "SELECT m.status, m.version, m.title, m.content::text AS content, m.author_id,
                 m.attorney_user_id, m.attorney_name, m.updated_at::text AS revision,
-                c.status AS case_status
+                m.review::text AS review, c.status AS case_status
          FROM legal_memos m JOIN cases c ON c.id = m.case_id
          WHERE m.id = $1
          FOR UPDATE OF m FOR SHARE OF c",
@@ -509,6 +815,7 @@ async fn lock(tx: &mut Tx<'_>, memo_id: &str) -> Result<Locked, sqlx::Error> {
         attorney_id: row.attorney_user_id.unwrap_or_default(),
         attorney_name: row.attorney_name,
         revision: row.revision,
+        review: parse_review(&row.review)?,
     })
 }
 
@@ -600,6 +907,7 @@ async fn add_version(
     event: VersionEvent,
     title: &str,
     content_json: &str,
+    review_json: &str,
     attorney_name: &str,
     actor_id: &str,
     actor: &str,
@@ -608,9 +916,9 @@ async fn add_version(
     let id = ids::next(&mut **tx, "lv").await?;
     sqlx::query(
         "INSERT INTO legal_memo_versions
-             (id, memo_id, version, event, title, content, attorney_name, actor_id, actor_name,
-              comment)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)",
+             (id, memo_id, version, event, title, content, review, attorney_name, actor_id,
+              actor_name, comment)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11)",
     )
     .bind(&id)
     .bind(memo_id)
@@ -618,6 +926,7 @@ async fn add_version(
     .bind(event.slug())
     .bind(title)
     .bind(content_json)
+    .bind(review_json)
     .bind(attorney_name)
     .bind(actor_id)
     .bind(actor)

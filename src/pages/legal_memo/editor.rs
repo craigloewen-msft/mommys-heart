@@ -5,11 +5,13 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 
+use super::approved::HistoryCard;
+use super::editor_tables::Tables;
 use super::{back_href, back_label, clock, matter, section_card, status_pill, when, SECTIONS};
 use crate::components::autosave::Autosaver;
 use crate::components::design::{
-    icon, DarkBanner, Icon, PageHeader, VolunteersOnlyBadge, BTN, BTN_PRIMARY, BTN_SM, ERRMSG,
-    FIELD, HINT, INPUT, INPUT_READONLY, KICKER, LBL, MUTED, SAVED,
+    icon, DarkBanner, Icon, PageHeader, Segmented, VolunteersOnlyBadge, BTN, BTN_PRIMARY, BTN_SM,
+    ERRMSG, FIELD, HINT, INPUT, INPUT_ERR, INPUT_READONLY, KICKER, LBL, MUTED, SAVED,
 };
 use crate::components::legal_memos::ERRTEXT;
 use crate::server_fns::crm::MAX_SHORT_TEXT;
@@ -17,8 +19,8 @@ use crate::server_fns::err_text;
 use crate::server_fns::legal_memos::{
     delete_legal_memo_draft, memo_attorney_choices, problems_before_review, save_legal_memo_draft,
     send_legal_memo_for_review, validate_draft, AnalysisSection, LegalMemo, LegalMemoContent,
-    MemoAttorney, MemoFact, MemoLine, MemoStatus, NextStep, MAX_MEMO_TEXT, MAX_ROWS,
-    STALE_MEMO_ERROR,
+    MemoAttorney, MemoFact, MemoLine, MemoProblem, MemoStatus, MemoVersionEntry, MAX_MEMO_TEXT,
+    MAX_ROWS, SECTION_BRIEF, SECTION_HEADER, STALE_MEMO_ERROR,
 };
 use crate::state::now_stamp;
 
@@ -36,34 +38,36 @@ impl RowText for MemoLine {
     }
 }
 
-impl RowText for MemoFact {
-    fn text(&self) -> &str {
-        &self.text
-    }
-    fn set_text(&mut self, value: String) {
-        self.text = value;
-    }
-}
-
-impl RowText for NextStep {
-    fn text(&self) -> &str {
-        &self.action
-    }
-    fn set_text(&mut self, value: String) {
-        self.action = value;
-    }
-}
-
 fn section_done(anchor: &str, attorney: &str, c: &LegalMemoContent) -> bool {
     match anchor {
         "mh" => !attorney.trim().is_empty(),
+        "ms" => match c.safety_flagged {
+            None => false,
+            Some(false) => true,
+            Some(true) => {
+                !c.safety_escalated_on.is_empty() && !c.safety_escalated_to.trim().is_empty()
+            }
+        },
         "s1" => c.questions.iter().any(|q| !q.text.trim().is_empty()),
         "s2" => !c.brief_answer.trim().is_empty(),
+        "s3" => {
+            let facts: Vec<&MemoFact> = c
+                .facts
+                .iter()
+                .filter(|f| !f.text.trim().is_empty())
+                .collect();
+            !facts.is_empty() && facts.iter().all(|f| f.source.is_some())
+        }
+        "s6" => c
+            .authorities
+            .iter()
+            .filter(|a| !a.citation.trim().is_empty())
+            .all(|a| a.treatment_checked),
         _ => true,
     }
 }
 
-fn add_row(label: &'static str, full: Signal<bool>, on_click: Callback<()>) -> AnyView {
+pub(super) fn add_row(label: &'static str, full: Signal<bool>, on_click: Callback<()>) -> AnyView {
     view! {
         <div class="mt-3 flex flex-wrap items-center gap-2">
             <button type="button" class=BTN_SM prop:disabled=move || full.get() on:click=move |_| on_click.run(())>
@@ -79,7 +83,11 @@ fn add_row(label: &'static str, full: Signal<bool>, on_click: Callback<()>) -> A
 }
 
 #[component]
-pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl IntoView {
+pub(super) fn MemoEditor(
+    memo: LegalMemo,
+    versions: RwSignal<Option<Vec<MemoVersionEntry>>>,
+    on_changed: Callback<()>,
+) -> impl IntoView {
     let memo_id = StoredValue::new(memo.id.clone());
     let case_sv = StoredValue::new(memo.case_id.clone());
     let title = RwSignal::new(memo.title.clone());
@@ -93,12 +101,16 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
     if initial.questions.is_empty() {
         initial.questions.push(MemoLine::default());
     }
+    if initial.facts.is_empty() {
+        initial.facts.push(MemoFact::default());
+    }
     let content = RwSignal::new(initial);
     let attorneys = RwSignal::new(Vec::<MemoAttorney>::new());
     let attorneys_error = RwSignal::new(String::new());
     let stale_attorney = RwSignal::new(String::new());
     let sending = RwSignal::new(false);
-    let problems = RwSignal::new(Vec::<&'static str>::new());
+    let sent = RwSignal::new(false);
+    let problems = RwSignal::new(Vec::<MemoProblem>::new());
     let message = RwSignal::new(String::new());
     let deleting = RwSignal::new(false);
     let confirm_delete = RwSignal::new(false);
@@ -133,10 +145,15 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
     let touch = Callback::new(move |_: ()| {
         if !problems.with_untracked(Vec::is_empty) {
             let a = attorney.get_untracked();
-            problems.set(content.with_untracked(|c| problems_before_review(&a, c)));
+            let found = content.with_untracked(|c| problems_before_review(&a, c));
+            if problems.with_untracked(|p| *p != found) {
+                problems.set(found);
+            }
         }
         autosave.changed();
     });
+    let has_problem =
+        move |key: &'static str| problems.with(|p| p.iter().any(|x| x.section == key));
     let draft_error = Memo::new(move |_| {
         let t = title.get();
         let t = if t.trim().is_empty() {
@@ -209,6 +226,7 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
             match send_legal_memo_for_review(id, t, a, c, r).await {
                 Ok(()) => {
                     autosave.saved_through(snapshot);
+                    let _ = sent.try_set(true);
                     let _ = on_changed.try_run(());
                 }
                 Err(e) => {
@@ -276,7 +294,7 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
                 "Save draft"
             </button>
             <button type="button" class=BTN_PRIMARY on:click=send prop:disabled=move || sending.get() || autosave.saving.get() || deleting.get()>
-                {move || if sending.get() { "Sending\u{2026}" } else { "Send for attorney review" }}
+                {move || if sent.get() { "Sent" } else if sending.get() { "Sending\u{2026}" } else { "Send for attorney review" }}
                 {icon(Icon::ArrowRight, "h-4 w-4 flex-none")}
             </button>
         }
@@ -289,9 +307,10 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
                 {SECTIONS
                     .iter()
                     .map(|s| {
+                        let flagged = move || problems.with(|p| p.iter().any(|x| x.section == s.problem_key));
                         let done = move || {
                             let a = attorney.get();
-                            content.with(|c| section_done(s.anchor, &a, c))
+                            !flagged() && content.with(|c| section_done(s.anchor, &a, c))
                         };
                         let label = match s.number {
                             Some(n) => format!("{n} {}", s.title),
@@ -302,6 +321,8 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
                                 <a href=format!("#{}", s.anchor) class="flex items-center gap-2 rounded-[10px] px-2.5 py-[7px] text-[14px] text-slate-200 no-underline hover:bg-sand-200">
                                     {move || if done() {
                                         view! { <span class="text-ok-700">{icon(Icon::Check, "h-4 w-4 flex-none")}</span> }.into_any()
+                                    } else if flagged() {
+                                        view! { <span class="text-danger-600">{icon(Icon::Warning, "h-4 w-4 flex-none")}</span> }.into_any()
                                     } else {
                                         view! { <span class="text-primary-600">{icon(Icon::Warning, "h-4 w-4 flex-none")}</span> }.into_any()
                                     }}
@@ -327,7 +348,7 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
                     <label class=LBL for="memo-to">"Reviewer"</label>
                     <select
                         id="memo-to"
-                        class=INPUT
+                        class=move || if has_problem(SECTION_HEADER) { INPUT_ERR } else { INPUT }
                         prop:value=move || attorney.get()
                         on:change=move |ev| {
                             attorney.set(event_target_value(&ev));
@@ -431,7 +452,7 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
 
     let brief = view! {
         <textarea
-            class=INPUT
+            class=move || if has_problem(SECTION_BRIEF) { INPUT_ERR } else { INPUT }
             rows="3"
             maxlength=MAX_MEMO_TEXT
             aria-label="Brief answer"
@@ -489,6 +510,55 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
     }
     .into_any();
 
+    let tables = Tables { content, touch };
+    let card = move |anchor: &'static str, body: AnyView| {
+        let key = SECTIONS
+            .iter()
+            .find(|s| s.anchor == anchor)
+            .map(|s| s.problem_key)
+            .unwrap_or("");
+        section_card(
+            anchor,
+            Signal::derive(move || !key.is_empty() && has_problem(key)),
+            body,
+        )
+    };
+    let safety = view! {
+        <Segmented
+            name="memo-safety"
+            legend="Safety concern flagged?"
+            options=vec![("yes".to_string(), "Yes".to_string()), ("no".to_string(), "No".to_string())]
+            value=Signal::derive(move || content.with(|c| match c.safety_flagged {
+                Some(true) => "yes".to_string(),
+                Some(false) => "no".to_string(),
+                None => String::new(),
+            }))
+            on_change=Callback::new(move |v: String| {
+                content.update(|c| c.safety_flagged = Some(v == "yes"));
+                touch.run(());
+            })
+        />
+        <p class=format!("{HINT} mt-2")>
+            "If Yes, add when it was escalated and to whom. A safety concern goes to a supervisor right away, not only in this memo."
+        </p>
+        <Show when=move || content.with(|c| c.safety_flagged == Some(true))>
+            <div class="mt-3 grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                <div class=FIELD>
+                    <label class=LBL for="memo-escalated-on">"Date escalated"</label>
+                    <input id="memo-escalated-on" type="date" class=INPUT
+                        prop:value=move || content.with(|c| c.safety_escalated_on.clone())
+                        on:input=move |ev| { let v = event_target_value(&ev); content.update(|c| c.safety_escalated_on = v); touch.run(()); } />
+                </div>
+                <div class=FIELD>
+                    <label class=LBL for="memo-escalated-to">"Escalated to"</label>
+                    <input id="memo-escalated-to" class=INPUT maxlength=MAX_SHORT_TEXT
+                        prop:value=move || content.with(|c| c.safety_escalated_to.clone())
+                        on:input=move |ev| { let v = event_target_value(&ev); content.update(|c| c.safety_escalated_to = v); touch.run(()); } />
+                </div>
+            </div>
+        </Show>
+    }
+    .into_any();
     let title_input = view! {
         <label for="memo-title" class="sr-only">"Memo title"</label>
         <h1 class="font-serif text-[30px] font-semibold leading-tight text-slate-200">
@@ -544,7 +614,18 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
                     "Can't send for attorney review yet"
                 </p>
                 <ul class="mt-2 flex list-disc flex-col gap-1 pl-[26px] text-danger-700">
-                    {move || problems.get().into_iter().map(|p| view! { <li>{p}</li> }).collect_view()}
+                    {move || problems
+                        .get()
+                        .into_iter()
+                        .map(|p| {
+                            let anchor = SECTIONS
+                                .iter()
+                                .find(|s| s.problem_key == p.section)
+                                .map(|s| s.anchor)
+                                .unwrap_or("mh");
+                            view! { <li><a class="underline underline-offset-[3px]" href=format!("#{anchor}")>{format!("{}: {}", p.section, p.message)}</a></li> }
+                        })
+                        .collect_view()}
                 </ul>
             </div>
         </Show>
@@ -560,13 +641,17 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
         <div class="grid items-start gap-6 lg:grid-cols-[250px_minmax(0,1fr)]">
             {nav}
             <fieldset class="flex min-w-0 flex-col gap-4" prop:disabled=move || sending.get() || deleting.get()>
-                {section_card("mh", header)}
-                {section_card("s1", list_rows(content, touch, |c| &c.questions, |c| &mut c.questions, "Question"))}
-                {section_card("s2", brief)}
-                {section_card("s3", list_rows(content, touch, |c| &c.facts, |c| &mut c.facts, "Fact"))}
-                {section_card("s4", analysis)}
-                {section_card("s5", list_rows(content, touch, |c| &c.outstanding, |c| &mut c.outstanding, "Outstanding question"))}
-                {section_card("s6", list_rows(content, touch, |c| &c.next_steps, |c| &mut c.next_steps, "Next step"))}
+                {card("mh", header)}
+                {card("ms", safety)}
+                {card("s1", list_rows(content, touch, |c| &c.questions, |c| &mut c.questions, "Question"))}
+                {card("s2", brief)}
+                {card("s3", tables.facts())}
+                {card("s4", tables.procedure())}
+                {card("s5", tables.evidence())}
+                {card("s6", tables.authorities())}
+                {card("s7", analysis)}
+                {card("s8", list_rows(content, touch, |c| &c.outstanding, |c| &mut c.outstanding, "Outstanding question"))}
+                {card("s9", tables.next_steps())}
                 <div class="flex flex-wrap items-center justify-end gap-2">
                     {never_sent.then(|| view! {
                         <div class="mr-auto flex flex-wrap items-center gap-2">
@@ -585,6 +670,11 @@ pub(super) fn MemoEditor(memo: LegalMemo, on_changed: Callback<()>) -> impl Into
                     {actions(false)}
                 </div>
             </fieldset>
+            <Show when=move || versions.with(|v| v.as_ref().is_none_or(|v| !v.is_empty()))>
+                <div class="lg:col-start-2">
+                    <HistoryCard versions=versions opening=RwSignal::new(false) />
+                </div>
+            </Show>
         </div>
     }
 }

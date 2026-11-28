@@ -484,7 +484,7 @@ pub(crate) fn month_day(raw: &str) -> String {
     }
 }
 
-fn avatar_classes(role: CaseContactRole) -> &'static str {
+pub(crate) fn avatar_classes(role: CaseContactRole) -> &'static str {
     match role {
         CaseContactRole::Client => "bg-[#e3f5ec] text-[#11633f]",
         CaseContactRole::Attorney => "bg-[#e3effa] text-[#1a5d99]",

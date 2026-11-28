@@ -17,9 +17,11 @@ pub const MUTED: &str = "text-slate-500";
 pub const FIELD: &str = "flex min-w-0 flex-col gap-1.5";
 pub const INPUT: &str = "min-h-[42px] w-full rounded-xl border border-sand-500 bg-white px-3.5 py-2 text-[14.5px] text-slate-200 focus:border-primary-600 focus:outline-none";
 pub const INPUT_READONLY: &str = "min-h-[42px] w-full rounded-xl border border-slate-800 bg-sand-200 px-3.5 py-2 text-[14.5px] text-ink-600";
+pub const INPUT_ERR: &str = "min-h-[42px] w-full rounded-xl border-2 border-danger-600 bg-danger-50 px-3.5 py-2 text-[14.5px] text-slate-200 focus:outline-2 focus:outline-offset-2 focus:outline-danger-600";
 pub const ERRMSG: &str = "flex items-start gap-1.5 text-[13.5px] font-semibold text-danger-700";
 pub const KICKER: &str = "text-[12.5px] font-bold uppercase tracking-[.08em] text-slate-500";
 pub const SAVED: &str = "inline-flex items-center gap-1.5 text-[13.5px] font-semibold text-ok-700";
+pub const ROWLINE: &str = "flex items-center gap-3 border-t border-sand-300 py-3 first:border-t-0";
 pub const TD: &str = "border-b border-sand-300 px-3.5 py-3 align-top group-last:border-b-0";
 pub const LINK: &str =
     "font-semibold text-primary-300 underline-offset-[3px] hover:text-primary-800";
@@ -30,6 +32,7 @@ pub enum Icon {
     Warning,
     Cross,
     Lock,
+    Folder,
     Plus,
     ArrowLeft,
     ArrowRight,
@@ -41,6 +44,7 @@ pub fn icon(kind: Icon, class: &'static str) -> AnyView {
         Icon::Warning => view! { <path d="M12 3l9.5 17h-19z"></path><path d="M12 10v4M12 17.5v.01"></path> }.into_any(),
         Icon::Cross => view! { <path d="M6 6l12 12M18 6L6 18"></path> }.into_any(),
         Icon::Lock => view! { <rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path> }.into_any(),
+        Icon::Folder => view! { <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path> }.into_any(),
         Icon::Plus => view! { <path d="M12 5v14M5 12h14"></path> }.into_any(),
         Icon::ArrowLeft => view! { <path d="M19 12H5"></path><path d="M11 18l-6-6 6-6"></path> }.into_any(),
         Icon::ArrowRight => view! { <path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path> }.into_any(),
@@ -157,10 +161,18 @@ pub fn SectionCard(
     #[prop(optional, into)] anchor: Option<String>,
     #[prop(optional, into)] number: Option<String>,
     #[prop(optional)] required: Option<bool>,
+    #[prop(optional, into)] error: Signal<bool>,
     children: Children,
 ) -> impl IntoView {
+    let class = move || {
+        if error.get() {
+            format!("{CARD} {CARD_PAD} scroll-mt-4 border-2! border-danger-600!")
+        } else {
+            format!("{CARD} {CARD_PAD} scroll-mt-4")
+        }
+    };
     view! {
-        <section id=anchor class=format!("{CARD} {CARD_PAD} scroll-mt-4")>
+        <section id=anchor class=class>
             <div class=CARD_HEAD>
                 <h2 class=format!("{SERIF_H2} flex items-baseline gap-2")>
                     {number.map(|n| view! { <span class="text-[13px] font-bold uppercase text-primary-700">{n}</span> })}
@@ -210,5 +222,57 @@ pub fn EdgeTable(
                 </tbody>
             </table>
         </div>
+    }
+}
+
+#[component]
+pub fn Segmented(
+    #[prop(into)] name: String,
+    #[prop(into)] legend: String,
+    options: Vec<(String, String)>,
+    #[prop(into)] value: Signal<String>,
+    on_change: Callback<String>,
+    #[prop(optional, into)] disabled: Signal<bool>,
+) -> impl IntoView {
+    let name = StoredValue::new(name);
+    view! {
+        <fieldset class="min-w-0 border-0 p-0">
+            <legend class=LBL>{legend}</legend>
+            <div class="mt-2 inline-flex flex-wrap overflow-hidden rounded-xl border border-sand-500 bg-white">
+                {options
+                    .into_iter()
+                    .map(|(option, label)| {
+                        let on = {
+                            let option = option.clone();
+                            move || value.get() == option
+                        };
+                        let class = {
+                            let on = on.clone();
+                            move || {
+                                if on() {
+                                    "relative inline-flex min-h-10 cursor-pointer items-center border-l border-slate-800 bg-peach-100 px-3.5 text-sm font-semibold text-peach-900 shadow-[inset_0_0_0_1px_var(--color-peach-300)] first:border-l-0 has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-info-600"
+                                } else {
+                                    "relative inline-flex min-h-10 cursor-pointer items-center border-l border-slate-800 px-3.5 text-sm font-semibold text-ink-600 first:border-l-0 has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-info-600"
+                                }
+                            }
+                        };
+                        let picked = option.clone();
+                        view! {
+                            <label class=class>
+                                <input
+                                    type="radio"
+                                    class="absolute h-px w-px opacity-0"
+                                    name=name.get_value()
+                                    prop:checked=on
+                                    prop:disabled=move || disabled.get()
+                                    on:change=move |_| on_change.run(picked.clone())
+                                />
+                                {label}
+                            </label>
+                        }
+                    })
+                    .collect_view()}
+            </div>
+        </fieldset>
     }
 }

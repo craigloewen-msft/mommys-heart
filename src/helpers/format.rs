@@ -101,3 +101,17 @@ pub fn date_parts(stamp: &str) -> Option<(&'static str, u32, &str)> {
     let day = stamp.get(8..10)?.parse::<u32>().ok()?;
     Some((MONTHS[month - 1], day, stamp.get(..4)?))
 }
+
+pub fn date_long(stamp: &str) -> String {
+    date_parts(stamp)
+        .map(|(m, d, y)| format!("{m} {d}, {y}"))
+        .unwrap_or_else(|| stamp.to_string())
+}
+
+pub fn matter_label(case_name: &str, docket: &str) -> String {
+    if docket.trim().is_empty() {
+        case_name.to_string()
+    } else {
+        format!("{case_name} \u{b7} {}", docket.trim())
+    }
+}

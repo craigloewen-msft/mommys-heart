@@ -1,10 +1,14 @@
 use leptos::prelude::*;
 
-use super::{date_long, matter, section_card};
-use crate::components::design::{HINT, MUTED};
+use super::{date_long, matter, read_tables, section_card};
+use crate::components::design::{Icon, StatusPill, Tone, HINT, MUTED};
 use crate::server_fns::legal_memos::{LegalMemo, LegalMemoContent};
 
-fn none() -> AnyView {
+fn card(anchor: &'static str, body: AnyView) -> AnyView {
+    section_card(anchor, Signal::from(false), body)
+}
+
+pub(super) fn none() -> AnyView {
     view! { <p class=format!("{MUTED} text-[14.5px]")>"None recorded."</p> }.into_any()
 }
 
@@ -58,7 +62,7 @@ pub(super) fn header_card(memo: &LegalMemo) -> AnyView {
         ("Matter", matter(memo)),
         ("Status", memo.status.label().to_string()),
     ];
-    section_card(
+    card(
         "mh",
         view! {
             <dl class="grid gap-x-5 gap-y-3 text-[15px] sm:grid-cols-2 lg:grid-cols-3">
@@ -74,7 +78,40 @@ pub(super) fn header_card(memo: &LegalMemo) -> AnyView {
     )
 }
 
-pub(super) fn content_cards(c: &LegalMemoContent) -> AnyView {
+pub(super) fn content_cards(c: &LegalMemoContent, author: &str) -> AnyView {
+    let safety = match c.safety_flagged {
+        Some(false) => view! {
+            <p class="flex flex-wrap items-center gap-2">
+                <StatusPill label="No safety concern flagged" tone=Tone::Green icon_kind=Icon::Check />
+                <span class=format!("{MUTED} text-[13.5px]")>{format!("Answered by {author}")}</span>
+            </p>
+        }
+        .into_any(),
+        Some(true) => {
+            let escalated = format!(
+                "Escalated {} to {}.",
+                if c.safety_escalated_on.is_empty() {
+                    "on an unrecorded date".to_string()
+                } else {
+                    date_long(&c.safety_escalated_on)
+                },
+                if c.safety_escalated_to.trim().is_empty() {
+                    "someone not recorded"
+                } else {
+                    c.safety_escalated_to.as_str()
+                }
+            );
+            view! {
+                <p class="flex flex-wrap items-center gap-2">
+                    <StatusPill label="Safety concern flagged" tone=Tone::Red icon_kind=Icon::Warning />
+                    <span class=format!("{MUTED} text-[13.5px]")>{format!("Answered by {author}")}</span>
+                </p>
+                <p class="mt-2">{escalated}</p>
+            }
+            .into_any()
+        }
+        None => view! { <p class=MUTED>"Not answered yet."</p> }.into_any(),
+    };
     let brief = if c.brief_answer.trim().is_empty() {
         none()
     } else {
@@ -84,7 +121,7 @@ pub(super) fn content_cards(c: &LegalMemoContent) -> AnyView {
     let parts: Vec<(String, String)> = c
         .analysis
         .iter()
-        .filter(|a| !a.heading.trim().is_empty() || !a.body.trim().is_empty())
+        .filter(|a| !a.is_blank())
         .map(|a| (a.heading.clone(), a.body.clone()))
         .collect();
     let analysis = if parts.is_empty() {
@@ -107,12 +144,16 @@ pub(super) fn content_cards(c: &LegalMemoContent) -> AnyView {
     };
 
     view! {
-        {section_card("s1", numbered(filled(c.questions.iter().map(|q| &q.text))))}
-        {section_card("s2", brief)}
-        {section_card("s3", bulleted(filled(c.facts.iter().map(|f| &f.text))))}
-        {section_card("s4", analysis)}
-        {section_card("s5", bulleted(filled(c.outstanding.iter().map(|q| &q.text))))}
-        {section_card("s6", numbered(filled(c.next_steps.iter().map(|n| &n.action))))}
+        {card("ms", safety)}
+        {card("s1", numbered(filled(c.questions.iter().map(|q| &q.text))))}
+        {card("s2", brief)}
+        {card("s3", read_tables::facts(c))}
+        {card("s4", read_tables::procedure(c))}
+        {card("s5", read_tables::evidence(c))}
+        {card("s6", read_tables::authorities(c))}
+        {card("s7", analysis)}
+        {card("s8", bulleted(filled(c.outstanding.iter().map(|q| &q.text))))}
+        {card("s9", read_tables::next_steps(c))}
     }
     .into_any()
 }
