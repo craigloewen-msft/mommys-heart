@@ -2,9 +2,11 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 
+use crate::components::admin_case_team::CaseTeam;
 use crate::components::case_contacts::CaseContactsPanel;
 use crate::components::case_plan::CasePlanCard;
 use crate::components::case_questionnaires::intake_status;
+use crate::components::design::{icon, Icon};
 use crate::helpers::format::{access_label, badge_pill, initials};
 use crate::helpers::visibility::Visibility;
 use crate::server_fns::case_contacts::{list_case_contacts, CaseContact, CaseContactRole};
@@ -107,29 +109,67 @@ pub fn CaseOverview(
     let team = RwSignal::new(Vec::<CaseTeamMember>::new());
     let team_loading = RwSignal::new(show_team);
     let team_error = RwSignal::new(String::new());
+    let team_reload = RwSignal::new(0u32);
+    let can_edit_team = show_team && untrack(|| state.has_operations_admin_permissions());
+    let is_site_admin = untrack(|| state.is_site_admin());
+    let editing_team = RwSignal::new(false);
+    let team_notice = RwSignal::new(String::new());
+    let editor_reload = RwSignal::new(0u32);
     if show_team {
-        spawn_local(async move {
-            let result = list_case_team(case_sv.get_value()).await;
-            let _ = team_loading.try_set(false);
-            match result {
-                Ok(members) => {
-                    let _ = team.try_set(members);
+        Effect::new(move |_| {
+            let generation = team_reload.get();
+            spawn_local(async move {
+                let result = list_case_team(case_sv.get_value()).await;
+                if team_reload.try_get_untracked() != Some(generation) {
+                    return;
                 }
-                Err(e) => {
-                    let _ = team_error.try_set(err_text(e));
+                let _ = team_loading.try_set(false);
+                match result {
+                    Ok(members) => {
+                        let _ = team.try_set(members);
+                        let _ = team_error.try_set(String::new());
+                    }
+                    Err(e) => {
+                        let _ = team_error.try_set(err_text(e));
+                    }
                 }
-            }
+            });
         });
     }
+    let close_team_editor = Callback::new(move |saved: Option<String>| {
+        editing_team.set(false);
+        if let Some(message) = saved {
+            team_notice.set(message);
+            team_reload.update(|value| *value += 1);
+        }
+    });
     let team_summary = move || {
         if !show_team {
             return ().into_any();
         }
         view! {
-            <section class=CARD aria-labelledby="team-heading">
+            <section id="case-team" class=CARD aria-labelledby="team-heading">
                 <div class=CARD_HEAD>
                     <h2 id="team-heading" class="text-[19px] font-semibold">"Case team"</h2>
+                    {can_edit_team.then(|| view! {
+                        <button
+                            type="button"
+                            class=format!("{SMALL_BUTTON} inline-flex items-center gap-1.5")
+                            aria-label="Edit case team"
+                            aria-expanded=move || editing_team.get().to_string()
+                            on:click=move |_| {
+                                team_notice.set(String::new());
+                                editing_team.update(|open| *open = !*open);
+                            }
+                        >
+                            {icon(Icon::Pencil, "h-3.5 w-3.5")}
+                            "Edit"
+                        </button>
+                    })}
                 </div>
+                <Show when=move || !team_notice.get().is_empty()>
+                    <p class="mt-3 text-sm text-emerald-300" role="status">{move || team_notice.get()}</p>
+                </Show>
                 {move || {
                     if team_loading.get() {
                         return view! { <p class="mt-3 text-sm text-slate-500">"Loading\u{2026}"</p> }.into_any();
@@ -461,6 +501,14 @@ pub fn CaseOverview(
                 {show_plan.then(|| view! { <CasePlanCard case_id=case_sv.get_value() can_edit=can_edit_plan can_note=can_note_plan /> })}
                 <Show when=move || managing_people.get()>
                     <CaseContactsPanel case_id=case_sv.get_value() can_edit=can_edit_people />
+                </Show>
+                <Show when=move || editing_team.get()>
+                    <CaseTeam
+                        case_id=case_sv.get_value()
+                        is_site_admin=is_site_admin
+                        reload=editor_reload
+                        on_close=close_team_editor
+                    />
                 </Show>
             </div>
             <aside class="space-y-6" aria-label="Case at a glance">

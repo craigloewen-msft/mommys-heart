@@ -38,7 +38,12 @@ fn preset_label(caps: &[CaseCapability]) -> Option<&'static str> {
 }
 
 #[component]
-pub fn CaseTeam(case_id: String, is_site_admin: bool, reload: RwSignal<u32>) -> impl IntoView {
+pub fn CaseTeam(
+    case_id: String,
+    is_site_admin: bool,
+    reload: RwSignal<u32>,
+    #[prop(optional)] on_close: Option<Callback<Option<String>>>,
+) -> impl IntoView {
     let state = expect_context::<AppState>();
     let case_id = StoredValue::new(case_id);
     let actor_user_id = move || {
@@ -140,7 +145,7 @@ pub fn CaseTeam(case_id: String, is_site_admin: bool, reload: RwSignal<u32>) -> 
             .collect::<Vec<_>>()
     });
 
-    let begin_edit = move |_| {
+    let start_edit = move || {
         let rows = team
             .get_untracked()
             .into_iter()
@@ -160,8 +165,26 @@ pub fn CaseTeam(case_id: String, is_site_admin: bool, reload: RwSignal<u32>) -> 
         feedback.set(None);
         editing.set(true);
     };
+    let begin_edit = move |_| start_edit();
+
+    if on_close.is_some() {
+        Effect::new(move |started: Option<bool>| {
+            if started == Some(true) {
+                return true;
+            }
+            let ready = !loading.get() && load_error.with(Option::is_none);
+            if ready {
+                start_edit();
+            }
+            ready
+        });
+    }
 
     let cancel_edit = move |_| {
+        if let Some(close) = on_close {
+            close.run(None);
+            return;
+        }
         editing.set(false);
         selected.set(Vec::new());
         feedback.set(None);
@@ -195,6 +218,9 @@ pub fn CaseTeam(case_id: String, is_site_admin: bool, reload: RwSignal<u32>) -> 
     };
 
     let save_edit = move |_| {
+        if saving.get_untracked() {
+            return;
+        }
         let originals = team.get_untracked();
         let mut changes: Vec<(String, Option<Vec<CaseCapability>>)> = Vec::new();
         for row in draft.get_untracked() {
@@ -219,6 +245,10 @@ pub fn CaseTeam(case_id: String, is_site_admin: bool, reload: RwSignal<u32>) -> 
             }
         }
         if changes.is_empty() {
+            if let Some(close) = on_close {
+                close.run(None);
+                return;
+            }
             editing.set(false);
             feedback.set(None);
             return;
@@ -233,16 +263,22 @@ pub fn CaseTeam(case_id: String, is_site_admin: bool, reload: RwSignal<u32>) -> 
                 note_text,
             )
             .await;
+            let _ = saving.try_set(false);
             match outcome {
                 Ok(message) => {
+                    state.refresh_badges();
+                    if let Some(close) = on_close {
+                        let _ = close.try_run(Some(message));
+                        return;
+                    }
                     feedback.set(Some(Ok(message)));
                     editing.set(false);
                     reload.update(|value| *value += 1);
-                    state.refresh_badges();
                 }
-                Err(error) => feedback.set(Some(Err(err_text(error)))),
+                Err(error) => {
+                    let _ = feedback.try_set(Some(Err(err_text(error))));
+                }
             }
-            saving.set(false);
         });
     };
 
@@ -599,7 +635,7 @@ pub fn CaseTeam(case_id: String, is_site_admin: bool, reload: RwSignal<u32>) -> 
     };
 
     view! {
-        <section id="case-team" class="rounded-card border border-slate-800 bg-slate-900 shadow-card p-4">
+        <section id=on_close.is_none().then_some("case-team") class="rounded-card border border-slate-800 bg-slate-900 shadow-card p-4">
             <div class="flex flex-wrap items-start justify-between gap-3">
                 <div class="min-w-0">
                     <h3 class="text-base font-semibold text-slate-100">"Case team"</h3>

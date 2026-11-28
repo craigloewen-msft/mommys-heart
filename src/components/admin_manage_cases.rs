@@ -238,7 +238,6 @@ pub fn ManageCases(
             Some(summary) => view! {
                 <div class="space-y-4">
                     <BackToCases href=back_href.get_value() />
-                    <CaseTeam case_id=summary.id.clone() is_site_admin=is_site_admin reload=reload />
                     <CaseDetail
                         summary=summary
                         reload=reload

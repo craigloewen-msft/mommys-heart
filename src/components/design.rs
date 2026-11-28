@@ -33,6 +33,7 @@ pub enum Icon {
     Plus,
     ArrowLeft,
     ArrowRight,
+    Pencil,
 }
 
 pub fn icon(kind: Icon, class: &'static str) -> AnyView {
@@ -44,6 +45,7 @@ pub fn icon(kind: Icon, class: &'static str) -> AnyView {
         Icon::Plus => view! { <path d="M12 5v14M5 12h14"></path> }.into_any(),
         Icon::ArrowLeft => view! { <path d="M19 12H5"></path><path d="M11 18l-6-6 6-6"></path> }.into_any(),
         Icon::ArrowRight => view! { <path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path> }.into_any(),
+        Icon::Pencil => view! { <path d="M4 20h4L19 9l-4-4L4 16z"></path><path d="M14 6l4 4"></path> }.into_any(),
     };
     view! {
         <svg
